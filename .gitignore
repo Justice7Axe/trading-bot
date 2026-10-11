@@ -1,0 +1,14 @@
+# 비밀 정보 (키움/Supabase/텔레그램 키)
+.env*
+!.env.example
+chapter_0/config.py
+chapter_1/config.py
+
+# 수집 데이터 / 로그
+data/
+*.log
+
+# Python
+.venv/
+__pycache__/
+*.pyc
