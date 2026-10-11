@@ -15,6 +15,7 @@ import duckdb
 if __package__ is None or __package__ == "":
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
+from kiwoom_trading.analysis.indicators.sixty_five_entry import EntryPlan, Fill, plan_entries
 from kiwoom_trading.analysis.indicators.sixty_five_strategy import SixtyFiveConfig, SixtyFiveSignal, scan_sixty_five
 from kiwoom_trading.common.daily_store import DailyStore
 
@@ -58,6 +59,26 @@ def scan_all(conn: duckdb.DuckDBPyConnection, config: SixtyFiveConfig) -> tuple[
     return results, info
 
 
+def _fill_text(label: str, limit: int, fill: Optional[Fill], plan: EntryPlan) -> str:
+    if fill:
+        gap = " (갭하락 시가 체결)" if fill.price < limit else ""
+        return f"{label} {limit:,} → 체결 {fill.date:%m-%d} (+{fill.days_after_signal}일){gap}"
+    if plan.still_open:
+        return f"{label} {limit:,} → 대기 중 (현재가 {plan.last_close:,}, {_pct(limit, plan.last_close)})"
+    return f"{label} {limit:,} → 미체결 (유효기간 종료)"
+
+
+def describe_entry(plan: EntryPlan) -> list[str]:
+    lines = [
+        "매수 타이밍",
+        "  " + _fill_text("1차(2번째 장대양봉 몸통 중간)", plan.first_price, plan.first_fill, plan),
+        "  " + _fill_text("2차(첫 장대양봉 종가)", plan.second_price, plan.second_fill, plan),
+    ]
+    if plan.avg_cost:
+        lines.append(f"  평균단가 {plan.avg_cost:,.0f} → 현재 {plan.last_close:,} ({plan.return_pct:+.1%})")
+    return lines
+
+
 def describe_signal(signal: SixtyFiveSignal, rows: list[dict[str, Any]], name: Optional[str], signal_count: int, latest_date) -> str:
     idx = next(i for i, r in enumerate(rows) if r["date"] == signal.signal_date)
     sig_close = rows[idx]["close"]
@@ -71,6 +92,7 @@ def describe_signal(signal: SixtyFiveSignal, rows: list[dict[str, Any]], name: O
     ]
     for c in signal.candles:
         lines.append(f"  · {c.date:%m-%d} 고가 {c.high:,} (+{c.rise:.1%}) 대금 {c.trade_value / 1e8:,.0f}억")
+    lines += describe_entry(plan_entries(signal, rows))
 
     if after:
         hi = max(after, key=lambda r: r["high"])
