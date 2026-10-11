@@ -2,7 +2,8 @@
 
 조건
 1) 연속 N개(기본 6) 일봉 창 안에서
-2) 고가 기준 상승률이 15% 이상인 캔들(= 장대양봉)들의 상승률을 '각각' 더한 값이 65% 이상
+2) 고가 기준 상승률이 15% 이상인 양봉(종가 > 시가, = 장대양봉)들의 상승률을 '각각' 더한 값이 65% 이상
+   (장중에 15% 넘게 올랐어도 시가 아래로 마감한 음봉은 장대양봉이 아님)
    (창 전체의 누적 상승폭이 아니라 개별 장대양봉 상승률의 합)
 3) 합산에 포함되는 장대양봉은 거래대금이 1,000억 이상이어야 함
 
@@ -13,6 +14,7 @@
 추가 필터 (조건검색식: [일]5봉전(중) 종가대비 0봉전 고가등락률 33% 이상)
 4) 신호일 고가 ÷ 5거래일 전 종가 − 1 ≥ 33%
 5) 신호일 시가총액 5,000억 이상
+6) (선택) 급등 기간 N거래일 이내: 1차 장대양봉 ~ 신호일 (max_rally_days, 기본 꺼짐)
 
 시가총액 = 해당일 market_cap(KRX 수집분) 또는 종가 × 현재 상장주식수(근사).
 
@@ -30,6 +32,7 @@ class SixtyFiveConfig:
     min_candle_rise: float = 0.15       # 장대양봉 기준(고가 기준 상승률)
     target_sum: float = 0.65            # 장대양봉 상승률 합계 기준
     min_trade_value: int = 100_000_000_000  # 1,000억
+    require_bullish: bool = True        # 장대양봉은 양봉(종가 > 시가)만 인정
     rise_base: str = "prev_close"       # 'prev_close': 고가/전일종가, 'open': 고가/당일시가
     large_cap_threshold: int = 10_000_000_000_000  # 10조
     large_cap_min_candle_rise: float = 0.13         # 대형주 장대양봉 기준
@@ -38,6 +41,7 @@ class SixtyFiveConfig:
     lookback_bars: int = 5                           # 5봉전 종가 기준
     min_rise_from_lookback: Optional[float] = 0.33   # 0봉전 고가 등락률 33%. None이면 끔
     min_market_cap: int = 500_000_000_000            # 신호일 시가총액 5,000억. 0이면 끔
+    max_rally_days: Optional[int] = None             # 1차 장대양봉 ~ 신호일 거래일 수 상한 (3분할·5일 매매에서 4가 유효). None이면 끔
 
 
 EPSILON = 1e-9  # 11300/10000-1 = 0.12999… 같은 부동소수점 오차로 경계값이 탈락하지 않게
@@ -106,9 +110,14 @@ class WindowScore:
     rule: Optional[Rule] = None
 
 
-def filter_reason(rows_asc: list[dict[str, Any]], end: int, config: SixtyFiveConfig, market_cap: Optional[int] = None) -> Optional[str]:
+def filter_reason(
+    rows_asc: list[dict[str, Any]], end: int, config: SixtyFiveConfig,
+    market_cap: Optional[int] = None, rally_days: Optional[int] = None,
+) -> Optional[str]:
     if config.min_market_cap and (market_cap is None or market_cap < config.min_market_cap):
         return "시총 미달"
+    if config.max_rally_days is not None and rally_days is not None and rally_days > config.max_rally_days:
+        return f"급등 기간 {rally_days}일"
     if config.min_rise_from_lookback is None:
         return None
     base_idx = end - config.lookback_bars
@@ -157,6 +166,8 @@ def scan_sixty_five(
             rise = rises[i]
             if rise is None or not _gte(rise, rule.min_candle_rise):
                 continue
+            if config.require_bullish and not rows_asc[i]["close"] > rows_asc[i]["open"]:
+                continue
             value = rows_asc[i].get("value") or 0
             if value < config.min_trade_value:
                 excluded_by_value += 1
@@ -167,7 +178,8 @@ def scan_sixty_five(
         # 신호는 장대양봉이 나온 당일에만 발생 (합계가 기준을 넘기는 순간)
         triggered_today = bool(candles) and candles[-1].date == rows_asc[end]["date"]
         passed_sum = triggered_today and len(candles) >= rule.min_candles and _gte(rise_sum, target) and end - last_signal_idx >= config.window
-        rejected = filter_reason(rows_asc, end, config, market_cap) if passed_sum else None
+        rally_days = end - next(k for k in range(start, end + 1) if rows_asc[k]["date"] == candles[0].date) + 1 if candles else None
+        rejected = filter_reason(rows_asc, end, config, market_cap, rally_days) if passed_sum else None
 
         if candles or excluded_by_value:
             scores.append(WindowScore(

@@ -2,7 +2,7 @@
 
     python -m kiwoom_trading.analysis.optimize_sixty_five_candles
 
-- 매수가: 1·2·3차 장대양봉의 시가 / 몸통 중간 / 종가 (지정가, 신호 후 20거래일 유효)
+- 매수가: 1·2·3차 장대양봉의 시가 / 몸통 중간 / 종가 (지정가, 신호 다음 거래일부터 DEFAULT_ENTRY_VALID_DAYS 거래일 유효)
 - 손절가: 1·2·3차 장대양봉의 시가 / 몸통 중간 / 종가 중 매수 위치보다 아래인 것
 - 손절 판정: 장중(저가 ≤ 손절가) / 종가(종가 ≤ 손절가)
 - 익절: 매수가 대비 +N% (체결 다음 날부터), 최대 보유 N거래일째 종가 청산
@@ -20,6 +20,7 @@ import duckdb
 if __package__ is None or __package__ == "":
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
+from kiwoom_trading.analysis.indicators.sixty_five_entry import DEFAULT_ENTRY_VALID_DAYS
 from kiwoom_trading.analysis.indicators.sixty_five_strategy import SixtyFiveConfig
 from kiwoom_trading.analysis.optimize_sixty_five import SignalCtx, build_contexts, find_fills
 from kiwoom_trading.analysis.sixty_five_report import scan_all
@@ -31,7 +32,7 @@ CANDLES = [0, 1, 2]                        # 1차 / 2차 / 3차 장대양봉
 TAKE_PROFITS = [0.03, 0.05, 0.07, 0.10, 0.15, 0.20]
 STOP_MODES = ["장중", "종가"]
 MAX_HOLDS = [5, 10]
-VALID_DAYS = 20
+VALID_DAYS = DEFAULT_ENTRY_VALID_DAYS
 
 
 def label(candle: int, point: str) -> str:

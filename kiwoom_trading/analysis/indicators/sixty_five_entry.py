@@ -12,7 +12,7 @@ from typing import Any, Optional
 from kiwoom_trading.analysis.indicators.sixty_five_strategy import SixtyFiveSignal
 
 
-DEFAULT_ENTRY_VALID_DAYS = 20
+DEFAULT_ENTRY_VALID_DAYS = 20  # 신호 다음 거래일부터 20거래일 안에 내려와야 매수 (5일은 백테스트상 우위 없음)
 
 
 @dataclass
