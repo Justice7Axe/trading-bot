@@ -12,6 +12,7 @@
 
 추가 필터 (조건검색식: [일]5봉전(중) 종가대비 0봉전 고가등락률 33% 이상)
 4) 신호일 고가 ÷ 5거래일 전 종가 − 1 ≥ 33%
+5) 신호일 시가총액 5,000억 이상
 
 시가총액 = 해당일 market_cap(KRX 수집분) 또는 종가 × 현재 상장주식수(근사).
 
@@ -36,6 +37,7 @@ class SixtyFiveConfig:
     large_cap_target_sum: float = 0.50              # 대형주 합계 기준
     lookback_bars: int = 5                           # 5봉전 종가 기준
     min_rise_from_lookback: Optional[float] = 0.33   # 0봉전 고가 등락률 33%. None이면 끔
+    min_market_cap: int = 500_000_000_000            # 신호일 시가총액 5,000억. 0이면 끔
 
 
 EPSILON = 1e-9  # 11300/10000-1 = 0.12999… 같은 부동소수점 오차로 경계값이 탈락하지 않게
@@ -104,7 +106,9 @@ class WindowScore:
     rule: Optional[Rule] = None
 
 
-def filter_reason(rows_asc: list[dict[str, Any]], end: int, config: SixtyFiveConfig) -> Optional[str]:
+def filter_reason(rows_asc: list[dict[str, Any]], end: int, config: SixtyFiveConfig, market_cap: Optional[int] = None) -> Optional[str]:
+    if config.min_market_cap and (market_cap is None or market_cap < config.min_market_cap):
+        return "시총 미달"
     if config.min_rise_from_lookback is None:
         return None
     base_idx = end - config.lookback_bars
@@ -163,7 +167,7 @@ def scan_sixty_five(
         # 신호는 장대양봉이 나온 당일에만 발생 (합계가 기준을 넘기는 순간)
         triggered_today = bool(candles) and candles[-1].date == rows_asc[end]["date"]
         passed_sum = triggered_today and len(candles) >= rule.min_candles and _gte(rise_sum, target) and end - last_signal_idx >= config.window
-        rejected = filter_reason(rows_asc, end, config) if passed_sum else None
+        rejected = filter_reason(rows_asc, end, config, market_cap) if passed_sum else None
 
         if candles or excluded_by_value:
             scores.append(WindowScore(

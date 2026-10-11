@@ -14,21 +14,21 @@ import duckdb
 if __package__ is None or __package__ == "":
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from kiwoom_trading.analysis.indicators.sixty_five_exit import ExitRule, Trade, simulate
+from kiwoom_trading.analysis.indicators.sixty_five_exit import DEFAULT_EXIT_RULE, ExitRule, Trade, simulate
 from kiwoom_trading.analysis.indicators.sixty_five_strategy import SixtyFiveConfig
 from kiwoom_trading.analysis.sixty_five_report import scan_all
 from kiwoom_trading.common.daily_store import DailyStore
 
 
 RULES = [
-    ExitRule("20일 보유", max_hold_days=20),
-    ExitRule("60일 보유", max_hold_days=60),
-    ExitRule("손절-10/익절+15", stop_loss=-0.10, take_profit=0.15),
-    ExitRule("손절-10/익절+20", stop_loss=-0.10, take_profit=0.20),
-    ExitRule("손절-7/익절+20", stop_loss=-0.07, take_profit=0.20),
-    ExitRule("손절-15/익절+30", stop_loss=-0.15, take_profit=0.30),
-    ExitRule("첫봉저가손절/익절+20", structure_stop=True, take_profit=0.20),
-    ExitRule("손절-10/추적-15", stop_loss=-0.10, trailing_stop=0.15),
+    DEFAULT_EXIT_RULE,
+    ExitRule("익절+5%/1차시가 손절/5거래일", take_profit=0.05, structure_stop="시가", max_hold_days=5),
+    ExitRule("익절+15%/1차시가 손절/10거래일", take_profit=0.15, structure_stop="시가", max_hold_days=10),
+    ExitRule("익절+20%/1차시가 손절/10거래일", take_profit=0.20, structure_stop="시가", max_hold_days=10),
+    ExitRule("익절+25%/1차저가 손절/5거래일", take_profit=0.25, structure_stop="저가", max_hold_days=5),
+    ExitRule("익절+5%/손절-2%/5거래일", take_profit=0.05, stop_loss=-0.02, max_hold_days=5),
+    ExitRule("익절+5%/손절-10%/5거래일", take_profit=0.05, stop_loss=-0.10, max_hold_days=5),
+    ExitRule("5거래일 종가 매도", max_hold_days=5),
 ]
 
 
@@ -72,7 +72,7 @@ def main() -> None:
         print(f"\n[{args.detail}] 청산 사유: {dict(Counter(t.reason for t in detail))}")
         for t in sorted(detail, key=lambda t: t.signal_date, reverse=True)[:30]:
             name = (info.get(t.stock_code) or ("",))[0]
-            print(f"  {t.signal_date} {name} 진입 {t.entry_date} ({t.fills}회 체결) 평단 {t.avg_cost:,.0f} → "
+            print(f"  {t.signal_date} {name} 매수 {t.entry_date} {t.entry_price:,.0f} → "
                   f"{t.exit_date} {t.exit_price:,.0f} {t.ret:+.1%} [{t.reason}]")
 
 

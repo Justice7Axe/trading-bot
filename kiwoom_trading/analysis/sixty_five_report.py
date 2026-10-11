@@ -15,7 +15,8 @@ import duckdb
 if __package__ is None or __package__ == "":
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from kiwoom_trading.analysis.indicators.sixty_five_entry import EntryPlan, Fill, plan_entries
+from kiwoom_trading.analysis.indicators.sixty_five_entry import EntryPlan, plan_entries
+from kiwoom_trading.analysis.indicators.sixty_five_exit import DEFAULT_EXIT_RULE, simulate, structure_stop_price
 from kiwoom_trading.analysis.indicators.sixty_five_strategy import SixtyFiveConfig, SixtyFiveSignal, scan_sixty_five
 from kiwoom_trading.common.daily_store import DailyStore
 
@@ -59,23 +60,21 @@ def scan_all(conn: duckdb.DuckDBPyConnection, config: SixtyFiveConfig) -> tuple[
     return results, info
 
 
-def _fill_text(label: str, limit: int, fill: Optional[Fill], plan: EntryPlan) -> str:
-    if fill:
-        gap = " (갭하락 시가 체결)" if fill.price < limit else ""
-        return f"{label} {limit:,} → 체결 {fill.date:%m-%d} (+{fill.days_after_signal}일){gap}"
-    if plan.still_open:
-        return f"{label} {limit:,} → 대기 중 (현재가 {plan.last_close:,}, {_pct(limit, plan.last_close)})"
-    return f"{label} {limit:,} → 미체결 (유효기간 종료)"
-
-
-def describe_entry(plan: EntryPlan) -> list[str]:
-    lines = [
-        "매수 타이밍",
-        "  " + _fill_text("1차(2번째 장대양봉 몸통 중간)", plan.first_price, plan.first_fill, plan),
-        "  " + _fill_text("2차(첫 장대양봉 종가)", plan.second_price, plan.second_fill, plan),
-    ]
-    if plan.avg_cost:
-        lines.append(f"  평균단가 {plan.avg_cost:,.0f} → 현재 {plan.last_close:,} ({plan.return_pct:+.1%})")
+def describe_entry(plan: EntryPlan, stop_price: Optional[float]) -> list[str]:
+    limit = plan.entry_price
+    target = limit * (1 + DEFAULT_EXIT_RULE.take_profit)
+    lines = ["매매 계획"]
+    if plan.fill:
+        gap = " (갭하락 시가 체결)" if plan.fill.price < limit else ""
+        lines.append(f"  매수 {limit:,} (1차 장대양봉 종가) → 체결 {plan.fill.date:%m-%d} (+{plan.fill.days_after_signal}일){gap}")
+    elif plan.still_open:
+        lines.append(f"  매수 {limit:,} (1차 장대양봉 종가) → 대기 중 (현재가 {plan.last_close:,} 대비 {_pct(limit, plan.last_close)}, ~{plan.valid_until or '20거래일'})")
+    else:
+        lines.append(f"  매수 {limit:,} (1차 장대양봉 종가) → 미체결 (20거래일 내 미도달)")
+    stop_text = f"손절 {stop_price:,.0f} (1차 장대양봉 시가, {_pct(stop_price, limit)})" if stop_price else "손절 없음"
+    lines.append(f"  익절 {target:,.0f} (+{DEFAULT_EXIT_RULE.take_profit:.0%}) / {stop_text} / 최대 {DEFAULT_EXIT_RULE.max_hold_days}거래일")
+    if stop_price and stop_price >= limit:
+        lines.append("  ※ 손절선이 매수가 이상 → 매매 제외")
     return lines
 
 
@@ -92,7 +91,17 @@ def describe_signal(signal: SixtyFiveSignal, rows: list[dict[str, Any]], name: O
     ]
     for c in signal.candles:
         lines.append(f"  · {c.date:%m-%d} 고가 {c.high:,} (+{c.rise:.1%}) 대금 {c.trade_value / 1e8:,.0f}억")
-    lines += describe_entry(plan_entries(signal, rows))
+    lines += describe_entry(plan_entries(signal, rows), structure_stop_price(signal, rows, DEFAULT_EXIT_RULE))
+    trade = simulate(signal, rows, DEFAULT_EXIT_RULE)
+    if trade and trade.is_open:
+        lines.append(f"  매도: 보유 {trade.holding_days}/{DEFAULT_EXIT_RULE.max_hold_days}일째, 현재 {trade.ret:+.1%}")
+    elif trade:
+        verdict = "✅ 수익" if trade.ret > 0 else "❌ 손실"
+        how = {"익절": "익절", "손절": "손절"}.get(trade.reason, "종가")
+        lines.append(
+            f"  매도: {trade.exit_date:%m-%d} {how} {trade.exit_price:,.0f} (매수 후 {trade.holding_days}거래일) "
+            f"→ {trade.ret:+.1%} {verdict}"
+        )
 
     if after:
         hi = max(after, key=lambda r: r["high"])
@@ -141,6 +150,9 @@ def build_report(top_n: int = 5, config: Optional[SixtyFiveConfig] = None) -> st
         latest_by_code.setdefault(s.stock_code, (s, rows))
     top = list(latest_by_code.values())[:top_n]
     new_today = sum(1 for s, _ in latest_by_code.values() if s.signal_date == latest_date)
+    closed = [t for s, rows in results if (t := simulate(s, rows, DEFAULT_EXIT_RULE)) and not t.is_open]
+    win_rate = sum(t.ret > 0 for t in closed) / len(closed) if closed else 0
+    avg_ret = sum(t.ret for t in closed) / len(closed) if closed else 0
 
     header = [
         f"📈 65기법 리포트 ({latest_date})",
@@ -148,7 +160,11 @@ def build_report(top_n: int = 5, config: Optional[SixtyFiveConfig] = None) -> st
         f"조건: {config.window}캔들 내 고가 기준 +{config.min_candle_rise:.0%} 장대양봉(대금 ≥{config.min_trade_value / 1e8:,.0f}억) 합계 "
         f"≥{config.target_sum:.0%} (시총 {config.large_cap_threshold / 1e12:g}조↑: +{config.large_cap_min_candle_rise:.0%} "
         f"{config.large_cap_min_candles}개 이상, 합계 ≥{config.large_cap_target_sum:.0%})"
-        + (f" | {config.lookback_bars}봉전 종가 대비 고가 ≥{config.min_rise_from_lookback:.0%}" if config.min_rise_from_lookback is not None else ""),
+        + (f" | {config.lookback_bars}봉전 종가 대비 고가 ≥{config.min_rise_from_lookback:.0%}" if config.min_rise_from_lookback is not None else "")
+        + (f" | 시총 ≥{config.min_market_cap / 1e8:,.0f}억" if config.min_market_cap else ""),
+        f"매매 규칙: 신호 후 1차 장대양봉 종가 지정가 매수(20거래일 유효) → +{DEFAULT_EXIT_RULE.take_profit:.0%} 익절 / "
+        f"1차 장대양봉 {DEFAULT_EXIT_RULE.structure_stop} 장중 이탈 시 손절 / 둘 다 아니면 {DEFAULT_EXIT_RULE.max_hold_days}거래일째 종가 매도",
+        f"과거 성과: {len(closed)}건 승률 {win_rate:.0%}, 평균 {avg_ret:+.1%} (거래비용 미반영)",
         f"── 최근 신호 {len(top)}종목 ──",
     ]
     if not top:
