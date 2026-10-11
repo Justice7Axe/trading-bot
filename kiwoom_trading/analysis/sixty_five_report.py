@@ -124,7 +124,8 @@ def build_report(top_n: int = 5, config: Optional[SixtyFiveConfig] = None) -> st
         f"📈 65기법 리포트 ({latest_date})",
         f"스캔 {stock_count:,}종목 | 전체 신호 {len(results)}건 / {len(latest_by_code)}종목 | 오늘 신규 {new_today}종목",
         f"조건: {config.window}캔들 내 고가 기준 +{config.min_candle_rise:.0%} 장대양봉(대금 ≥{config.min_trade_value / 1e8:,.0f}억) 합계 "
-        f"≥{config.target_sum:.0%} (시총 {config.large_cap_threshold / 1e12:g}조↑ ≥{config.large_cap_target_sum:.0%})",
+        f"≥{config.target_sum:.0%} (시총 {config.large_cap_threshold / 1e12:g}조↑ ≥{config.large_cap_target_sum:.0%})"
+        + (f" | {config.lookback_bars}봉전 종가 대비 고가 ≥{config.min_rise_from_lookback:.0%}" if config.min_rise_from_lookback is not None else ""),
         f"── 최근 신호 {len(top)}종목 ──",
     ]
     if not top:

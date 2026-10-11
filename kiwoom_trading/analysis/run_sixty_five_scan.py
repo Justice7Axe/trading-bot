@@ -43,6 +43,7 @@ def main() -> None:
     parser.add_argument("--target", type=float, default=0.65, help="장대양봉 상승률 합계 기준 (기본 0.65)")
     parser.add_argument("--large-cap-jo", type=float, default=1.0, help="완화 기준을 적용할 시가총액(조, 기본 1)")
     parser.add_argument("--large-cap-target", type=float, default=0.50, help="대형주 합계 기준 (기본 0.50)")
+    parser.add_argument("--min-5d-rise", type=float, default=0.33, help="5봉전 종가 대비 신호일 고가 최소 등락률 (기본 0.33, 음수면 끔)")
     parser.add_argument("--min-value-eok", type=int, default=1000, help="장대양봉 최소 거래대금(억, 기본 1000)")
     parser.add_argument("--base", choices=("prev_close", "open"), default="prev_close", help="상승률 기준: 전일종가 / 당일시가")
     parser.add_argument("--top", type=int, default=5, help="조건 미달 시 보여줄 상위 창 개수")
@@ -56,6 +57,7 @@ def main() -> None:
         rise_base=args.base,
         large_cap_threshold=int(args.large_cap_jo * 1_000_000_000_000),
         large_cap_target_sum=args.large_cap_target,
+        min_rise_from_lookback=args.min_5d_rise if args.min_5d_rise >= 0 else None,
     )
 
     store = DailyStore()  # 경로/환경변수 해석만 재사용
@@ -95,6 +97,10 @@ def main() -> None:
                 )
                 for c in s.candles:
                     print(f"     - {c.date} 고가 {c.high:,} (+{c.rise:.1%}) 거래대금 {_eok(c.trade_value)}")
+
+            for w in scores:
+                if w.rejected:
+                    print(f"  ✕ {w.end_date} 합계 {w.rise_sum:.1%} 통과했지만 필터 탈락: {w.rejected} ({_cap(w.market_cap)})")
 
             if not signals:
                 # 같은 장대양봉 조합은 창이 달라도 하나로 묶는다 (가장 이른 창 기준)

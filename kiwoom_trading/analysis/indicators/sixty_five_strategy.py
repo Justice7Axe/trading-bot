@@ -7,6 +7,9 @@
    단, 신호일 시가총액이 1조원 이상이면 50% 이상도 허용
 3) 합산에 포함되는 장대양봉은 거래대금이 1,000억 이상이어야 함
 
+추가 필터 (조건검색식: [일]5봉전(중) 종가대비 0봉전 고가등락률 33% 이상)
+4) 신호일 고가 ÷ 5거래일 전 종가 − 1 ≥ 33%
+
 시가총액 = 해당일 market_cap(KRX 수집분) 또는 종가 × 현재 상장주식수(근사).
 
 신호일 = 합계가 처음 기준을 넘긴 날(창의 마지막 장대양봉). 이미 신호가 난 창과 겹치는
@@ -26,6 +29,8 @@ class SixtyFiveConfig:
     rise_base: str = "prev_close"       # 'prev_close': 고가/전일종가, 'open': 고가/당일시가
     large_cap_threshold: int = 1_000_000_000_000  # 1조
     large_cap_target_sum: float = 0.50  # 대형주 완화 기준
+    lookback_bars: int = 5                           # 5봉전 종가 기준
+    min_rise_from_lookback: Optional[float] = 0.33   # 0봉전 고가 등락률 33%. None이면 끔
 
 
 def market_cap_of(row: dict[str, Any], listed_shares: Optional[int]) -> Optional[int]:
@@ -74,6 +79,19 @@ class WindowScore:
     candle_dates: tuple[date, ...] = ()
     market_cap: Optional[int] = None
     target_sum: float = 0.65
+    rejected: Optional[str] = None      # 합계는 통과했지만 추가 필터에 걸린 사유
+
+
+def filter_reason(rows_asc: list[dict[str, Any]], end: int, config: SixtyFiveConfig) -> Optional[str]:
+    if config.min_rise_from_lookback is None:
+        return None
+    base_idx = end - config.lookback_bars
+    if base_idx < 0 or not rows_asc[base_idx].get("close"):
+        return f"{config.lookback_bars}봉전 데이터 없음"
+    rise = rows_asc[end]["high"] / rows_asc[base_idx]["close"] - 1
+    if rise < config.min_rise_from_lookback:
+        return f"{config.lookback_bars}봉전 종가 대비 고가 {rise:+.1%}"
+    return None
 
 
 def _candle_rise(row: dict[str, Any], prev_close: Optional[int], base: str) -> Optional[float]:
@@ -118,15 +136,18 @@ def scan_sixty_five(
         rise_sum = sum(c.rise for c in candles)
         market_cap = market_cap_of(rows_asc[end], listed_shares)
         target = target_for(market_cap, config)
+        # 신호는 장대양봉이 나온 당일에만 발생 (합계가 기준을 넘기는 순간)
+        triggered_today = bool(candles) and candles[-1].date == rows_asc[end]["date"]
+        passed_sum = triggered_today and rise_sum >= target and end - last_signal_idx >= config.window
+        rejected = filter_reason(rows_asc, end, config) if passed_sum else None
+
         if candles or excluded_by_value:
             scores.append(WindowScore(
                 rows_asc[end]["date"], rows_asc[start]["date"], rise_sum, len(candles), excluded_by_value,
-                tuple(c.date for c in candles), market_cap, target,
+                tuple(c.date for c in candles), market_cap, target, rejected,
             ))
 
-        # 신호는 장대양봉이 나온 당일에만 발생 (합계가 기준을 넘기는 순간)
-        triggered_today = bool(candles) and candles[-1].date == rows_asc[end]["date"]
-        if triggered_today and rise_sum >= target and end - last_signal_idx >= config.window:
+        if passed_sum and rejected is None:
             signals.append(
                 SixtyFiveSignal(
                     stock_code=stock_code,
