@@ -15,7 +15,7 @@ import duckdb
 if __package__ is None or __package__ == "":
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from kiwoom_trading.analysis.indicators.sixty_five_entry import EntryPlan, plan_entries
+from kiwoom_trading.analysis.indicators.sixty_five_entry import DEFAULT_ENTRY_VALID_DAYS, EntryPlan, plan_entries
 from kiwoom_trading.analysis.indicators.sixty_five_exit import DEFAULT_EXIT_RULE, simulate, structure_stop_price
 from kiwoom_trading.analysis.indicators.sixty_five_strategy import SixtyFiveConfig, SixtyFiveSignal, scan_sixty_five
 from kiwoom_trading.common.daily_store import DailyStore
@@ -68,14 +68,22 @@ def describe_entry(plan: EntryPlan, stop_price: Optional[float]) -> list[str]:
         gap = " (갭하락 시가 체결)" if plan.fill.price < limit else ""
         lines.append(f"  매수 {limit:,} (1차 장대양봉 종가) → 체결 {plan.fill.date:%m-%d} (+{plan.fill.days_after_signal}일){gap}")
     elif plan.still_open:
-        lines.append(f"  매수 {limit:,} (1차 장대양봉 종가) → 대기 중 (현재가 {plan.last_close:,} 대비 {_pct(limit, plan.last_close)}, ~{plan.valid_until or '20거래일'})")
+        lines.append(f"  매수 {limit:,} (1차 장대양봉 종가) → 대기 중 (현재가 {plan.last_close:,} 대비 {_pct(limit, plan.last_close)}, ~{plan.valid_until or f'{DEFAULT_ENTRY_VALID_DAYS}거래일'})")
     else:
-        lines.append(f"  매수 {limit:,} (1차 장대양봉 종가) → 미체결 (20거래일 내 미도달)")
+        lines.append(f"  매수 {limit:,} (1차 장대양봉 종가) → 미체결 ({DEFAULT_ENTRY_VALID_DAYS}거래일 내 미도달)")
     stop_text = f"손절 {stop_price:,.0f} (1차 장대양봉 시가, {_pct(stop_price, limit)})" if stop_price else "손절 없음"
     lines.append(f"  익절 {target:,.0f} (+{DEFAULT_EXIT_RULE.take_profit:.0%}) / {stop_text} / 최대 {DEFAULT_EXIT_RULE.max_hold_days}거래일")
     if stop_price and stop_price >= limit:
         lines.append("  ※ 손절선이 매수가 이상 → 매매 제외")
     return lines
+
+
+STAR_TURNOVER = 0.30  # 신호일 거래대금 / 시가총액 — 백테스트상 5거래일 성과가 좋았던 구간
+
+
+def turnover_of(signal: SixtyFiveSignal, rows: list[dict[str, Any]]) -> Optional[float]:
+    row = next(r for r in rows if r["date"] == signal.signal_date)
+    return row["value"] / signal.market_cap if signal.market_cap and row.get("value") else None
 
 
 def describe_signal(signal: SixtyFiveSignal, rows: list[dict[str, Any]], name: Optional[str], signal_count: int, latest_date) -> str:
@@ -84,10 +92,13 @@ def describe_signal(signal: SixtyFiveSignal, rows: list[dict[str, Any]], name: O
     after = rows[idx + 1:]
     last = rows[-1]
     is_new = signal.signal_date == latest_date
+    turnover = turnover_of(signal, rows)
+    star = turnover is not None and turnover >= STAR_TURNOVER
 
     lines = [
-        f"{'🆕 ' if is_new else ''}{name or ''} ({signal.stock_code})",
-        f"신호일 {signal.signal_date} | 합계 {signal.rise_sum:.1%} ≥ 기준 {signal.target_sum:.0%} | {_cap(signal.market_cap)}",
+        f"{'🆕 ' if is_new else ''}{'⭐ ' if star else ''}{name or ''} ({signal.stock_code})",
+        f"신호일 {signal.signal_date} | 합계 {signal.rise_sum:.1%} ≥ 기준 {signal.target_sum:.0%} | {_cap(signal.market_cap)}"
+        + (f" | 회전율 {turnover:.0%}" if turnover is not None else ""),
     ]
     for c in signal.candles:
         lines.append(f"  · {c.date:%m-%d} 고가 {c.high:,} (+{c.rise:.1%}) 대금 {c.trade_value / 1e8:,.0f}억")
@@ -161,8 +172,10 @@ def build_report(top_n: int = 5, config: Optional[SixtyFiveConfig] = None) -> st
         f"≥{config.target_sum:.0%} (시총 {config.large_cap_threshold / 1e12:g}조↑: +{config.large_cap_min_candle_rise:.0%} "
         f"{config.large_cap_min_candles}개 이상, 합계 ≥{config.large_cap_target_sum:.0%})"
         + (f" | {config.lookback_bars}봉전 종가 대비 고가 ≥{config.min_rise_from_lookback:.0%}" if config.min_rise_from_lookback is not None else "")
-        + (f" | 시총 ≥{config.min_market_cap / 1e8:,.0f}억" if config.min_market_cap else ""),
-        f"매매 규칙: 신호 후 1차 장대양봉 종가 지정가 매수(20거래일 유효) → +{DEFAULT_EXIT_RULE.take_profit:.0%} 익절 / "
+        + (f" | 시총 ≥{config.min_market_cap / 1e8:,.0f}억" if config.min_market_cap else "")
+        + (f" | 급등 {config.max_rally_days}거래일 이내" if config.max_rally_days else ""),
+        f"⭐ = 신호일 회전율(거래대금÷시총) {STAR_TURNOVER:.0%} 이상 (우선 관심)",
+        f"매매 규칙: 신호 후 1차 장대양봉 종가 지정가 매수(신호 다음 거래일부터 {DEFAULT_ENTRY_VALID_DAYS}거래일 유효) → +{DEFAULT_EXIT_RULE.take_profit:.0%} 익절 / "
         f"1차 장대양봉 {DEFAULT_EXIT_RULE.structure_stop} 장중 이탈 시 손절 / 둘 다 아니면 {DEFAULT_EXIT_RULE.max_hold_days}거래일째 종가 매도",
         f"과거 성과: {len(closed)}건 승률 {win_rate:.0%}, 평균 {avg_ret:+.1%} (거래비용 미반영)",
         f"── 최근 신호 {len(top)}종목 ──",

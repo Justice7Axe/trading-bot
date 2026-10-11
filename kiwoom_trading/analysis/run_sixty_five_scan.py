@@ -45,6 +45,7 @@ def main() -> None:
     parser.add_argument("--large-cap-rise", type=float, default=0.13, help="대형주 장대양봉 기준 (기본 0.13)")
     parser.add_argument("--large-cap-count", type=int, default=3, help="대형주 최소 장대양봉 개수 (기본 3)")
     parser.add_argument("--large-cap-target", type=float, default=0.50, help="대형주 합계 기준 (기본 0.50)")
+    parser.add_argument("--max-rally-days", type=int, default=0, help="1차 장대양봉~신호일 최대 거래일 수 (기본 0=끔)")
     parser.add_argument("--min-cap-eok", type=int, default=5000, help="신호일 최소 시가총액(억, 기본 5000, 0이면 끔)")
     parser.add_argument("--min-5d-rise", type=float, default=0.33, help="5봉전 종가 대비 신호일 고가 최소 등락률 (기본 0.33, 음수면 끔)")
     parser.add_argument("--min-value-eok", type=int, default=1000, help="장대양봉 최소 거래대금(억, 기본 1000)")
@@ -64,6 +65,7 @@ def main() -> None:
         large_cap_target_sum=args.large_cap_target,
         min_rise_from_lookback=args.min_5d_rise if args.min_5d_rise >= 0 else None,
         min_market_cap=args.min_cap_eok * 100_000_000,
+        max_rally_days=args.max_rally_days or None,
     )
 
     store = DailyStore()  # 경로/환경변수 해석만 재사용
