@@ -41,8 +41,11 @@ def main() -> None:
     parser.add_argument("--window", type=int, default=6, help="캔들 창 크기 (기본 6)")
     parser.add_argument("--min-rise", type=float, default=0.15, help="장대양봉 기준 상승률 (기본 0.15)")
     parser.add_argument("--target", type=float, default=0.65, help="장대양봉 상승률 합계 기준 (기본 0.65)")
-    parser.add_argument("--large-cap-jo", type=float, default=1.0, help="완화 기준을 적용할 시가총액(조, 기본 1)")
+    parser.add_argument("--large-cap-jo", type=float, default=10.0, help="대형주 기준을 적용할 시가총액(조, 기본 10)")
+    parser.add_argument("--large-cap-rise", type=float, default=0.13, help="대형주 장대양봉 기준 (기본 0.13)")
+    parser.add_argument("--large-cap-count", type=int, default=3, help="대형주 최소 장대양봉 개수 (기본 3)")
     parser.add_argument("--large-cap-target", type=float, default=0.50, help="대형주 합계 기준 (기본 0.50)")
+    parser.add_argument("--min-5d-rise", type=float, default=0.33, help="5봉전 종가 대비 신호일 고가 최소 등락률 (기본 0.33, 음수면 끔)")
     parser.add_argument("--min-value-eok", type=int, default=1000, help="장대양봉 최소 거래대금(억, 기본 1000)")
     parser.add_argument("--base", choices=("prev_close", "open"), default="prev_close", help="상승률 기준: 전일종가 / 당일시가")
     parser.add_argument("--top", type=int, default=5, help="조건 미달 시 보여줄 상위 창 개수")
@@ -55,7 +58,10 @@ def main() -> None:
         min_trade_value=args.min_value_eok * 100_000_000,
         rise_base=args.base,
         large_cap_threshold=int(args.large_cap_jo * 1_000_000_000_000),
+        large_cap_min_candle_rise=args.large_cap_rise,
+        large_cap_min_candles=args.large_cap_count,
         large_cap_target_sum=args.large_cap_target,
+        min_rise_from_lookback=args.min_5d_rise if args.min_5d_rise >= 0 else None,
     )
 
     store = DailyStore()  # 경로/환경변수 해석만 재사용
@@ -71,7 +77,8 @@ def main() -> None:
         print(
             f"=== 65기법 스캔: {len(codes)}종목 | 창 {config.window}캔들, 장대양봉 ≥{config.min_candle_rise:.0%} "
             f"(고가/{'전일종가' if config.rise_base == 'prev_close' else '시가'}), 합계 ≥{config.target_sum:.0%} "
-            f"(시총 {config.large_cap_threshold / 1e12:g}조 이상 ≥{config.large_cap_target_sum:.0%}), "
+            f"(시총 {config.large_cap_threshold / 1e12:g}조 이상: +{config.large_cap_min_candle_rise:.0%} 장대양봉 "
+            f"{config.large_cap_min_candles}개 이상, 합계 ≥{config.large_cap_target_sum:.0%}), "
             f"거래대금 ≥{_eok(config.min_trade_value)} ==="
         )
         total_signals = 0
@@ -95,6 +102,10 @@ def main() -> None:
                 )
                 for c in s.candles:
                     print(f"     - {c.date} 고가 {c.high:,} (+{c.rise:.1%}) 거래대금 {_eok(c.trade_value)}")
+
+            for w in scores:
+                if w.rejected:
+                    print(f"  ✕ {w.end_date} 합계 {w.rise_sum:.1%} 통과했지만 필터 탈락: {w.rejected} ({_cap(w.market_cap)})")
 
             if not signals:
                 # 같은 장대양봉 조합은 창이 달라도 하나로 묶는다 (가장 이른 창 기준)

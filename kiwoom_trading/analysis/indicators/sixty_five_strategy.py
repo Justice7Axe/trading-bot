@@ -4,8 +4,14 @@
 1) 연속 N개(기본 6) 일봉 창 안에서
 2) 고가 기준 상승률이 15% 이상인 캔들(= 장대양봉)들의 상승률을 '각각' 더한 값이 65% 이상
    (창 전체의 누적 상승폭이 아니라 개별 장대양봉 상승률의 합)
-   단, 신호일 시가총액이 1조원 이상이면 50% 이상도 허용
 3) 합산에 포함되는 장대양봉은 거래대금이 1,000억 이상이어야 함
+
+대형주(신호일 시가총액 10조 이상)는 2)를 아래로 대체
+   - 장대양봉 기준 13% 이상, 3개 이상
+   - 장대양봉 상승률 합계 50% 이상
+
+추가 필터 (조건검색식: [일]5봉전(중) 종가대비 0봉전 고가등락률 33% 이상)
+4) 신호일 고가 ÷ 5거래일 전 종가 − 1 ≥ 33%
 
 시가총액 = 해당일 market_cap(KRX 수집분) 또는 종가 × 현재 상장주식수(근사).
 
@@ -24,8 +30,19 @@ class SixtyFiveConfig:
     target_sum: float = 0.65            # 장대양봉 상승률 합계 기준
     min_trade_value: int = 100_000_000_000  # 1,000억
     rise_base: str = "prev_close"       # 'prev_close': 고가/전일종가, 'open': 고가/당일시가
-    large_cap_threshold: int = 1_000_000_000_000  # 1조
-    large_cap_target_sum: float = 0.50  # 대형주 완화 기준
+    large_cap_threshold: int = 10_000_000_000_000  # 10조
+    large_cap_min_candle_rise: float = 0.13         # 대형주 장대양봉 기준
+    large_cap_min_candles: int = 3                  # 대형주 최소 장대양봉 개수
+    large_cap_target_sum: float = 0.50              # 대형주 합계 기준
+    lookback_bars: int = 5                           # 5봉전 종가 기준
+    min_rise_from_lookback: Optional[float] = 0.33   # 0봉전 고가 등락률 33%. None이면 끔
+
+
+EPSILON = 1e-9  # 11300/10000-1 = 0.12999… 같은 부동소수점 오차로 경계값이 탈락하지 않게
+
+
+def _gte(value: float, threshold: float) -> bool:
+    return value >= threshold - EPSILON
 
 
 def market_cap_of(row: dict[str, Any], listed_shares: Optional[int]) -> Optional[int]:
@@ -36,10 +53,18 @@ def market_cap_of(row: dict[str, Any], listed_shares: Optional[int]) -> Optional
     return None
 
 
-def target_for(market_cap: Optional[int], config: SixtyFiveConfig) -> float:
+@dataclass(frozen=True)
+class Rule:
+    min_candle_rise: float
+    min_candles: int
+    target_sum: float
+    large_cap: bool
+
+
+def rule_for(market_cap: Optional[int], config: SixtyFiveConfig) -> Rule:
     if market_cap is not None and market_cap >= config.large_cap_threshold:
-        return config.large_cap_target_sum
-    return config.target_sum
+        return Rule(config.large_cap_min_candle_rise, config.large_cap_min_candles, config.large_cap_target_sum, True)
+    return Rule(config.min_candle_rise, 1, config.target_sum, False)
 
 
 @dataclass
@@ -61,6 +86,7 @@ class SixtyFiveSignal:
     signal_close: Optional[int] = None
     market_cap: Optional[int] = None
     target_sum: float = 0.65
+    rule: Optional[Rule] = None
 
 
 @dataclass
@@ -74,6 +100,20 @@ class WindowScore:
     candle_dates: tuple[date, ...] = ()
     market_cap: Optional[int] = None
     target_sum: float = 0.65
+    rejected: Optional[str] = None      # 합계는 통과했지만 추가 필터에 걸린 사유
+    rule: Optional[Rule] = None
+
+
+def filter_reason(rows_asc: list[dict[str, Any]], end: int, config: SixtyFiveConfig) -> Optional[str]:
+    if config.min_rise_from_lookback is None:
+        return None
+    base_idx = end - config.lookback_bars
+    if base_idx < 0 or not rows_asc[base_idx].get("close"):
+        return f"{config.lookback_bars}봉전 데이터 없음"
+    rise = rows_asc[end]["high"] / rows_asc[base_idx]["close"] - 1
+    if not _gte(rise, config.min_rise_from_lookback):
+        return f"{config.lookback_bars}봉전 종가 대비 고가 {rise:+.1%}"
+    return None
 
 
 def _candle_rise(row: dict[str, Any], prev_close: Optional[int], base: str) -> Optional[float]:
@@ -103,11 +143,15 @@ def scan_sixty_five(
 
     for end in range(len(rows_asc)):
         start = max(0, end - config.window + 1)
+        # 시가총액(신호일 기준)에 따라 장대양봉 기준/개수/합계 기준이 달라진다
+        market_cap = market_cap_of(rows_asc[end], listed_shares)
+        rule = rule_for(market_cap, config)
+        target = rule.target_sum
         candles: list[BigCandle] = []
         excluded_by_value = 0
         for i in range(start, end + 1):
             rise = rises[i]
-            if rise is None or rise < config.min_candle_rise:
+            if rise is None or not _gte(rise, rule.min_candle_rise):
                 continue
             value = rows_asc[i].get("value") or 0
             if value < config.min_trade_value:
@@ -116,17 +160,18 @@ def scan_sixty_five(
             candles.append(BigCandle(rows_asc[i]["date"], rise, rows_asc[i]["high"], rows_asc[i]["close"], value))
 
         rise_sum = sum(c.rise for c in candles)
-        market_cap = market_cap_of(rows_asc[end], listed_shares)
-        target = target_for(market_cap, config)
+        # 신호는 장대양봉이 나온 당일에만 발생 (합계가 기준을 넘기는 순간)
+        triggered_today = bool(candles) and candles[-1].date == rows_asc[end]["date"]
+        passed_sum = triggered_today and len(candles) >= rule.min_candles and _gte(rise_sum, target) and end - last_signal_idx >= config.window
+        rejected = filter_reason(rows_asc, end, config) if passed_sum else None
+
         if candles or excluded_by_value:
             scores.append(WindowScore(
                 rows_asc[end]["date"], rows_asc[start]["date"], rise_sum, len(candles), excluded_by_value,
-                tuple(c.date for c in candles), market_cap, target,
+                tuple(c.date for c in candles), market_cap, target, rejected, rule,
             ))
 
-        # 신호는 장대양봉이 나온 당일에만 발생 (합계가 기준을 넘기는 순간)
-        triggered_today = bool(candles) and candles[-1].date == rows_asc[end]["date"]
-        if triggered_today and rise_sum >= target and end - last_signal_idx >= config.window:
+        if passed_sum and rejected is None:
             signals.append(
                 SixtyFiveSignal(
                     stock_code=stock_code,
@@ -137,6 +182,7 @@ def scan_sixty_five(
                     signal_close=rows_asc[end].get("close"),
                     market_cap=market_cap,
                     target_sum=target,
+                    rule=rule,
                 )
             )
             last_signal_idx = end
