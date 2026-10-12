@@ -6,7 +6,8 @@
 - 마지막 저장일 다음 날부터 오늘까지 채운다 (PC가 꺼져 있어 며칠 밀려도 자동 보충).
 - 종목 마스터(신규 상장/상장폐지/상장주식수)도 함께 갱신된다.
 - DuckDB가 다른 프로그램(DuckDB UI, DBeaver 등)에 잠겨 있으면 5분 간격으로 재시도.
-- 완료 후 65기법 일일 리포트(오늘 포착/매수 대기/보유 중/오늘 청산)를 텔레그램으로 전송, 실패 시 실패 알림 전송.
+- 완료 후 65기법 일일 리포트(오늘 포착/매수 대기/보유 중/오늘 청산)와 주도주 스크리너 다음날 관심 종목을
+  텔레그램으로 전송, 실패 시 실패 알림 전송.
 - 로그: data/logs/daily_update_YYYYMMDD.log
 """
 import argparse
@@ -82,6 +83,12 @@ def main() -> int:
             send_telegram_message(build_report() + f"\n\n(일봉 업데이트 {elapsed:.0f}분 소요)")
         except Exception:
             logging.exception("65기법 리포트 생성/전송 실패")  # 수집은 성공했으므로 종료코드는 0
+        try:
+            from kiwoom_trading.screener.run_daily import build_daily_report
+
+            send_telegram_message(build_daily_report())
+        except Exception:
+            logging.exception("주도주 스크리너 리포트 생성/전송 실패")
     return 0
 
 
