@@ -13,6 +13,7 @@ import duckdb
 if __package__ is None or __package__ == "":
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
+from kiwoom_trading.analysis.indicators.sector_strength import compute_sector_metrics, leading_sector_reason
 from kiwoom_trading.analysis.indicators.sixty_five_strategy import SixtyFiveConfig, scan_sixty_five
 from kiwoom_trading.common.daily_store import DailyStore
 
@@ -45,6 +46,7 @@ def main() -> None:
     parser.add_argument("--large-cap-rise", type=float, default=0.13, help="대형주 장대양봉 기준 (기본 0.13)")
     parser.add_argument("--large-cap-count", type=int, default=3, help="대형주 최소 장대양봉 개수 (기본 3)")
     parser.add_argument("--large-cap-target", type=float, default=0.50, help="대형주 합계 기준 (기본 0.50)")
+    parser.add_argument("--no-sector", action="store_true", help="주도 섹터 조건 끄기")
     parser.add_argument("--max-rally-days", type=int, default=0, help="1차 장대양봉~신호일 최대 거래일 수 (기본 0=끔)")
     parser.add_argument("--min-cap-eok", type=int, default=5000, help="신호일 최소 시가총액(억, 기본 5000, 0이면 끔)")
     parser.add_argument("--min-5d-rise", type=float, default=0.33, help="5봉전 종가 대비 신호일 고가 최소 등락률 (기본 0.33, 음수면 끔)")
@@ -66,6 +68,8 @@ def main() -> None:
         min_rise_from_lookback=args.min_5d_rise if args.min_5d_rise >= 0 else None,
         min_market_cap=args.min_cap_eok * 100_000_000,
         max_rally_days=args.max_rally_days or None,
+        min_sector_value_share=None if args.no_sector else 0.05,
+        min_sector_big_ratio=None if args.no_sector else 0.10,
     )
 
     store = DailyStore()  # 경로/환경변수 해석만 재사용
@@ -93,16 +97,27 @@ def main() -> None:
                 continue
             name, listed_shares = stock_info.get(code, (None, None))
             signals, scores = scan_sixty_five(code, rows, config, listed_shares)
+            sector_metrics = compute_sector_metrics(conn, [(code, s.signal_date) for s in signals])
+            sector_rejected = []
+            for s in list(signals):
+                s.sector = sector_metrics.get((code, s.signal_date))
+                reason = leading_sector_reason(s.sector, config.min_sector_value_share, config.min_sector_big_ratio)
+                if reason:
+                    signals.remove(s)
+                    sector_rejected.append((s, reason))
             total_signals += len(signals)
             label = f"{code} {name or ''}".strip()
             if listed_shares is None and not any(r.get("market_cap") for r in rows):
                 label += " (상장주식수 없음 → 65% 기준만 적용)"
             print(f"\n[{label}] {rows[0]['date']} ~ {rows[-1]['date']} ({len(rows)}일) → 신호 {len(signals)}건")
 
+            for s, reason in sector_rejected:
+                print(f"  ✕ {s.signal_date} 합계 {s.rise_sum:.1%} 통과했지만 주도 섹터 아님: {reason}")
             for s in signals:
                 print(
                     f"  ★ 신호일 {s.signal_date} (창 {s.window_start}~) 합계 {s.rise_sum:.1%} ≥ 기준 {s.target_sum:.0%} "
                     f"| 종가 {s.signal_close:,}, {_cap(s.market_cap)}"
+                    + (f" | 업종 {s.sector.sector} 비중 {s.sector.value_share:.1%} 장대양봉 {s.sector.big_ratio:.0%}" if s.sector else "")
                 )
                 for c in s.candles:
                     print(f"     - {c.date} 고가 {c.high:,} (+{c.rise:.1%}) 거래대금 {_eok(c.trade_value)}")

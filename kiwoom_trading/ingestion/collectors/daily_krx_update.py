@@ -209,7 +209,10 @@ def main(argv: Optional[list[str]] = None) -> None:
         pending = store.refetch_codes()
         if pending and not args.no_refetch:
             logging.info("수정주가 재백필 %s종목: %s", len(pending), ",".join(pending))
-            run_backfill(pending, _parse_ymd(DEFAULT_START), True, build_client(), store)
+            # 종목별로 처음 백필했던 시작일부터 다시 받는다 (기본값 2010년으로 받으면 종목마다 이력 길이가 달라짐)
+            client = build_client()
+            for code in pending:
+                run_backfill([code], store.backfill_start(code) or _parse_ymd(DEFAULT_START), True, client, store)
         elif pending:
             logging.info("재백필 대기 %s종목 (daily_backfill --refetch-queue 로 처리)", len(pending))
     finally:

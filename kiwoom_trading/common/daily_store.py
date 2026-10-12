@@ -55,6 +55,8 @@ CREATE TABLE IF NOT EXISTS refetch_queue (
 
 -- 시가총액 계산용 상장주식수 (키움 ka10099 listCount / KRX LIST_SHRS)
 ALTER TABLE stocks ADD COLUMN IF NOT EXISTS listed_shares BIGINT;
+-- 업종명 (키움 ka10099 upName, 예: 전기/전자, 화학)
+ALTER TABLE stocks ADD COLUMN IF NOT EXISTS sector VARCHAR;
 """
 
 OHLCV_COLUMNS = ("code", "date", "open", "high", "low", "close", "volume", "value", "market_cap", "source")
@@ -81,17 +83,18 @@ class DailyStore:
             return
         self.conn.executemany(
             """
-            INSERT INTO stocks (code, name, market, list_date, listed_shares, delisted, updated_at)
-            VALUES (?, ?, ?, ?, ?, FALSE, current_timestamp)
+            INSERT INTO stocks (code, name, market, list_date, listed_shares, sector, delisted, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, FALSE, current_timestamp)
             ON CONFLICT (code) DO UPDATE SET
                 name = excluded.name,
                 market = excluded.market,
                 list_date = COALESCE(excluded.list_date, stocks.list_date),
                 listed_shares = COALESCE(excluded.listed_shares, stocks.listed_shares),
+                sector = COALESCE(excluded.sector, stocks.sector),
                 delisted = FALSE,
                 updated_at = excluded.updated_at
             """,
-            [(r["code"], r.get("name"), r.get("market"), r.get("list_date"), r.get("listed_shares")) for r in rows],
+            [(r["code"], r.get("name"), r.get("market"), r.get("list_date"), r.get("listed_shares"), r.get("sector") or None) for r in rows],
         )
 
     def mark_delisted_except(self, active_codes: set[str]) -> int:
@@ -157,6 +160,14 @@ class DailyStore:
         return {code: (d, close) for code, d, close in rows}
 
     # --- backfill_status / refetch_queue -------------------------------------
+    def backfill_start(self, code: str) -> Optional[date]:
+        """재수집 시작일: 처음 백필한 시작일, 없으면 저장된 가장 이른 날짜."""
+        row = self.conn.execute("SELECT start_date FROM backfill_status WHERE code = ?", [code]).fetchone()
+        if row and row[0]:
+            return row[0]
+        row = self.conn.execute("SELECT min(date) FROM daily_ohlcv WHERE code = ?", [code]).fetchone()
+        return row[0] if row else None
+
     def backfilled_codes(self) -> set[str]:
         return {row[0] for row in self.conn.execute("SELECT code FROM backfill_status").fetchall()}
 

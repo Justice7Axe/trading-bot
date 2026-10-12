@@ -176,6 +176,7 @@ def refresh_stock_master(client: KiwoomDailyClient, store: DailyStore, include_a
                     "market": market,
                     "list_date": _parse_ymd(reg_day) if len(reg_day) == 8 else None,
                     "listed_shares": _to_int(item.get("listCount")),
+                    "sector": str(item.get("upName") or "").strip() or None,
                 }
             )
     store.upsert_stocks(stocks)
