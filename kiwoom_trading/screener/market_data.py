@@ -98,8 +98,11 @@ class KiwoomMarket:
         return items
 
     def quote(self, code: str) -> Optional[Quote]:
-        """ka10001 주식기본정보 (당일 시가/고가/저가/현재가, 250일 최고가)."""
-        payload, _, _ = self.client._post("/api/dostk/stkinfo", "ka10001", {"stk_cd": code})
+        """ka10001 주식기본정보 (당일 시가/고가/저가/현재가, 250일 최고가).
+
+        '_AL'(KRX+NXT 통합) 시세: 08:00~09:00 NXT 프리마켓 체결까지 반영된다.
+        """
+        payload, _, _ = self.client._post("/api/dostk/stkinfo", "ka10001", {"stk_cd": f"{code}_AL"})
         price = _to_int(payload.get("cur_prc"))
         if not price:
             return None
