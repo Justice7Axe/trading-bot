@@ -1,4 +1,4 @@
-﻿# 주도주 스크리너 장중 실시간 포착을 Windows 작업 스케줄러에 등록 (평일 07:50 시작 → 08:00~15:20 스캔)
+﻿# 주도주 스크리너 장중 실시간 포착을 Windows 작업 스케줄러에 등록 (평일 07:50 시작 → 08:00~20:00 스캔, NXT 프리·애프터마켓 포함)
 #   등록:  powershell -ExecutionPolicy Bypass -File scripts\register_screener_task.ps1
 #   해제:  Unregister-ScheduledTask -TaskName "EllieTrading_ScreenerIntraday" -Confirm:$false
 #   수동 실행: Start-ScheduledTask -TaskName "EllieTrading_ScreenerIntraday"
@@ -21,12 +21,12 @@ $action = New-ScheduledTaskAction `
 
 $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday, Tuesday, Wednesday, Thursday, Friday -At $Time
 
-# StartWhenAvailable: 07:50에 PC가 꺼져 있었으면 켜지는 즉시 시작 (15:20 이후면 스스로 종료)
+# StartWhenAvailable: 07:50에 PC가 꺼져 있었으면 켜지는 즉시 시작 (20:00 이후면 스스로 종료)
 $settings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `
     -DontStopIfGoingOnBatteries `
     -AllowStartIfOnBatteries `
-    -ExecutionTimeLimit (New-TimeSpan -Hours 7) `
+    -ExecutionTimeLimit (New-TimeSpan -Hours 13) `
     -MultipleInstances IgnoreNew
 
 Register-ScheduledTask `
