@@ -1,6 +1,6 @@
 """주도주 스크리너 — 장중 실시간 포착 (1분마다).
 
-    .venv\\Scripts\\python.exe -m kiwoom_trading.screener.run_intraday              # 09:00~15:20 반복
+    .venv\\Scripts\\python.exe -m kiwoom_trading.screener.run_intraday              # 08:00~15:20 반복 (NXT 프리마켓 포함)
     .venv\\Scripts\\python.exe -m kiwoom_trading.screener.run_intraday --once --force --no-telegram   # 1회 점검
 
 - 매 주기: 실시간 조회 순위(1분, 당일 누적) + 거래대금 상위 100 → 후보 → 조건 판정
@@ -28,9 +28,9 @@ from kiwoom_trading.screener.market_data import KiwoomMarket
 from kiwoom_trading.screener.store import ScreenerStore
 
 
-MARKET_OPEN = dtime(9, 0)
+MARKET_OPEN = dtime(8, 0)          # NXT 프리마켓 시작 (KRX 정규장 09:00)
 MARKET_SCAN_END = dtime(15, 20)
-HOLIDAY_CHECK_AFTER = dtime(9, 10)
+HOLIDAY_CHECK_AFTER = dtime(8, 10)
 
 
 def _setup_logging(now: datetime) -> None:
