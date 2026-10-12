@@ -15,6 +15,8 @@
 4) 신호일 고가 ÷ 5거래일 전 종가 − 1 ≥ 33%
 5) 신호일 시가총액 5,000억 이상
 6) (선택) 급등 기간 N거래일 이내: 1차 장대양봉 ~ 신호일 (max_rally_days, 기본 꺼짐)
+7) 주도 섹터: 신호일 기준 업종 거래대금 비중(5일) 5% 이상 + 업종 내 장대양봉 비율(10일) 10% 이상
+   (여러 종목에 걸친 지표라 종목별 scan_sixty_five 가 아니라 sixty_five_report.scan_all 에서 적용)
 
 시가총액 = 해당일 market_cap(KRX 수집분) 또는 종가 × 현재 상장주식수(근사).
 
@@ -41,6 +43,8 @@ class SixtyFiveConfig:
     lookback_bars: int = 5                           # 5봉전 종가 기준
     min_rise_from_lookback: Optional[float] = 0.33   # 0봉전 고가 등락률 33%. None이면 끔
     min_market_cap: int = 500_000_000_000            # 신호일 시가총액 5,000억. 0이면 끔
+    min_sector_value_share: Optional[float] = 0.05   # 주도 섹터: 업종 거래대금 비중. None이면 끔
+    min_sector_big_ratio: Optional[float] = 0.10     # 주도 섹터: 업종 내 장대양봉 비율. None이면 끔
     max_rally_days: Optional[int] = None             # 1차 장대양봉 ~ 신호일 거래일 수 상한 (3분할·5일 매매에서 4가 유효). None이면 끔
 
 
@@ -93,6 +97,7 @@ class SixtyFiveSignal:
     market_cap: Optional[int] = None
     target_sum: float = 0.65
     rule: Optional[Rule] = None
+    sector: Any = None                  # sector_strength.SectorMetrics (scan_all 에서 채움)
 
 
 @dataclass

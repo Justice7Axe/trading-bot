@@ -1,8 +1,8 @@
-"""65기법 리포트: 전 종목 스캔 → 가장 최근 신호 N종목 요약 (텔레그램 전송용 텍스트).
+"""65기법 리포트: 전 종목 스캔 → 오늘 기준 일일 리포트(텔레그램 전송용) / 과거 신호 이력.
 
-    python -m kiwoom_trading.analysis.sixty_five_report            # 콘솔 출력
-    python -m kiwoom_trading.analysis.sixty_five_report --send     # 텔레그램 전송
-    python -m kiwoom_trading.analysis.sixty_five_report --top 10
+    python -m kiwoom_trading.analysis.sixty_five_report                     # 일일 리포트 (오늘 포착/매수 대기/보유 중)
+    python -m kiwoom_trading.analysis.sixty_five_report --send              # 텔레그램 전송
+    python -m kiwoom_trading.analysis.sixty_five_report --history --top 10  # 과거 신호 이력
 """
 import argparse
 import os
@@ -17,6 +17,7 @@ if __package__ is None or __package__ == "":
 
 from kiwoom_trading.analysis.indicators.sixty_five_entry import DEFAULT_ENTRY_VALID_DAYS, EntryPlan, plan_entries
 from kiwoom_trading.analysis.indicators.sixty_five_exit import DEFAULT_EXIT_RULE, simulate, structure_stop_price
+from kiwoom_trading.analysis.indicators.sector_strength import compute_sector_metrics, leading_sector_reason
 from kiwoom_trading.analysis.indicators.sixty_five_strategy import SixtyFiveConfig, SixtyFiveSignal, scan_sixty_five
 from kiwoom_trading.common.daily_store import DailyStore
 
@@ -57,7 +58,18 @@ def scan_all(conn: duckdb.DuckDBPyConnection, config: SixtyFiveConfig) -> tuple[
     for code, rows in load_all(conn).items():
         signals, _ = scan_sixty_five(code, rows, config, (info.get(code) or (None, None))[1])
         results.extend((s, rows) for s in signals)
-    return results, info
+    return apply_sector_filter(conn, results, config), info
+
+
+def apply_sector_filter(conn: duckdb.DuckDBPyConnection, results: list, config: SixtyFiveConfig) -> list:
+    """신호에 업종 지표를 붙이고, 주도 섹터 조건을 통과한 신호만 남긴다."""
+    metrics = compute_sector_metrics(conn, [(s.stock_code, s.signal_date) for s, _ in results])
+    kept = []
+    for s, rows in results:
+        s.sector = metrics.get((s.stock_code, s.signal_date))
+        if leading_sector_reason(s.sector, config.min_sector_value_share, config.min_sector_big_ratio) is None:
+            kept.append((s, rows))
+    return kept
 
 
 def describe_entry(plan: EntryPlan, stop_price: Optional[float]) -> list[str]:
@@ -99,6 +111,8 @@ def describe_signal(signal: SixtyFiveSignal, rows: list[dict[str, Any]], name: O
         f"{'🆕 ' if is_new else ''}{'⭐ ' if star else ''}{name or ''} ({signal.stock_code})",
         f"신호일 {signal.signal_date} | 합계 {signal.rise_sum:.1%} ≥ 기준 {signal.target_sum:.0%} | {_cap(signal.market_cap)}"
         + (f" | 회전율 {turnover:.0%}" if turnover is not None else ""),
+        (f"업종 {signal.sector.sector}: 거래대금 비중 {signal.sector.value_share:.1%} / 장대양봉 비율 {signal.sector.big_ratio:.0%}"
+         if signal.sector else "업종 정보 없음"),
     ]
     for c in signal.candles:
         lines.append(f"  · {c.date:%m-%d} 고가 {c.high:,} (+{c.rise:.1%}) 대금 {c.trade_value / 1e8:,.0f}억")
@@ -139,12 +153,26 @@ def describe_signal(signal: SixtyFiveSignal, rows: list[dict[str, Any]], name: O
     return "\n".join(lines)
 
 
-def build_report(top_n: int = 5, config: Optional[SixtyFiveConfig] = None) -> str:
-    config = config or SixtyFiveConfig()
+def _conditions_text(config: SixtyFiveConfig) -> list[str]:
+    return [
+        f"조건: {config.window}캔들 내 고가 기준 +{config.min_candle_rise:.0%} 장대양봉(대금 ≥{config.min_trade_value / 1e8:,.0f}억) 합계 "
+        f"≥{config.target_sum:.0%} (시총 {config.large_cap_threshold / 1e12:g}조↑: +{config.large_cap_min_candle_rise:.0%} "
+        f"{config.large_cap_min_candles}개 이상, 합계 ≥{config.large_cap_target_sum:.0%})"
+        + (f" | {config.lookback_bars}봉전 종가 대비 고가 ≥{config.min_rise_from_lookback:.0%}" if config.min_rise_from_lookback is not None else "")
+        + (f" | 시총 ≥{config.min_market_cap / 1e8:,.0f}억" if config.min_market_cap else "")
+        + (f" | 급등 {config.max_rally_days}거래일 이내" if config.max_rally_days else "")
+        + (f" | 주도 업종(거래대금 비중 ≥{config.min_sector_value_share:.0%}, 장대양봉 비율 ≥{config.min_sector_big_ratio:.0%})"
+           if config.min_sector_value_share is not None or config.min_sector_big_ratio is not None else ""),
+        f"매매: 1차 장대양봉 종가 지정가(신호 다음 거래일부터 {DEFAULT_ENTRY_VALID_DAYS}거래일) → +{DEFAULT_EXIT_RULE.take_profit:.0%} 익절 / "
+        f"1차 장대양봉 {DEFAULT_EXIT_RULE.structure_stop} 이탈 손절 / 최대 {DEFAULT_EXIT_RULE.max_hold_days}거래일",
+        f"⭐ = 신호일 회전율(거래대금÷시총) {STAR_TURNOVER:.0%} 이상",
+    ]
+
+
+def _load(config: SixtyFiveConfig):
     store = DailyStore()  # 경로/환경변수 해석만 재사용
     db_path = store.db_path
     store.close()
-
     conn = duckdb.connect(db_path, read_only=True)
     try:
         latest_date = conn.execute("SELECT max(date) FROM daily_ohlcv").fetchone()[0]
@@ -152,7 +180,81 @@ def build_report(top_n: int = 5, config: Optional[SixtyFiveConfig] = None) -> st
         results, info = scan_all(conn, config)
     finally:
         conn.close()
+    return latest_date, stock_count, results, info
 
+
+def _star(signal: SixtyFiveSignal, rows: list[dict[str, Any]]) -> str:
+    turnover = turnover_of(signal, rows)
+    return "⭐" if turnover is not None and turnover >= STAR_TURNOVER else ""
+
+
+def build_report(config: Optional[SixtyFiveConfig] = None) -> str:
+    """일일 리포트: 오늘 포착 / 매수 대기 중 / 보유 중 / 오늘 청산."""
+    config = config or SixtyFiveConfig()
+    latest_date, stock_count, results, info = _load(config)
+
+    def name_of(code: str) -> str:
+        return (info.get(code) or (None, None))[0] or code
+
+    today, pending, holding, closed_today = [], [], [], []
+    for s, rows in results:
+        if s.signal_date == latest_date:
+            today.append((s, rows))
+            continue
+        plan = plan_entries(s, rows)
+        stop = structure_stop_price(s, rows, DEFAULT_EXIT_RULE)
+        if plan.still_open and (stop is None or stop < plan.entry_price):
+            pending.append((s, rows, plan, stop))
+            continue
+        trade = simulate(s, rows, DEFAULT_EXIT_RULE)
+        if trade and trade.is_open:
+            holding.append((s, rows, trade, stop))
+        elif trade and trade.exit_date == latest_date:
+            closed_today.append((s, rows, trade))
+
+    lines = [f"📈 65기법 일일 리포트 ({latest_date})", f"스캔 {stock_count:,}종목", *_conditions_text(config)]
+
+    lines.append(f"\n🆕 오늘 포착 {len(today)}종목")
+    if not today:
+        lines.append("  오늘 포착 종목 없음")
+    for s, rows in sorted(today, key=lambda x: x[0].stock_code):
+        lines.append(describe_signal(s, rows, name_of(s.stock_code), 1, latest_date))
+
+    lines.append(f"\n⏳ 매수 대기 중 {len(pending)}종목 (지정가 유지)")
+    if not pending:
+        lines.append("  없음")
+    for s, rows, plan, stop in sorted(pending, key=lambda x: x[0].signal_date, reverse=True):
+        signal_idx = next(i for i, r in enumerate(rows) if r["date"] == s.signal_date)
+        left = DEFAULT_ENTRY_VALID_DAYS - (len(rows) - 1 - signal_idx)
+        stop_text = f"손절 {stop:,.0f}({_pct(stop, plan.entry_price)})" if stop else "손절 없음"
+        lines.append(
+            f"  {_star(s, rows)}{name_of(s.stock_code)}({s.stock_code}) 신호 {s.signal_date:%m-%d} | 매수 {plan.entry_price:,} "
+            f"(현재 {plan.last_close:,} 대비 {_pct(plan.entry_price, plan.last_close)}) | "
+            f"익절 {plan.entry_price * (1 + DEFAULT_EXIT_RULE.take_profit):,.0f} | {stop_text} | 남은 {left}거래일"
+        )
+
+    lines.append(f"\n📌 보유 중 {len(holding)}종목")
+    if not holding:
+        lines.append("  없음")
+    for s, rows, trade, stop in holding:
+        lines.append(
+            f"  {_star(s, rows)}{name_of(s.stock_code)}({s.stock_code}) 매수 {trade.entry_date:%m-%d} {trade.entry_price:,.0f} → "
+            f"현재 {trade.exit_price:,.0f} ({trade.ret:+.1%}) | 익절 {trade.entry_price * (1 + DEFAULT_EXIT_RULE.take_profit):,.0f} "
+            f"| 손절 {stop:,.0f} | 보유 {trade.holding_days}/{DEFAULT_EXIT_RULE.max_hold_days}일"
+        )
+
+    if closed_today:
+        lines.append(f"\n✅ 오늘 청산 {len(closed_today)}종목")
+        for s, rows, trade in closed_today:
+            how = {"익절": "익절", "손절": "손절"}.get(trade.reason, "5일 종가")
+            lines.append(f"  {name_of(s.stock_code)}({s.stock_code}) {how} {trade.exit_price:,.0f} → {trade.ret:+.1%}")
+    return "\n".join(lines)
+
+
+def build_history_report(top_n: int = 5, config: Optional[SixtyFiveConfig] = None) -> str:
+    """과거 이력 확인용: 가장 최근 신호 N종목 상세 + 과거 성과."""
+    config = config or SixtyFiveConfig()
+    latest_date, stock_count, results, info = _load(config)
     counts: dict[str, int] = defaultdict(int)
     for s, _ in results:
         counts[s.stock_code] += 1
@@ -160,42 +262,31 @@ def build_report(top_n: int = 5, config: Optional[SixtyFiveConfig] = None) -> st
     for s, rows in sorted(results, key=lambda x: x[0].signal_date, reverse=True):
         latest_by_code.setdefault(s.stock_code, (s, rows))
     top = list(latest_by_code.values())[:top_n]
-    new_today = sum(1 for s, _ in latest_by_code.values() if s.signal_date == latest_date)
     closed = [t for s, rows in results if (t := simulate(s, rows, DEFAULT_EXIT_RULE)) and not t.is_open]
     win_rate = sum(t.ret > 0 for t in closed) / len(closed) if closed else 0
     avg_ret = sum(t.ret for t in closed) / len(closed) if closed else 0
-
     header = [
-        f"📈 65기법 리포트 ({latest_date})",
-        f"스캔 {stock_count:,}종목 | 전체 신호 {len(results)}건 / {len(latest_by_code)}종목 | 오늘 신규 {new_today}종목",
-        f"조건: {config.window}캔들 내 고가 기준 +{config.min_candle_rise:.0%} 장대양봉(대금 ≥{config.min_trade_value / 1e8:,.0f}억) 합계 "
-        f"≥{config.target_sum:.0%} (시총 {config.large_cap_threshold / 1e12:g}조↑: +{config.large_cap_min_candle_rise:.0%} "
-        f"{config.large_cap_min_candles}개 이상, 합계 ≥{config.large_cap_target_sum:.0%})"
-        + (f" | {config.lookback_bars}봉전 종가 대비 고가 ≥{config.min_rise_from_lookback:.0%}" if config.min_rise_from_lookback is not None else "")
-        + (f" | 시총 ≥{config.min_market_cap / 1e8:,.0f}억" if config.min_market_cap else "")
-        + (f" | 급등 {config.max_rally_days}거래일 이내" if config.max_rally_days else ""),
-        f"⭐ = 신호일 회전율(거래대금÷시총) {STAR_TURNOVER:.0%} 이상 (우선 관심)",
-        f"매매 규칙: 신호 후 1차 장대양봉 종가 지정가 매수(신호 다음 거래일부터 {DEFAULT_ENTRY_VALID_DAYS}거래일 유효) → +{DEFAULT_EXIT_RULE.take_profit:.0%} 익절 / "
-        f"1차 장대양봉 {DEFAULT_EXIT_RULE.structure_stop} 장중 이탈 시 손절 / 둘 다 아니면 {DEFAULT_EXIT_RULE.max_hold_days}거래일째 종가 매도",
+        f"📈 65기법 신호 이력 ({latest_date})",
+        f"스캔 {stock_count:,}종목 | 전체 신호 {len(results)}건 / {len(latest_by_code)}종목",
+        *_conditions_text(config),
         f"과거 성과: {len(closed)}건 승률 {win_rate:.0%}, 평균 {avg_ret:+.1%} (거래비용 미반영)",
         f"── 최근 신호 {len(top)}종목 ──",
     ]
-    if not top:
-        return "\n".join(header + ["해당 종목 없음"])
     body = [
         describe_signal(s, rows, (info.get(s.stock_code) or (None, None))[0], counts[s.stock_code], latest_date)
         for s, rows in top
     ]
-    return "\n".join(header) + "\n\n" + "\n\n".join(body)
+    return "\n".join(header) + "\n\n" + ("\n\n".join(body) if body else "해당 종목 없음")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="65기법 최근 신호 리포트")
-    parser.add_argument("--top", type=int, default=5)
+    parser = argparse.ArgumentParser(description="65기법 리포트 (기본: 오늘 기준 일일 리포트)")
+    parser.add_argument("--history", action="store_true", help="과거 신호 이력 리포트")
+    parser.add_argument("--top", type=int, default=5, help="--history 에서 보여줄 종목 수")
     parser.add_argument("--send", action="store_true", help="텔레그램으로 전송")
     args = parser.parse_args()
 
-    report = build_report(args.top)
+    report = build_history_report(args.top) if args.history else build_report()
     print(report)
     if args.send:
         from kiwoom_trading.common.telegram import send_telegram_message
