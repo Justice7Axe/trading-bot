@@ -57,6 +57,19 @@ CREATE TABLE IF NOT EXISTS refetch_queue (
 ALTER TABLE stocks ADD COLUMN IF NOT EXISTS listed_shares BIGINT;
 -- 업종명 (키움 ka10099 upName, 예: 전기/전자, 화학)
 ALTER TABLE stocks ADD COLUMN IF NOT EXISTS sector VARCHAR;
+
+-- 1분봉 (키움 ka10080, 수정주가). exchange: 'KRX'(09:00~, 일봉과 같은 기준) / 'AL'(KRX+NXT 통합, 08:00~20:00) / 'NX'(NXT)
+CREATE TABLE IF NOT EXISTS minute_ohlcv (
+    code        VARCHAR,
+    exchange    VARCHAR,
+    ts          TIMESTAMP,   -- 봉 시작 시각 (KST)
+    open        BIGINT,
+    high        BIGINT,
+    low         BIGINT,
+    close       BIGINT,
+    volume      BIGINT,
+    PRIMARY KEY (code, exchange, ts)
+);
 """
 
 OHLCV_COLUMNS = ("code", "date", "open", "high", "low", "close", "volume", "value", "market_cap", "source")
@@ -160,6 +173,19 @@ class DailyStore:
         return {code: (d, close) for code, d, close in rows}
 
     # --- backfill_status / refetch_queue -------------------------------------
+    def upsert_minutes(self, rows: list[dict[str, Any]]) -> int:
+        if not rows:
+            return 0
+        self.conn.executemany(
+            """
+            INSERT INTO minute_ohlcv (code, exchange, ts, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (code, exchange, ts) DO UPDATE SET
+                open = excluded.open, high = excluded.high, low = excluded.low, close = excluded.close, volume = excluded.volume
+            """,
+            [(r["code"], r["exchange"], r["ts"], r["open"], r["high"], r["low"], r["close"], r["volume"]) for r in rows],
+        )
+        return len(rows)
+
     def backfill_start(self, code: str) -> Optional[date]:
         """재수집 시작일: 처음 백필한 시작일, 없으면 저장된 가장 이른 날짜."""
         row = self.conn.execute("SELECT start_date FROM backfill_status WHERE code = ?", [code]).fetchone()

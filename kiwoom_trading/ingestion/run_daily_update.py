@@ -8,6 +8,7 @@
 - DuckDB가 다른 프로그램(DuckDB UI, DBeaver 등)에 잠겨 있으면 5분 간격으로 재시도.
 - 완료 후 65기법 일일 리포트(오늘 포착/매수 대기/보유 중/오늘 청산)와 주도주 스크리너 다음날 관심 종목을
   텔레그램으로 전송, 실패 시 실패 알림 전송.
+- 마지막으로 그날 매수 신호 감시 종목의 1분봉(KRX/통합/NXT)을 minute_ohlcv 에 저장.
 - 로그: data/logs/daily_update_YYYYMMDD.log
 """
 import argparse
@@ -23,7 +24,7 @@ if __package__ is None or __package__ == "":
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from kiwoom_trading.common.config import KST
-from kiwoom_trading.common.daily_store import PROJECT_ROOT
+from kiwoom_trading.common.daily_store import DEFAULT_DB_PATH, PROJECT_ROOT
 from kiwoom_trading.common.telegram import send_telegram_message
 from kiwoom_trading.ingestion.collectors import daily_krx_update
 
@@ -89,6 +90,22 @@ def main() -> int:
             send_telegram_message(build_daily_report())
         except Exception:
             logging.exception("주도주 스크리너 리포트 생성/전송 실패")
+
+    # 오늘 매수 신호 감시 종목(전일 관심 + 장중 포착)의 1분봉 저장 (KRX / 통합 / NXT)
+    try:
+        from kiwoom_trading.ingestion.collectors.minute_collector import collect_minutes, watchlist_codes
+
+        conn = duckdb.connect(DEFAULT_DB_PATH, read_only=True)
+        try:
+            trading_day = conn.execute("SELECT max(date) FROM daily_ohlcv").fetchone()[0]  # 자정을 넘겨 실행돼도 그날 기준
+        finally:
+            conn.close()
+        codes = watchlist_codes(trading_day)
+        if codes:
+            saved = collect_minutes(codes, trading_day, ["KRX", "AL", "NX"])
+            logging.info("감시 종목 1분봉 저장: %s종목, %s봉", len(codes), saved)
+    except Exception:
+        logging.exception("감시 종목 1분봉 저장 실패")
     return 0
 
 

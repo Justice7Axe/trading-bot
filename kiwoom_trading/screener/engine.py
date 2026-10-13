@@ -90,10 +90,14 @@ class Screener:
             # 1차 거름: 거래대금 상위 목록에 있으면 그 값으로 등락률/대금을 먼저 본다 (불필요한 시세 조회 줄이기)
             if v and v.change_rate is not None and (v.change_rate < cfg.min_change_rate or (v.trade_value or 0) < cfg.min_trade_value):
                 continue
-            quote = self.market.quote(code)
+            quote = self.market.quote(code)                      # 가격: KRX+NXT 통합
             if not quote or quote.base_price <= 0:
                 continue
-            trade_value = v.trade_value if v and v.trade_value else quote.volume * quote.price
+            if v and v.trade_value is not None:                  # 거래대금: KRX 기준 (일봉 DB 와 동일)
+                trade_value = v.trade_value
+            else:
+                krx = self.market.quote(code, integrated=False)
+                trade_value = krx.volume * krx.price if krx else 0
             if quote.price / quote.base_price - 1 < cfg.min_change_rate or trade_value < cfg.min_trade_value:
                 continue
             cand = Candidate(

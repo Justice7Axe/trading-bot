@@ -59,3 +59,40 @@ def send_telegram_message(text: str) -> bool:
         return False
     logging.info("텔레그램 전송 완료 (%s자)", len(text))
     return True
+
+
+def peek_messages(timeout: int = 0) -> list[dict]:
+    """봇으로 온 메시지를 '읽기만' 한다 (offset 미지정 → 읽음 처리하지 않음).
+
+    gooseogi 등 같은 토큰을 쓰는 다른 봇 프로그램이 나중에 같은 메시지를 그대로 받을 수 있도록
+    확인(acknowledge)하지 않는다. 다른 프로그램이 동시에 getUpdates 중이면 409 → 빈 목록.
+    반환: [{"update_id", "chat_id", "date"(epoch), "text"}]
+    """
+    load_env()
+    token = os.getenv("TELEGRAM_TOKEN", "")
+    if not token:
+        return []
+    try:
+        response = requests.get(
+            f"https://api.telegram.org/bot{token}/getUpdates",
+            params={"timeout": timeout, "allowed_updates": '["message"]'},
+            timeout=timeout + 10,
+        )
+    except requests.RequestException as exc:
+        logging.debug("텔레그램 메시지 확인 실패: %s", exc)
+        return []
+    if response.status_code == 409:
+        logging.debug("텔레그램 getUpdates 409: 다른 프로그램이 같은 봇으로 메시지를 받는 중")
+        return []
+    if not response.ok:
+        return []
+    messages = []
+    for update in response.json().get("result") or []:
+        msg = update.get("message") or {}
+        messages.append({
+            "update_id": update.get("update_id"),
+            "chat_id": str((msg.get("chat") or {}).get("id", "")),
+            "date": msg.get("date") or 0,
+            "text": str(msg.get("text") or ""),
+        })
+    return messages

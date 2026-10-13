@@ -74,13 +74,16 @@ class KiwoomMarket:
             ))
         return items
 
-    def value_rank(self, pages: int = 1) -> list[RankItem]:
-        """ka10032 거래대금 상위 (KRX+NXT 통합, 관리종목 제외). 1페이지 = 100종목."""
+    def value_rank(self, pages: int = 1, stex_tp: str = "1") -> list[RankItem]:
+        """ka10032 거래대금 상위 (관리종목 제외). 1페이지 = 100종목.
+
+        stex_tp 1: KRX(기본, 일봉 DB 와 같은 기준) / 2: NXT / 3: 통합
+        """
         items: list[RankItem] = []
         cont, next_key = "N", ""
         for _ in range(pages):
             payload, cont, next_key = self.client._post(
-                "/api/dostk/rkinfo", "ka10032", {"mrkt_tp": "000", "mang_stk_incls": "0", "stex_tp": "3"}, cont, next_key
+                "/api/dostk/rkinfo", "ka10032", {"mrkt_tp": "000", "mang_stk_incls": "0", "stex_tp": stex_tp}, cont, next_key
             )
             for row in payload.get("trde_prica_upper") or []:
                 sign = -1 if str(row.get("flu_rt", "")).startswith("-") else 1
@@ -97,12 +100,14 @@ class KiwoomMarket:
                 break
         return items
 
-    def quote(self, code: str) -> Optional[Quote]:
+    def quote(self, code: str, integrated: bool = True) -> Optional[Quote]:
         """ka10001 주식기본정보 (당일 시가/고가/저가/현재가, 250일 최고가).
 
-        '_AL'(KRX+NXT 통합) 시세: 08:00~09:00 NXT 프리마켓 체결까지 반영된다.
+        integrated=True: '_AL'(KRX+NXT 통합) 시세 — 08:00~09:00 프리마켓·애프터마켓 체결까지 반영 (가격 판단용)
+        integrated=False: KRX 시세 — 거래량을 KRX 기준으로 볼 때
         """
-        payload, _, _ = self.client._post("/api/dostk/stkinfo", "ka10001", {"stk_cd": f"{code}_AL"})
+        stk_cd = f"{code}_AL" if integrated else code
+        payload, _, _ = self.client._post("/api/dostk/stkinfo", "ka10001", {"stk_cd": stk_cd})
         price = _to_int(payload.get("cur_prc"))
         if not price:
             return None
