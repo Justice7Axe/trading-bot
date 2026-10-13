@@ -59,9 +59,36 @@ CREATE TABLE IF NOT EXISTS buy_signals (      -- 1분봉 매수 신호 (지지 �
     level       DOUBLE,       -- 기준선 (지지선 / 돌파선)
     stop        DOUBLE,
     reason      VARCHAR,
-    source      VARCHAR,      -- '전일 관심' | '장중 포착'
+    source      VARCHAR,      -- '전일 관심' | '쉬는 주도주' | '장중 포착' | '조회 급등' | '대금 가속' | '프리마켓 주목'
     alerted     BOOLEAN,
     PRIMARY KEY (date, code, ts, kind)
+);
+CREATE TABLE IF NOT EXISTS rest_leaders (     -- ① 쉬어 가는 주도주 (date = 기준일, 다음 거래일에 감시)
+    date        DATE,
+    code        VARCHAR,
+    name        VARCHAR,
+    close       BIGINT,
+    change_rate DOUBLE,
+    run_10d     DOUBLE,
+    trade_value BIGINT,
+    reason      VARCHAR,
+    PRIMARY KEY (date, code)
+);
+CREATE TABLE IF NOT EXISTS investor_intraday (  -- 장중 외국인·기관 순매수 잠정치 스냅샷 (값이 바뀔 때만 저장, 과거분은 API 로 못 받음)
+    ts          TIMESTAMP,
+    date        DATE,
+    investor    VARCHAR,      -- 'foreign' | 'institution'
+    code        VARCHAR,
+    net_amount  BIGINT        -- 원, 장 시작부터 누적
+);
+CREATE TABLE IF NOT EXISTS watch_adds (       -- ②③④ 장중 조기 감시 추가 (재시작해도 유지)
+    date        DATE,
+    code        VARCHAR,
+    ts          TIMESTAMP,
+    name        VARCHAR,
+    source      VARCHAR,
+    reason      VARCHAR,
+    PRIMARY KEY (date, code)
 );
 """
 
@@ -128,6 +155,39 @@ class ScreenerStore:
 
     def intraday_watchlist(self, day: date) -> dict[str, str]:
         return dict(self.conn.execute("SELECT code, name FROM detections WHERE mode = 'intraday' AND date = ?", [day]).fetchall())
+
+    def save_investor_intraday(self, ts: datetime, investor: str, values: dict[str, int]) -> None:
+        if values:
+            self.conn.executemany("INSERT INTO investor_intraday VALUES (?, ?, ?, ?, ?)",
+                                  [(ts, ts.date(), investor, code, amount) for code, amount in values.items() if amount])
+
+    def save_rest_leaders(self, day: date, leaders: list) -> None:
+        """leaders: early_watch.RestLeader 목록 (그날 기준으로 통째로 교체)."""
+        self.conn.execute("DELETE FROM rest_leaders WHERE date = ?", [day])
+        if leaders:
+            self.conn.executemany(
+                "INSERT INTO rest_leaders VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                [(day, x.code, x.name, x.close, x.change, x.run_10d, x.value, x.reason) for x in leaders],
+            )
+
+    def rest_leaders_since(self, start: date, day: date) -> list[tuple[date, str, str, int]]:
+        """start ≤ 기준일 < day 의 쉬어 가는 주도주 [(기준일, 코드, 이름, 쉬는 날 종가)], 최신 기준일 우선."""
+        return self.conn.execute(
+            "SELECT date, code, name, close FROM rest_leaders WHERE date >= ? AND date < ? ORDER BY date DESC", [start, day]
+        ).fetchall()
+
+    def previous_rest_leaders(self, day: date) -> dict[str, str]:
+        """day 에 감시할 쉬어 가는 주도주 (최근 REST_HOLD_DAYS 거래일, 이탈 종목 제외). 코드 → 이름"""
+        from kiwoom_trading.screener.early_watch import active_rest_leaders
+
+        return {code: name for code, (name, _) in active_rest_leaders(self, day).items()}
+
+    def save_watch_add(self, day: date, ts: datetime, code: str, name: str, source: str, reason: str) -> None:
+        self.conn.execute("INSERT INTO watch_adds VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING", [day, code, ts, name, source, reason])
+
+    def watch_adds(self, day: date) -> dict[str, tuple[str, str]]:
+        """코드 → (이름, 출처)"""
+        return {c: (n, s) for c, n, s in self.conn.execute("SELECT code, name, source FROM watch_adds WHERE date = ?", [day]).fetchall()}
 
     def signal_keys(self, day: date) -> set[tuple[str, datetime, str]]:
         return {(c, ts, k) for c, ts, k in self.conn.execute("SELECT code, ts, kind FROM buy_signals WHERE date = ?", [day]).fetchall()}

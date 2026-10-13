@@ -4,13 +4,14 @@
     .venv\\Scripts\\python.exe -m kiwoom_trading.screener.run_daily --send     # 텔레그램 전송
 
 일봉 DB 의 마지막 거래일 확정 봉 + 그날의 실시간 조회 순위(당일 누적) + 테마 등락으로 판정한다.
+아래에 '쉬어 가는 주도주'(early_watch.find_rest_leaders) 를 덧붙이고 rest_leaders 테이블에 저장 → 다음 날 매수 신호 감시.
 매일 20:00 일봉 업데이트(run_daily_update) 후 자동 실행된다.
 """
 import argparse
 import logging
 import os
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 import duckdb
@@ -22,6 +23,7 @@ from kiwoom_trading.common.config import KST
 from kiwoom_trading.common.daily_store import DEFAULT_DB_PATH
 from kiwoom_trading.ingestion.collectors.daily_backfill import build_client
 from kiwoom_trading.screener.conditions import format_evaluation
+from kiwoom_trading.screener.early_watch import active_rest_leaders, find_rest_leaders, format_rest_leaders
 from kiwoom_trading.screener.engine import Screener
 from kiwoom_trading.screener.market_data import KiwoomMarket
 from kiwoom_trading.screener.store import ScreenerStore
@@ -35,6 +37,7 @@ def build_daily_report(save: bool = True, as_of: Optional[date] = None) -> str:
     conn = duckdb.connect(DEFAULT_DB_PATH, read_only=True)
     try:
         today = as_of or conn.execute("SELECT max(date) FROM daily_ohlcv").fetchone()[0]
+        rest_leaders = find_rest_leaders(conn, today)     # ① 쉬어 가는 주도주 (+3% 미만이라 아래 판정에서 빠지는 종목)
     finally:
         conn.close()
 
@@ -50,6 +53,7 @@ def build_daily_report(save: bool = True, as_of: Optional[date] = None) -> str:
     passed = sorted((e for e in evaluations if e.passed(screener.config)), key=lambda e: -e.score)
     near = sorted((e for e in evaluations if not e.passed(screener.config)), key=lambda e: -e.score)[:NEAR_MISS_COUNT]
 
+    carried: dict[str, tuple[str, int]] = {}
     if save:
         store = ScreenerStore()
         try:
@@ -57,6 +61,10 @@ def build_daily_report(save: bool = True, as_of: Optional[date] = None) -> str:
             store.save_ranks(now, "search_day", search_day)
             for e in passed:
                 store.save_detection(today, "daily", now, e)
+            store.save_rest_leaders(today, rest_leaders)
+            # 다음 거래일에도 계속 감시하는 이전 쉬는 주도주 (오늘 새로 뽑힌 종목 제외)
+            new_codes = {x.code for x in rest_leaders}
+            carried = {c: v for c, v in active_rest_leaders(store, today + timedelta(days=1)).items() if c not in new_codes}
         finally:
             store.close()
 
@@ -71,6 +79,9 @@ def build_daily_report(save: bool = True, as_of: Optional[date] = None) -> str:
         lines.append("통과 종목 없음")
         if near:
             lines += ["", "── 아깝게 탈락 ──", "\n\n".join(format_evaluation(e) for e in near)]
+    lines += ["", format_rest_leaders(rest_leaders)]
+    if carried:
+        lines.append("계속 감시 (이전 쉬는 주도주): " + ", ".join(f"{name}(D+{k})" for _, (name, k) in carried.items()))
     return "\n".join(lines)
 
 

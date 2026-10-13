@@ -65,20 +65,20 @@ def detected_codes(day: date) -> list[str]:
 
 
 def watchlist_codes(day: date) -> list[str]:
-    """day 의 매수 신호 감시 종목 = 직전 거래일 '다음 거래일 관심 종목' + day 장중 포착 종목."""
+    """day 의 매수 신호 감시 종목 = 직전 거래일 '다음 거래일 관심 종목' + 직전 '쉬어 가는 주도주'
+    + day 장중 포착 종목 + day 조기 감시 추가(조회 급등/대금 가속/프리마켓 주목)."""
+    from kiwoom_trading.screener.store import ScreenerStore
+
     path = os.path.join(PROJECT_ROOT, "data", "screener.duckdb")
     if not os.path.exists(path):
         return []
-    conn = duckdb.connect(path, read_only=True)
+    store = ScreenerStore(path)   # 신규 테이블이 없던 DB 도 스키마 보장
     try:
-        prev = conn.execute("SELECT max(date) FROM detections WHERE mode = 'daily' AND date < ?", [day]).fetchone()[0]
-        rows = conn.execute(
-            "SELECT DISTINCT code FROM detections WHERE (mode = 'daily' AND date = ?) OR (mode = 'intraday' AND date = ?) ORDER BY code",
-            [prev, day],
-        ).fetchall()
-        return [r[0] for r in rows]
+        codes = set(store.previous_daily_watchlist(day)) | set(store.previous_rest_leaders(day))
+        codes |= set(store.intraday_watchlist(day)) | set(store.watch_adds(day))
+        return sorted(codes)
     finally:
-        conn.close()
+        store.close()
 
 
 def collect_minutes(codes: list[str], day: date, exchanges: list[str]) -> int:

@@ -1,6 +1,7 @@
 """감시 종목 1분봉 → 매수 신호 (지지 반등 / 돌파 후 눌림) → 텔레그램.
 
-감시 목록 = 전일 장 마감 후 '다음 거래일 관심 종목' + 오늘 장중 포착 종목(실시간 추가).
+감시 목록 = 전일 장 마감 후 '다음 거래일 관심 종목' + 최근 5거래일 '쉬어 가는 주도주'(이탈 제외)
+          + 오늘 장중 포착 종목 + 조기 트리거(조회 급등 / 대금 가속 / 프리마켓 주목, early_watch.py) — 실시간 추가.
 매 주기 감시 종목의 당일 1분봉(KRX+NXT 통합)을 받아 detect_signals 로 판정한다.
 진행 중인 현재 분의 봉은 제외하고, 마감된 봉으로만 판단한다.
 """
@@ -9,6 +10,7 @@ from datetime import date, datetime, timedelta
 
 from kiwoom_trading.ingestion.collectors.daily_backfill import KiwoomDailyClient
 from kiwoom_trading.ingestion.collectors.minute_collector import fetch_minute_bars
+from kiwoom_trading.screener.early_watch import active_rest_leaders
 from kiwoom_trading.screener.intraday_signals import Signal, SignalConfig, detect_signals
 from kiwoom_trading.screener.store import ScreenerStore
 
@@ -25,15 +27,24 @@ class SignalWatcher:
         self.watch: dict[str, tuple[str, str]] = {
             code: (name, "전일 관심") for code, name in store.previous_daily_watchlist(today).items()
         }
+        for code, (name, k) in active_rest_leaders(store, today).items():   # 쉬는 날 이후 5거래일 감시
+            self.watch.setdefault(code, (name, f"쉬는 주도주 D+{k}"))
         for code, name in store.intraday_watchlist(today).items():
             self.watch.setdefault(code, (name, "장중 포착"))
+        for code, (name, source) in store.watch_adds(today).items():
+            self.watch.setdefault(code, (name, source))
         self.seen = store.signal_keys(today)
         logging.info("매수 신호 감시 시작: %s종목 %s", len(self.watch), ", ".join(n for n, _ in self.watch.values()))
 
-    def add(self, code: str, name: str, source: str = "장중 포착") -> None:
-        if code not in self.watch:
-            self.watch[code] = (name, source)
-            logging.info("감시 추가: %s(%s) [%s]", name, code, source)
+    def add(self, code: str, name: str, source: str = "장중 포착", reason: str = "", ts: datetime | None = None) -> bool:
+        """새로 추가되면 True. 조기 트리거(장중 포착 외)는 재시작해도 유지되도록 저장."""
+        if code in self.watch:
+            return False
+        self.watch[code] = (name, source)
+        if source != "장중 포착":
+            self.store.save_watch_add(self.today, ts or datetime.now(), code, name, source, reason)
+        logging.info("감시 추가: %s(%s) [%s] %s", name, code, source, reason)
+        return True
 
     def check(self, now: datetime) -> list[tuple[str, str, str, Signal]]:
         """새로 발생한 신호 목록 [(code, name, source, signal)] — 알림 대상(최근 5분)만 반환, 전부 저장."""
@@ -58,7 +69,7 @@ class SignalWatcher:
 
 
 def format_signals(now: datetime, items: list[tuple[str, str, str, Signal]]) -> str:
-    lines = [f"🎯 매수 신호 {now:%H:%M} ({len(items)}건)"]
+    lines = [f"🎯 매수 신호 {now:%H:%M} ({len(items)}건) — 관찰용 (1년 백테스트 신호당 약 -0.5%, 규칙 개선 전)"]
     for code, name, source, s in items:
         lines.append(
             f"\n{name}({code}) [{s.kind}] {s.ts:%H:%M}봉\n"
