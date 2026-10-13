@@ -25,6 +25,7 @@ if __package__ is None or __package__ == "":
 
 from kiwoom_trading.common.config import KST
 from kiwoom_trading.common.daily_store import DEFAULT_DB_PATH, PROJECT_ROOT
+from kiwoom_trading.common.keep_awake import prevent_sleep_until_exit
 from kiwoom_trading.common.telegram import send_telegram_message
 from kiwoom_trading.ingestion.collectors import daily_krx_update
 
@@ -58,6 +59,7 @@ def main() -> int:
         return 0
 
     logging.info("=== 일봉 일일 업데이트 시작 (로그: %s) ===", log_path)
+    prevent_sleep_until_exit()  # 업데이트·리포트·1분봉 저장(약 15분) 중 절전 방지
     started = time.monotonic()
     for attempt in range(1, LOCK_RETRY_COUNT + 1):
         try:
