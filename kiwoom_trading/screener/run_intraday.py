@@ -23,6 +23,7 @@ if __package__ is None or __package__ == "":
 
 from kiwoom_trading.common.config import KST
 from kiwoom_trading.common.daily_store import PROJECT_ROOT, load_env
+from kiwoom_trading.common.keep_awake import prevent_sleep_until_exit
 from kiwoom_trading.common.telegram import peek_messages, send_telegram_message
 from kiwoom_trading.ingestion.collectors.daily_backfill import build_client
 from kiwoom_trading.screener.conditions import format_evaluation
@@ -128,6 +129,7 @@ def main() -> int:
     if now.weekday() >= 5 and not args.force:
         logging.info("주말이라 종료")
         return 0
+    prevent_sleep_until_exit()  # 08:00~20:00 실행 중 유휴 절전으로 멈추지 않도록
 
     client = build_client()
     market = KiwoomMarket(client)

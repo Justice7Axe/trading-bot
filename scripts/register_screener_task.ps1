@@ -21,8 +21,10 @@ $action = New-ScheduledTaskAction `
 
 $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday, Tuesday, Wednesday, Thursday, Friday -At $Time
 
+# WakeToRun: 절전 중이면 07:50에 PC를 깨워서 실행 (실행 중 절전 방지는 스크립트가 직접 처리)
 # StartWhenAvailable: 07:50에 PC가 꺼져 있었으면 켜지는 즉시 시작 (20:00 이후면 스스로 종료)
 $settings = New-ScheduledTaskSettingsSet `
+    -WakeToRun `
     -StartWhenAvailable `
     -DontStopIfGoingOnBatteries `
     -AllowStartIfOnBatteries `
