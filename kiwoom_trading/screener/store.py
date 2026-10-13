@@ -20,7 +20,7 @@ SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS rank_snapshots (
     ts          TIMESTAMP,
     date        DATE,
-    source      VARCHAR,      -- 'search_1m' | 'search_day' | 'value'
+    source      VARCHAR,      -- 'search_1m' | 'search_day' | 'value_krx' (거래대금 KRX 기준)
     rank        INTEGER,
     code        VARCHAR,
     name        VARCHAR,
@@ -48,6 +48,20 @@ CREATE TABLE IF NOT EXISTS detections (
     scenarios   VARCHAR,      -- JSON [{name, entry, stop, target}]
     theme       VARCHAR,
     PRIMARY KEY (date, mode, code)
+);
+CREATE TABLE IF NOT EXISTS buy_signals (      -- 1분봉 매수 신호 (지지 반등 / 돌파 후 눌림)
+    date        DATE,
+    code        VARCHAR,
+    ts          TIMESTAMP,    -- 신호 봉 시각
+    kind        VARCHAR,
+    name        VARCHAR,
+    price       DOUBLE,       -- 진입가 (신호 봉 종가)
+    level       DOUBLE,       -- 기준선 (지지선 / 돌파선)
+    stop        DOUBLE,
+    reason      VARCHAR,
+    source      VARCHAR,      -- '전일 관심' | '장중 포착'
+    alerted     BOOLEAN,
+    PRIMARY KEY (date, code, ts, kind)
 );
 """
 
@@ -102,4 +116,24 @@ class ScreenerStore:
                 json.dumps([{"name": s.name, "entry": s.entry, "stop": s.stop, "target": s.target} for s in e.scenarios], ensure_ascii=False),
                 e.best_theme.name if e.best_theme else None,
             ],
+        )
+
+    # ---------------------------------------------------------------- 매수 신호 감시 목록
+    def previous_daily_watchlist(self, day: date) -> dict[str, str]:
+        """day 직전 거래일의 '다음 거래일 관심 종목'(장 마감 후 리포트 통과 종목). 코드 → 이름"""
+        row = self.conn.execute("SELECT max(date) FROM detections WHERE mode = 'daily' AND date < ?", [day]).fetchone()
+        if not row or not row[0]:
+            return {}
+        return dict(self.conn.execute("SELECT code, name FROM detections WHERE mode = 'daily' AND date = ?", [row[0]]).fetchall())
+
+    def intraday_watchlist(self, day: date) -> dict[str, str]:
+        return dict(self.conn.execute("SELECT code, name FROM detections WHERE mode = 'intraday' AND date = ?", [day]).fetchall())
+
+    def signal_keys(self, day: date) -> set[tuple[str, datetime, str]]:
+        return {(c, ts, k) for c, ts, k in self.conn.execute("SELECT code, ts, kind FROM buy_signals WHERE date = ?", [day]).fetchall()}
+
+    def save_signal(self, day: date, code: str, name: str, signal, source: str, alerted: bool) -> None:
+        self.conn.execute(
+            "INSERT INTO buy_signals VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+            [day, code, signal.ts, signal.kind, name, signal.price, signal.level, signal.stop, signal.reason, source, alerted],
         )
