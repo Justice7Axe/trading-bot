@@ -70,6 +70,26 @@ CREATE TABLE IF NOT EXISTS minute_ohlcv (
     volume      BIGINT,
     PRIMARY KEY (code, exchange, ts)
 );
+
+-- 투자자별 일별 순매수 금액(원, KRX 장 마감 확정치, 키움 ka10059 백만원 → 원 환산). 양수 = 순매수
+CREATE TABLE IF NOT EXISTS investor_daily (
+    code        VARCHAR,
+    date        DATE,
+    individual  BIGINT,      -- 개인
+    foreign_    BIGINT,      -- 외국인
+    institution BIGINT,      -- 기관계 (= 아래 기관 세부의 합)
+    fin_invest  BIGINT,      -- 금융투자
+    insurance   BIGINT,      -- 보험
+    trust       BIGINT,      -- 투신
+    etc_fin     BIGINT,      -- 기타금융
+    bank        BIGINT,      -- 은행
+    pension     BIGINT,      -- 연기금등
+    private_eq  BIGINT,      -- 사모펀드
+    nation      BIGINT,      -- 국가
+    etc_corp    BIGINT,      -- 기타법인
+    foreign_etc BIGINT,      -- 내외국인
+    PRIMARY KEY (code, date)
+);
 """
 
 OHLCV_COLUMNS = ("code", "date", "open", "high", "low", "close", "volume", "value", "market_cap", "source")

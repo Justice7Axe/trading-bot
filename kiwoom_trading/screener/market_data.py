@@ -119,6 +119,31 @@ class KiwoomMarket:
             high_250=_to_int(payload.get("250hgst")),
         )
 
+    def investor_intraday(self, investor: str, max_pages: int = 10) -> dict[str, int]:
+        """ka10063 장중 투자자별 순매수(잠정치, KRX) 전 종목. investor: '6' 외국인, '7' 기관계. 반환 코드 → 순매수 금액(원).
+
+        KRX 잠정치라 하루 5~6번(09:20 무렵부터)만 갱신된다. 부호는 '--288' 처럼 '-' 가 겹쳐 올 수 있다.
+        """
+        out: dict[str, int] = {}
+        cont, next_key = "N", ""
+        for _ in range(max_pages):
+            payload, cont, next_key = self.client._post(
+                "/api/dostk/mrkcond", "ka10063",
+                {"mrkt_tp": "000", "amt_qty_tp": "1", "invsr": investor, "frgn_all": "0", "smtm_netprps_tp": "0", "stex_tp": "1"},
+                cont, next_key,
+            )
+            for row in payload.get("opmr_invsr_trde") or []:
+                text = str(row.get("netprps_amt") or "0").replace(",", "").strip()
+                negative = text.startswith("-")
+                try:
+                    amount = int(float(text.lstrip("+-") or 0)) * 1_000_000
+                except ValueError:
+                    continue
+                out[_code(row.get("stk_cd"))] = -amount if negative else amount
+            if cont != "Y" or not next_key:
+                break
+        return out
+
     def theme_groups(self) -> list[Theme]:
         """ka90001 (qry_tp=0): 전체 테마 목록과 당일 등락률/상승 종목 수.
 
