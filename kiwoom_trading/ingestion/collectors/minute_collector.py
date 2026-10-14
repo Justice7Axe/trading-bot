@@ -76,6 +76,8 @@ def watchlist_codes(day: date) -> list[str]:
     try:
         codes = set(store.previous_daily_watchlist(day)) | set(store.previous_rest_leaders(day))
         codes |= set(store.intraday_watchlist(day)) | set(store.watch_adds(day))
+        codes |= {c for _, c in store.early_alerted(day)}                       # 🏁 🚀 🔥 (포착 복기용)
+        codes |= {r[0] for r in store.conn.execute("SELECT DISTINCT code FROM theme_alerts WHERE date = ?", [day]).fetchall()}   # 🧩
         return sorted(codes)
     finally:
         store.close()
