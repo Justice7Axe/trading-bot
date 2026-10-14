@@ -45,6 +45,58 @@ class Signal:
     reason: str
 
 
+@dataclass(frozen=True)
+class QualityConfig:
+    """신호 품질 필터 — '기준 차트(두산테스나 10-13)처럼 근거가 명확한 타점'만 알림 (2026-10-14 복기 반영).
+
+    기준 차트 5개 타점(10:41·11:00·12:14 지지 반등, 12:49·13:02 돌파 후 눌림)은 모두 통과해야 한다:
+      - 기준 지지 반등은 전일 종가 아래(-1.1%)였지만 09:00 시가(119,600) 위, 박스 76~169분 유지, 지지선 한 번도 안 깨짐
+      - 같은 지지선 반복 터치·돌파 후 두 번째 눌림도 정상 타점 → '반복 금지'가 아니라 '앞 신호가 손절되면 반복 금지'
+    10-14 복기: 89건 중 하락 차트(시가 아래)·이미 깨진 지지선·손절 후 반복(국제약품 9회)·애프터마켓 신호가 손실 대부분.
+    1년 2,191 신호 검증: 지지선 온전 여부는 1년 평균에선 차이 없음(-0.48% vs -0.49%),
+      지지 반등 + 박스 60분↑ -0.32%, 90분↑ +0.01%(앞 -0.35%/뒤 +0.41%) — 필터는 알림을 줄이지만 아직 수익 신호는 아님.
+    """
+    above_open: bool = True              # 09:00 시가 위에서만 (하락 차트 제외) — 전일 종가 기준은 기준 타점까지 걸러서 쓰지 않음
+    support_intact: bool = True          # 지지 반등: 박스 고점 이후 종가가 지지선 -0.8% 아래로 마감한 적 없어야 (깨진 지지선은 근거 아님)
+    min_box_minutes: int = 60            # 지지 반등: 박스 고점 이후 60분↑ 유지 (기준 76분)
+    max_from_high: float = 0.06          # 당일 고가 대비 -6% 넘게 빠진 눌림 제외 (추세 훼손)
+    no_repeat_after_stop: bool = True    # 같은 종류 앞 신호가 손절가에 닿았으면 반복 신호 금지
+    start: time = time(9, 0)
+    end: time = time(14, 30)             # 이후 신호는 상승 여지 작음, 애프터마켓(NXT) 신호는 거래 얇음
+
+
+def reject_reason(bars: list[dict[str, Any]], s: Signal, earlier: list[Signal],
+                  config: Optional[QualityConfig] = None) -> Optional[str]:
+    """신호가 품질 필터에 걸리면 사유, 통과하면 None.
+
+    bars: 당일 1분봉(신호 봉 이후가 섞여 있어도 신호 시각까지만 사용), earlier: 같은 종목 오늘 앞서 통과한 신호들.
+    """
+    q = config or QualityConfig()
+    if not (q.start <= s.ts.time() <= q.end):
+        return f"시간 {s.ts:%H:%M} (허용 {q.start:%H:%M}~{q.end:%H:%M})"
+    upto = [b for b in bars if b["ts"] <= s.ts]
+    regular = [b for b in upto if b["ts"].time() >= q.start]
+    if not regular:
+        return "정규장 봉 없음"
+    if q.above_open and s.price < regular[0]["open"]:
+        return f"09:00 시가 {regular[0]['open']:,} 아래 (하락 차트)"
+    high = max(b["high"] for b in regular)
+    if s.price < high * (1 - q.max_from_high):
+        return f"당일 고가 대비 {s.price / high - 1:+.1%} (깊은 눌림)"
+    if q.no_repeat_after_stop:
+        for e in earlier:
+            if e.kind == s.kind and any(b["low"] <= e.stop for b in upto if e.ts < b["ts"] < s.ts):
+                return f"{e.ts:%H:%M} {e.kind} 신호가 손절된 뒤 반복"
+    if s.kind == "지지 반등":
+        hi_idx = max(range(len(upto)), key=lambda k: upto[k]["high"] if upto[k]["ts"].time() >= q.start else -1)
+        box_minutes = len(upto) - 1 - hi_idx
+        if box_minutes < q.min_box_minutes:
+            return f"박스 {box_minutes}분 (최소 {q.min_box_minutes}분)"
+        if q.support_intact and any(b["close"] < s.level * (1 - 0.008) for b in upto[hi_idx + 1:-1]):
+            return f"지지선 {s.level:,.0f} 이 이미 깨졌던 자리"
+    return None
+
+
 def detect_signals(bars: list[dict[str, Any]], config: Optional[SignalConfig] = None) -> list[Signal]:
     """bars: 시간 오름차순 1분봉 dict(ts, open, high, low, close, volume). 각 봉 마감 시점에 판단 (미래 봉 사용 안 함)."""
     cfg = config or SignalConfig()

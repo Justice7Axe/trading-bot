@@ -8,7 +8,7 @@
 - 텔레그램으로 '멈춰'(또는 중지/정지/stop)를 보내면 5초 안에 스캐너 종료
 - 매수 신호: 전일 '다음 거래일 관심 종목' + 전일 '쉬어 가는 주도주' + 장중 포착 종목 + 조기 트리거 종목의
   1분봉에서 지지 반등/돌파 후 눌림 → 🎯 알림
-- 조기 발굴(early_watch.py): ②조회 급등 → 감시 추가(30분마다 👀 요약), ③대금 가속 → 🚀, ⑤조기 주도주(09:20 전 500억&+3%) → 🏁 즉시 알림 + 감시 추가, ④08:50 🌅 프리마켓 주목
+- 조기 발굴(early_watch.py): ②조회 급등 → 감시 추가(30분마다 👀 요약), ③대금 가속 → 🚀, ⑤조기 주도주(09:15 전 500억&+3%) → 🏁 즉시 알림 + 감시 추가 → 장중 외국인·기관 잠정치로 🏁✅ 수급 확인, ④08:50 🌅 프리마켓 주목
 - 순위 스냅샷과 포착 기록, 장중 외국인·기관 잠정치(5분마다 확인, 바뀔 때만)는 data/screener.duckdb 에 저장 (추후 백테스트용)
 - 로그: data/logs/screener_YYYYMMDD.log
 """
@@ -93,9 +93,10 @@ INVESTOR_WINDOW = (dtime(9, 10), dtime(15, 45))
 class InvestorRecorder:
     """장중 외국인·기관 순매수 잠정치(ka10063)를 5분마다 확인해서 바뀌었을 때만 저장 → 추후 수급 백테스트용."""
 
-    def __init__(self) -> None:
+    def __init__(self, on_snapshot=None) -> None:
         self.last_check: Optional[datetime] = None
         self.last_sum: dict[str, int] = {}
+        self.on_snapshot = on_snapshot          # (now, investor, values) — 새 잠정치가 들어오면 호출
 
     def step(self, now: datetime, market: KiwoomMarket, store: ScreenerStore) -> None:
         if not (INVESTOR_WINDOW[0] <= now.time() <= INVESTOR_WINDOW[1]):
@@ -110,11 +111,13 @@ class InvestorRecorder:
                 self.last_sum[investor] = checksum
                 store.save_investor_intraday(now.replace(tzinfo=None), investor, values)
                 logging.info("장중 %s 수급 스냅샷 저장: %s종목", investor, len(values))
+                if self.on_snapshot:
+                    self.on_snapshot(now, investor, values)
 
 
 ADD_SUMMARY_MINUTES = 30   # 조회 급등 감시 추가 알림은 30분마다 묶어서 (매수 신호 🎯 는 즉시)
 URGENT_HEADERS = {         # 즉시 알림하는 조기 트리거
-    "조기 주도주": "🏁 조기 주도주 {now:%H:%M} — 09:20 전 누적 대금 500억 & +3% (그날 주도주 적중 약 38%)",
+    "조기 주도주": "🏁 조기 주도주 {now:%H:%M} — 09:15 전 누적 대금 500억 & +3% (그날 주도주 적중 약 38%, 수급 확인은 09:20 이후)",
     "대금 가속": "🚀 거래대금 가속 — 오늘의 주도주 {now:%H:%M} (그날 최종 대금 50위 적중 95%)",
 }
 
@@ -125,6 +128,12 @@ class EarlyRunner:
     def __init__(self, screener: Screener, watcher: SignalWatcher, store: ScreenerStore, now: datetime) -> None:
         self.detector = EarlyDetector(screener.hist, screener.names)
         self.watcher = watcher
+        self.store = store
+        self.today = now.date()
+        self.alerted = store.early_alerted(self.today)          # (출처, 코드) — 감시 목록 포함 여부와 무관하게 하루 1회
+        self.gate: dict[str, str] = {c: "" for src, c in self.alerted if src == "조기 주도주"}   # 조기 주도주 코드 → 이름
+        self.flow_checked: set[tuple[str, str]] = set()          # (investor, code) 수급 확인 알림 보냄
+        self.telegram = True
         self.rest = store.previous_rest_leaders(now.date())
         self.added_today = len(store.watch_adds(now.date()))
         self.pending: list[EarlyHit] = []
@@ -142,15 +151,24 @@ class EarlyRunner:
                 self._add(h, now)
             if telegram:
                 send_telegram_message(format_premarket(now, focus))
+        self.telegram = telegram
         urgent: dict[str, list[EarlyHit]] = {}
         for h in hits:
-            if self.added_today >= cfg.max_watch_adds:
-                break
-            if self._add(h, now):
-                if h.source in URGENT_HEADERS:
+            if h.source in URGENT_HEADERS:
+                # 즉시 알림은 감시 목록에 이미 있어도(예: 08:50 프리마켓 주목으로 먼저 추가) 보낸다 — 2026-10-14 누락 버그 수정
+                if (h.source, h.code) not in self.alerted:
+                    self.alerted.add((h.source, h.code))
+                    self.store.save_early_alert(self.today, h.source, h.code, now.replace(tzinfo=None), h.name, h.reason)
                     urgent.setdefault(h.source, []).append(h)
-                else:
-                    self.pending.append(h)
+                    if h.source == "조기 주도주":
+                        self.gate[h.code] = h.name
+                if self.added_today < cfg.max_watch_adds:
+                    self._add(h, now)
+                continue
+            if self.added_today >= cfg.max_watch_adds:
+                continue
+            if self._add(h, now):
+                self.pending.append(h)
         if telegram:   # 조기 주도주·대금 가속은 하루 10건 안팎 → 즉시 알림 (매수 신호 아님)
             for source, items in urgent.items():
                 send_telegram_message(URGENT_HEADERS[source].format(now=now) + "\n"
@@ -160,6 +178,26 @@ class EarlyRunner:
             if telegram:
                 send_telegram_message(format_watch_adds(now, self.pending))
             self.pending, self.last_summary = [], now
+
+    def on_investor_snapshot(self, now: datetime, investor: str, values: dict[str, int]) -> None:
+        """장중 외국인(09:20 무렵 첫 갱신)·기관(09:50 무렵) 잠정치가 들어오면 🏁 종목의 수급을 확인해서 알림."""
+        label = {"foreign": "외국인", "institution": "기관"}[investor]
+        todo = [(c, n) for c, n in self.gate.items() if (investor, c) not in self.flow_checked]
+        if not todo:
+            return
+        buy, sell = [], []
+        for code, name in todo:
+            self.flow_checked.add((investor, code))
+            amount = values.get(code, 0)
+            (buy if amount > 0 else sell).append(f"{name or code}({code}) {label} {amount / 1e8:+,.0f}억")
+        logging.info("조기 주도주 %s 수급 확인: 순매수 %s / 아님 %s", label, buy, sell)
+        if self.telegram:
+            lines = [f"🏁✅ 조기 주도주 {label} 수급 확인 {now:%H:%M} (장중 잠정치)",
+                     "순매수: " + (", ".join(buy) if buy else "없음")]
+            if sell:
+                lines.append("순매도/없음: " + ", ".join(sell))
+            lines.append("(관문+당일 외국인·기관 순매수: 장 마감 확정치 기준 정밀도 38%→51%, 잠정치로는 검증 중)")
+            send_telegram_message("\n".join(lines))
 
     def _add(self, h: EarlyHit, now: datetime) -> bool:
         added = self.watcher.add(h.code, h.name, h.source, h.reason, now.replace(tzinfo=None))
@@ -231,9 +269,9 @@ def main() -> int:
     market = KiwoomMarket(client)
     screener = Screener(market, now.date())
     store = ScreenerStore()
-    watcher = SignalWatcher(client, store, now.date())
+    watcher = SignalWatcher(client, store, now.date(), prev_close={c: h.last_close for c, h in screener.hist.items()})
     early = EarlyRunner(screener, watcher, store, now)
-    investors = InvestorRecorder()
+    investors = InvestorRecorder(on_snapshot=early.on_investor_snapshot)
     listener = StopListener(enabled=not args.no_telegram)
     stop_command: Optional[str] = None
     try:

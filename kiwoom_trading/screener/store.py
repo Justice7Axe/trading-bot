@@ -74,6 +74,16 @@ CREATE TABLE IF NOT EXISTS rest_leaders (     -- ① 쉬어 가는 주도주 (da
     reason      VARCHAR,
     PRIMARY KEY (date, code)
 );
+ALTER TABLE buy_signals ADD COLUMN IF NOT EXISTS reject_reason VARCHAR;   -- 품질 필터에 걸린 사유 (NULL = 통과)
+CREATE TABLE IF NOT EXISTS early_alerts (       -- 🏁/🚀 즉시 알림 기록 (감시 목록 포함 여부와 무관하게 종목·출처별 하루 1회)
+    date        DATE,
+    source      VARCHAR,
+    code        VARCHAR,
+    ts          TIMESTAMP,
+    name        VARCHAR,
+    reason      VARCHAR,
+    PRIMARY KEY (date, source, code)
+);
 CREATE TABLE IF NOT EXISTS investor_intraday (  -- 장중 외국인·기관 순매수 잠정치 스냅샷 (값이 바뀔 때만 저장, 과거분은 API 로 못 받음)
     ts          TIMESTAMP,
     date        DATE,
@@ -192,8 +202,26 @@ class ScreenerStore:
     def signal_keys(self, day: date) -> set[tuple[str, datetime, str]]:
         return {(c, ts, k) for c, ts, k in self.conn.execute("SELECT code, ts, kind FROM buy_signals WHERE date = ?", [day]).fetchall()}
 
-    def save_signal(self, day: date, code: str, name: str, signal, source: str, alerted: bool) -> None:
+    def save_signal(self, day: date, code: str, name: str, signal, source: str, alerted: bool, reject: Optional[str] = None) -> None:
         self.conn.execute(
-            "INSERT INTO buy_signals VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
-            [day, code, signal.ts, signal.kind, name, signal.price, signal.level, signal.stop, signal.reason, source, alerted],
+            "INSERT INTO buy_signals (date, code, ts, kind, name, price, level, stop, reason, source, alerted, reject_reason) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+            [day, code, signal.ts, signal.kind, name, signal.price, signal.level, signal.stop, signal.reason, source, alerted, reject],
         )
+
+    def passed_signals(self, day: date) -> dict[str, list]:
+        """오늘 품질 필터를 통과한 신호 (종목 → [Signal]) — 재시작해도 '손절 후 반복 금지' 판정 유지."""
+        from kiwoom_trading.screener.intraday_signals import Signal
+
+        out: dict[str, list] = {}
+        for code, ts, kind, price, level, stop, reason in self.conn.execute(
+                "SELECT code, ts, kind, price, level, stop, reason FROM buy_signals WHERE date = ? AND reject_reason IS NULL ORDER BY ts",
+                [day]).fetchall():
+            out.setdefault(code, []).append(Signal(ts, kind, price, level, stop, reason))
+        return out
+
+    def early_alerted(self, day: date) -> set[tuple[str, str]]:
+        return {(s, c) for s, c in self.conn.execute("SELECT source, code FROM early_alerts WHERE date = ?", [day]).fetchall()}
+
+    def save_early_alert(self, day: date, source: str, code: str, ts: datetime, name: str, reason: str) -> None:
+        self.conn.execute("INSERT INTO early_alerts VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING", [day, source, code, ts, name, reason])
