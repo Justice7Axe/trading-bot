@@ -25,6 +25,7 @@ from kiwoom_trading.ingestion.collectors.daily_backfill import build_client
 from kiwoom_trading.screener.conditions import format_evaluation
 from kiwoom_trading.screener.early_watch import active_rest_leaders, find_rest_leaders, format_rest_leaders
 from kiwoom_trading.screener.engine import Screener
+from kiwoom_trading.screener.gate_flow import evaluate as evaluate_gate_flow, summary as gate_flow_summary
 from kiwoom_trading.screener.market_data import KiwoomMarket
 from kiwoom_trading.screener.store import ScreenerStore
 
@@ -54,6 +55,7 @@ def build_daily_report(save: bool = True, as_of: Optional[date] = None) -> str:
     near = sorted((e for e in evaluations if not e.passed(screener.config)), key=lambda e: -e.score)[:NEAR_MISS_COUNT]
 
     carried: dict[str, tuple[str, int]] = {}
+    gate_summary = ""
     if save:
         store = ScreenerStore()
         try:
@@ -65,6 +67,12 @@ def build_daily_report(save: bool = True, as_of: Optional[date] = None) -> str:
             # 다음 거래일에도 계속 감시하는 이전 쉬는 주도주 (오늘 새로 뽑힌 종목 제외)
             new_codes = {x.code for x in rest_leaders}
             carried = {c: v for c, v in active_rest_leaders(store, today + timedelta(days=1)).items() if c not in new_codes}
+            # 조기 주도주(09:15 전 관문) × 장중 수급 잠정치 — 그날 평가하고 누적 요약
+            try:
+                evaluate_gate_flow(store, today)
+                gate_summary = gate_flow_summary(store)
+            except Exception:
+                logging.exception("관문×수급 평가 실패")
         finally:
             store.close()
 
@@ -82,6 +90,8 @@ def build_daily_report(save: bool = True, as_of: Optional[date] = None) -> str:
     lines += ["", format_rest_leaders(rest_leaders)]
     if carried:
         lines.append("계속 감시 (이전 쉬는 주도주): " + ", ".join(f"{name}(D+{k})" for _, (name, k) in carried.items()))
+    if gate_summary:
+        lines += ["", gate_summary]
     return "\n".join(lines)
 
 

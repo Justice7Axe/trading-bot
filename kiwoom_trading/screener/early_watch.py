@@ -12,8 +12,9 @@
      (프리마켓 08:00~09:00 에는 KRX 대금이 없으므로 +3%↑ 로 대신)
   ③ 거래대금 가속 (장중 09:05~14:30) — 오늘의 주도주 '포착'용 (매수 신호 아님). 상세: accel_trigger 참고
      최근 5분 KRX 대금 ≥ 300억, 시간대 보정 평소 5분 대금의 5배↑, 5분 가격 +1%↑, 당일 하락 아님
-  ⑤ 조기 주도주 (장중 09:00~09:20) — KRX 누적 대금 500억 & +3% 를 09:20 이전에 달성
-     25일 × 대금 상위 200 검증: 하루 약 11종목, 그날 주도주(대금 30위 & +5%) 정밀도 38%(앞 35%/뒤 41%), 주도주의 48% 포착.
+  ⑤ 조기 주도주 (장중 09:00~09:15) — KRX 누적 대금 500억 & +3% 를 09:15 이전에 달성
+     25일 × 대금 상위 200 검증(09:15): 하루 약 9종목, 그날 주도주(대금 30위 & +5%) 정밀도 38%(앞 31%/뒤 45%), 주도주의 39% 포착.
+     이후 장중 외국인 잠정치(09:20 무렵 첫 갱신)·기관 잠정치(09:50 무렵)로 수급 확인 → 🏁✅ (gate_flow.py 로 누적 검증)
      같은 관문을 하루 중 아무 때나 통과하면 정밀도 15% → '얼마나 일찍 통과했나'가 핵심. 주도주 통과 중앙 09:22, 비주도 11:04
   ④ 프리마켓 주목 (08:50 1회 요약) — 08:00~08:50 조회 순위(1분) 20위 안에 3번↑ 오른 종목 + 쉬는 주도주의 프리마켓 갭
 
@@ -206,7 +207,7 @@ class EarlyConfig:
     # ⑤ 조기 주도주 (이른 관문 통과)
     gate_value: int = 50_000_000_000            # KRX 누적 대금 500억
     gate_change: float = 0.03                   # +3%
-    gate_deadline: time = time(9, 20)           # 이 시각까지 통과한 종목만
+    gate_deadline: time = time(9, 15)           # 이 시각까지 통과한 종목만 (사용자 요청 2026-10-14: 09:20 → 09:15)
     # 공통
     max_watch_adds: int = 60                    # 하루 조기 감시 추가 상한 (1분봉 조회 부담)
 
@@ -256,7 +257,7 @@ class EarlyDetector:
                                      f"조회 {item.rank}위, {item.change_rate:+.1%}, 대금 {v.trade_value / 1e8:,.0f}억({v.rank}위)"))
 
         # ⑤ 조기 주도주: 09:20 이전에 누적 대금 500억 & +3%
-        if cfg.premarket_end <= t <= cfg.gate_deadline:
+        if cfg.premarket_end <= t.replace(second=0, microsecond=0) <= cfg.gate_deadline:   # 09:15분 스냅샷까지 포함
             for code, v in values.items():
                 if code in self.names and v.trade_value >= cfg.gate_value and (v.change_rate or 0) >= cfg.gate_change:
                     h = self.hist.get(code)
