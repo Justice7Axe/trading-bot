@@ -75,6 +75,17 @@ CREATE TABLE IF NOT EXISTS rest_leaders (     -- ① 쉬어 가는 주도주 (da
     PRIMARY KEY (date, code)
 );
 ALTER TABLE buy_signals ADD COLUMN IF NOT EXISTS reject_reason VARCHAR;   -- 품질 필터에 걸린 사유 (NULL = 통과)
+ALTER TABLE detections ADD COLUMN IF NOT EXISTS first_ts TIMESTAMP;        -- 처음 포착된 시각 (ts 는 마지막 갱신 시각)
+CREATE TABLE IF NOT EXISTS theme_alerts (       -- 🧩 테마 형성 알림 묶음 구성
+    date        DATE,
+    ts          TIMESTAMP,
+    label       VARCHAR,
+    leader      VARCHAR,
+    code        VARCHAR,
+    name        VARCHAR,
+    change_rate DOUBLE,
+    trade_value BIGINT
+);
 CREATE TABLE IF NOT EXISTS early_alerts (       -- 🏁/🚀 즉시 알림 기록 (감시 목록 포함 여부와 무관하게 종목·출처별 하루 1회)
     date        DATE,
     source      VARCHAR,
@@ -128,6 +139,11 @@ class ScreenerStore:
             mapping.setdefault(code, []).append(theme_code)
         return mapping
 
+    def theme_names(self) -> dict[str, str]:
+        """테마코드 → 이름 (가장 최근 매핑 기준)."""
+        return dict(self.conn.execute(
+            "SELECT theme_code, any_value(theme_name) FROM theme_members WHERE date = (SELECT max(date) FROM theme_members) GROUP BY 1").fetchall())
+
     def save_theme_mapping(self, day: date, rows: list[tuple[str, str, str]]) -> None:
         """rows: (theme_code, theme_name, code)"""
         self.conn.execute("DELETE FROM theme_members WHERE date = ?", [day])
@@ -141,7 +157,8 @@ class ScreenerStore:
         c = e.candidate
         self.conn.execute(
             """
-            INSERT INTO detections VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO detections (date, mode, code, ts, name, price, change_rate, trade_value, score, checks, scenarios, theme, first_ts)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (date, mode, code) DO UPDATE SET
                 ts = excluded.ts, price = excluded.price, change_rate = excluded.change_rate,
                 trade_value = excluded.trade_value, score = excluded.score, checks = excluded.checks,
@@ -151,7 +168,7 @@ class ScreenerStore:
                 day, mode, c.code, ts, c.name, c.price, c.change_rate, c.trade_value, e.score,
                 json.dumps(e.checks, ensure_ascii=False),
                 json.dumps([{"name": s.name, "entry": s.entry, "stop": s.stop, "target": s.target} for s in e.scenarios], ensure_ascii=False),
-                e.best_theme.name if e.best_theme else None,
+                e.best_theme.name if e.best_theme else None, ts,
             ],
         )
 
@@ -170,6 +187,11 @@ class ScreenerStore:
         if values:
             self.conn.executemany("INSERT INTO investor_intraday VALUES (?, ?, ?, ?, ?)",
                                   [(ts, ts.date(), investor, code, amount) for code, amount in values.items() if amount])
+
+    def save_theme_alert(self, day: date, ts: datetime, label: str, leader: str, members: list) -> None:
+        """members: RankItem 목록 (🧩 알림 시점 묶음 구성)."""
+        self.conn.executemany("INSERT INTO theme_alerts VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                              [(day, ts, label, leader, m.code, m.name, m.change_rate, m.trade_value) for m in members])
 
     def save_rest_leaders(self, day: date, leaders: list) -> None:
         """leaders: early_watch.RestLeader 목록 (그날 기준으로 통째로 교체)."""

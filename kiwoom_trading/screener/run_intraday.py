@@ -8,6 +8,7 @@
 - 텔레그램으로 '멈춰'(또는 중지/정지/stop)를 보내면 5초 안에 스캐너 종료
 - 매수 신호: 전일 '다음 거래일 관심 종목' + 전일 '쉬어 가는 주도주' + 장중 포착 종목 + 조기 트리거 종목의
   1분봉에서 지지 반등/돌파 후 눌림 → 🎯 알림
+- 테마 특징주 트랙(theme_track.py): 🔥 조회 상위 + 7% + 대금 100억 / 🧩 같은 테마 2종목↑ 급등 → 즉시 알림 + 감시
 - 조기 발굴(early_watch.py): ②조회 급등 → 감시 추가(30분마다 👀 요약), ③대금 가속 → 🚀, ⑤조기 주도주(09:15 전 500억&+3%) → 🏁 즉시 알림 + 감시 추가 → 장중 외국인·기관 잠정치로 🏁✅ 수급 확인, ④08:50 🌅 프리마켓 주목
 - 순위 스냅샷과 포착 기록, 장중 외국인·기관 잠정치(5분마다 확인, 바뀔 때만)는 data/screener.duckdb 에 저장 (추후 백테스트용)
 - 로그: data/logs/screener_YYYYMMDD.log
@@ -20,11 +21,13 @@ import time
 from datetime import datetime, time as dtime, timedelta
 from typing import Optional
 
+import duckdb
+
 if __package__ is None or __package__ == "":
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from kiwoom_trading.common.config import KST
-from kiwoom_trading.common.daily_store import PROJECT_ROOT, load_env
+from kiwoom_trading.common.daily_store import DEFAULT_DB_PATH, PROJECT_ROOT, load_env
 from kiwoom_trading.common.keep_awake import prevent_sleep_until_exit
 from kiwoom_trading.common.telegram import peek_messages, send_telegram_message
 from kiwoom_trading.ingestion.collectors.daily_backfill import build_client
@@ -34,6 +37,7 @@ from kiwoom_trading.screener.engine import Screener
 from kiwoom_trading.screener.market_data import KiwoomMarket
 from kiwoom_trading.screener.signal_watch import SignalWatcher, format_signals
 from kiwoom_trading.screener.store import ScreenerStore
+from kiwoom_trading.screener.theme_track import ThemeTracker, build_peer_graph, format_clusters, format_features
 
 
 MARKET_OPEN = dtime(8, 0)          # NXT 프리마켓 시작 (KRX 정규장 09:00)
@@ -122,6 +126,47 @@ URGENT_HEADERS = {         # 즉시 알림하는 조기 트리거
 }
 
 
+class ThemeRunner:
+    """테마 특징주 트랙: 🔥 테마 특징주 / 🧩 테마 형성 → 즉시 알림 + 감시 목록 추가 (대형 주도주 트랙과 별도)."""
+
+    def __init__(self, screener: Screener, watcher: SignalWatcher, store: ScreenerStore, now: datetime) -> None:
+        conn = duckdb.connect(DEFAULT_DB_PATH, read_only=True)
+        try:
+            peers = build_peer_graph(conn, now.date())
+        finally:
+            conn.close()
+        self.tracker = ThemeTracker(screener.names, screener.sectors, peers, screener.theme_map, store.theme_names())
+        self.watcher = watcher
+        self.store = store
+        self.today = now.date()
+        self.tracker.featured = {c for src, c in store.early_alerted(self.today) if src == "테마 특징주"}
+
+    def step(self, now: datetime, market: KiwoomMarket, search_1m: list, telegram: bool) -> None:
+        if not (THEME_WINDOW[0] <= now.time() <= THEME_WINDOW[1]):
+            return
+        movers = market.risers()
+        hits, clusters = self.tracker.update(now, search_1m, movers)
+        naive = now.replace(tzinfo=None)
+        for h in hits:
+            self.store.save_early_alert(self.today, h.source, h.code, naive, h.name, h.reason)
+            self.watcher.add(h.code, h.name, h.source, h.reason, naive)
+        for c in clusters:
+            self.store.save_theme_alert(self.today, naive, c.label, c.leader.code, list(c.members.values()))
+            for m in c.members.values():
+                self.watcher.add(m.code, m.name, "테마 형성", f"[{c.label}] {m.change_rate:+.1%}", naive)
+        if hits:
+            logging.info("🔥 테마 특징주: %s", ", ".join(h.name for h in hits))
+        for c in clusters:
+            logging.info("🧩 테마 형성 [%s]: %s", c.label, c.describe())
+        if telegram and hits:
+            send_telegram_message(format_features(now, hits))
+        if telegram and clusters:
+            send_telegram_message(format_clusters(now, clusters))
+
+
+THEME_WINDOW = (dtime(8, 0), dtime(15, 30))
+
+
 class EarlyRunner:
     """조기 발굴 트리거(②조회 급등 ③대금 가속 ④프리마켓 주목 ⑤조기 주도주) → 매수 신호 감시 목록에 추가."""
 
@@ -207,7 +252,7 @@ class EarlyRunner:
 
 def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, telegram: bool,
              watcher: Optional[SignalWatcher] = None, early: Optional[EarlyRunner] = None,
-             investors: Optional[InvestorRecorder] = None) -> int:
+             investors: Optional[InvestorRecorder] = None, themes: Optional[ThemeRunner] = None) -> int:
     now = datetime.now(KST)
     search_1m = market.search_rank("1")
     search_day = market.search_rank("4")
@@ -220,6 +265,11 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
             early.step(now, market, search_1m, value_top, telegram)
         except Exception:
             logging.exception("조기 발굴 트리거 실패")
+    if themes is not None:
+        try:
+            themes.step(now, market, search_1m, telegram)
+        except Exception:
+            logging.exception("테마 특징주 트랙 실패")
     if investors is not None:
         try:
             investors.step(now, market, store)
@@ -272,6 +322,11 @@ def main() -> int:
     watcher = SignalWatcher(client, store, now.date(), prev_close={c: h.last_close for c, h in screener.hist.items()})
     early = EarlyRunner(screener, watcher, store, now)
     investors = InvestorRecorder(on_snapshot=early.on_investor_snapshot)
+    try:
+        themes: Optional[ThemeRunner] = ThemeRunner(screener, watcher, store, now)
+    except Exception:
+        logging.exception("테마 특징주 트랙 준비 실패 (대형 주도주 트랙만 실행)")
+        themes = None
     listener = StopListener(enabled=not args.no_telegram)
     stop_command: Optional[str] = None
     try:
@@ -290,7 +345,7 @@ def main() -> int:
                     if probe and probe[0].as_of and probe[0].as_of != now.strftime("%Y%m%d"):
                         logging.info("오늘 데이터가 없음(휴장일로 판단, 기준일 %s) → 종료", probe[0].as_of)
                         break
-                run_once(screener, market, store, telegram=not args.no_telegram, watcher=watcher, early=early, investors=investors)
+                run_once(screener, market, store, telegram=not args.no_telegram, watcher=watcher, early=early, investors=investors, themes=themes)
             except Exception:
                 logging.exception("스캔 실패 (다음 주기에 재시도)")
             if args.once:

@@ -117,6 +117,15 @@ def main() -> int:
             logging.info("감시 종목 1분봉 저장: %s종목, %s봉", len(codes), saved)
     except Exception:
         logging.exception("감시 종목 1분봉 저장 실패")
+
+    # 오늘 포착 종목 복기표 (포착 시점 이후 차트상 수익 여부) — 1분봉 저장 뒤에 실행
+    if not args.no_telegram:
+        try:
+            from kiwoom_trading.screener.capture_review import build_capture_review
+
+            send_telegram_message(build_capture_review())
+        except Exception:
+            logging.exception("포착 복기표 생성/전송 실패")
     return 0
 
 

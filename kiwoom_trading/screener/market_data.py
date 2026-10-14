@@ -100,6 +100,35 @@ class KiwoomMarket:
                 break
         return items
 
+    def risers(self, min_value_cond: str = "300", stex_tp: str = "3", pages: int = 1) -> list[RankItem]:
+        """ka10027 전일대비 등락률 상위 (ETF·ETN 제외, 상한가 포함). 1페이지 = 200종목.
+
+        min_value_cond: 거래대금 조건 '300' = 30억↑, '1000' = 100억↑ (키움 코드값)
+        stex_tp 3: 통합(KRX+NXT) — 08:00 프리마켓 급등도 잡기 위해. trade_value = 현재 거래량 × 현재가 (근사)
+        """
+        items: list[RankItem] = []
+        cont, next_key = "N", ""
+        for _ in range(pages):
+            payload, cont, next_key = self.client._post(
+                "/api/dostk/rkinfo", "ka10027",
+                {"mrkt_tp": "000", "sort_tp": "1", "trde_qty_cnd": "0000", "stk_cnd": "16", "crd_cnd": "0",
+                 "updown_incls": "1", "pric_cnd": "0", "trde_prica_cnd": min_value_cond, "stex_tp": stex_tp},
+                cont, next_key,
+            )
+            for row in payload.get("pred_pre_flu_rt_upper") or []:
+                sign = -1 if str(row.get("flu_rt", "")).startswith("-") else 1
+                rate = _rate(str(row.get("flu_rt", "")).lstrip("+-"))
+                price = _to_int(row.get("cur_prc"))
+                qty = _to_int(row.get("now_trde_qty"))
+                items.append(RankItem(
+                    code=_code(row.get("stk_cd")), name=str(row.get("stk_nm") or ""), rank=len(items) + 1,
+                    change_rate=sign * rate if rate is not None else None, price=price,
+                    trade_value=price * qty if price and qty else None,
+                ))
+            if cont != "Y" or not next_key:
+                break
+        return items
+
     def quote(self, code: str, integrated: bool = True) -> Optional[Quote]:
         """ka10001 주식기본정보 (당일 시가/고가/저가/현재가, 250일 최고가).
 
