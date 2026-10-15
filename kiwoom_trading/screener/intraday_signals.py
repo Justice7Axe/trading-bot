@@ -67,6 +67,10 @@ class QualityConfig:
     breakout_above_prev_close: bool = True   # 돌파 후 눌림: 돌파선이 전일 종가 이상일 때만 (오늘 박스만 넘고 전일 종가·고가 매물대 아래면 진짜 돌파 아님)
     start: time = time(9, 0)
     end: time = time(14, 30)             # 이후 신호는 상승 여지 작음, 애프터마켓(NXT) 신호는 거래 얇음
+    # 장중 스캐너만 켠다(2026-10-15 사용자): NXT 애프터마켓 신호도 통과 → 모의투자 '가상 체결'로 검증. 백테스트 기본값은 끔
+    allow_after: bool = False
+    after_start: time = time(15, 30)
+    after_end: time = time(19, 30)
 
 
 def reject_reason(bars: list[dict[str, Any]], s: Signal, earlier: list[Signal],
@@ -76,8 +80,10 @@ def reject_reason(bars: list[dict[str, Any]], s: Signal, earlier: list[Signal],
     bars: 당일 1분봉(신호 봉 이후가 섞여 있어도 신호 시각까지만 사용), earlier: 같은 종목 오늘 앞서 통과한 신호들.
     """
     q = config or QualityConfig()
-    if not (q.start <= s.ts.time() <= q.end):
-        return f"시간 {s.ts:%H:%M} (허용 {q.start:%H:%M}~{q.end:%H:%M})"
+    after = q.allow_after and q.after_start <= s.ts.time() <= q.after_end
+    if not (q.start <= s.ts.time() <= q.end or after):
+        allowed = f"{q.start:%H:%M}~{q.end:%H:%M}" + (f", {q.after_start:%H:%M}~{q.after_end:%H:%M}" if q.allow_after else "")
+        return f"시간 {s.ts:%H:%M} (허용 {allowed})"
     upto = [b for b in bars if b["ts"] <= s.ts]
     regular = [b for b in upto if b["ts"].time() >= q.start]
     if not regular:

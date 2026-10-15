@@ -12,6 +12,8 @@
 - 테마 특징주 트랙(theme_track.py): 🔥 조회 상위 + 7% + 대금 100억 / 🧩 같은 테마 2종목↑ 급등 → 즉시 알림 + 감시
 - 조기 발굴(early_watch.py): ②조회 급등 → 감시 추가(30분마다 👀 요약), ③대금 가속 → 🚀, ⑤조기 주도주(09:15 전 500억&+3%) → 🏁 즉시 알림 + 감시 추가 → 장중 외국인·기관 잠정치로 🏁✅ 수급 확인, ④08:50 🌅 프리마켓 주목
 - 순위 스냅샷과 포착 기록, 장중 외국인·기관 잠정치(5분마다 확인, 바뀔 때만)는 data/screener.duckdb 에 저장 (추후 백테스트용)
+- 🎯 신호 모의투자(paper_trader.py): 키움 모의 서버로 시장가 매수 → 손절·추적·15:19 정리 (NXT 프리·애프터장은 가상 체결) → 19:55 당일·누적 리포트
+  (실주문은 KRX 정규장만, --once 또는 --no-paper 면 주문하지 않음)
 - 로그: data/logs/screener_YYYYMMDD.log
 """
 import argparse
@@ -37,6 +39,8 @@ from kiwoom_trading.screener.daily_summary import SUMMARY_WORDS, PriceBoard, bui
 from kiwoom_trading.screener.early_watch import EarlyDetector, EarlyHit, format_premarket, format_watch_adds
 from kiwoom_trading.screener.engine import Screener
 from kiwoom_trading.screener.market_data import KiwoomMarket
+from kiwoom_trading.screener.paper_trader import PaperTrader, build_mock_client, mock_configured
+from kiwoom_trading.screener.intraday_signals import QualityConfig
 from kiwoom_trading.screener.signal_watch import SignalWatcher, format_signals
 from kiwoom_trading.screener.store import ScreenerStore
 from kiwoom_trading.screener.theme_track import ThemeTracker, build_peer_graph, format_clusters, format_features
@@ -67,13 +71,14 @@ class StopListener:
     등록된 채팅방에서, 스캐너 시작 이후에 온 메시지만 본다. '정리' 는 메시지(update_id)당 한 번만 답한다.
     """
 
-    def __init__(self, enabled: bool, on_summary=None) -> None:
+    def __init__(self, enabled: bool, on_summary=None, on_tick=None) -> None:
         load_env()
         self.enabled = enabled
         self.chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
         self.started_at = time.time()
         self._last_check = 0.0
         self.on_summary = on_summary
+        self.on_tick = on_tick            # 기다리는 동안 5초마다 호출 (모의투자 보유 종목 감시)
         self._handled: set = set()
 
     def requested(self) -> Optional[str]:
@@ -98,6 +103,11 @@ class StopListener:
         """seconds 동안 기다리되, 그 사이 '멈춰'가 오면 즉시 반환."""
         end = time.monotonic() + seconds
         while time.monotonic() < end:
+            if self.on_tick:
+                try:
+                    self.on_tick()
+                except Exception:
+                    logging.exception("기다리는 중 작업 실패")
             command = self.requested()
             if command:
                 return command
@@ -277,8 +287,13 @@ class EarlyRunner:
 def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, telegram: bool,
              watcher: Optional[SignalWatcher] = None, early: Optional[EarlyRunner] = None,
              investors: Optional[InvestorRecorder] = None, themes: Optional[ThemeRunner] = None,
-             board: Optional[PriceBoard] = None) -> int:
+             board: Optional[PriceBoard] = None, trader: Optional[PaperTrader] = None) -> int:
     now = datetime.now(KST)
+    if trader is not None:
+        try:
+            trader.tick(now, force=True)
+        except Exception:
+            logging.exception("모의투자 확인 실패")
     search_1m = market.search_rank("1")
     search_day = market.search_rank("4")
     value_top = market.value_rank(pages=2)   # 200위까지: 대금 가속(③)을 순위 100위 밖에서부터 보기 위해
@@ -324,6 +339,8 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
             logging.info("매수 신호 %s건: %s", len(signals), ", ".join(f"{n} {s.kind} {s.ts:%H:%M}" for _, n, _, s in signals))
             if telegram:
                 send_telegram_message(format_signals(now, signals, watcher.flow))
+            if trader is not None:
+                trader.on_signals(now, signals, watcher.flow)
     return len(new)
 
 
@@ -333,6 +350,7 @@ def main() -> int:
     parser.add_argument("--once", action="store_true", help="1회만 실행")
     parser.add_argument("--force", action="store_true", help="장 시간/주말과 무관하게 실행")
     parser.add_argument("--no-telegram", action="store_true")
+    parser.add_argument("--no-paper", action="store_true", help="모의투자 주문 안 함 (--once 도 주문 안 함)")
     args = parser.parse_args()
 
     now = datetime.now(KST)
@@ -347,7 +365,8 @@ def main() -> int:
     screener = Screener(market, now.date())
     store = ScreenerStore()
     watcher = SignalWatcher(client, store, now.date(), prev_close={c: h.last_close for c, h in screener.hist.items()},
-                            avg_value={c: h.avg_value_20 for c, h in screener.hist.items() if h.avg_value_20})
+                            avg_value={c: h.avg_value_20 for c, h in screener.hist.items() if h.avg_value_20},
+                            quality=QualityConfig(allow_after=True))   # 애프터마켓 신호 → 모의투자 가상 체결
     early = EarlyRunner(screener, watcher, store, now)
     board = PriceBoard()
     investors = InvestorRecorder(on_snapshot=early.on_investor_snapshot)
@@ -356,12 +375,27 @@ def main() -> int:
     except Exception:
         logging.exception("테마 특징주 트랙 준비 실패 (대형 주도주 트랙만 실행)")
         themes = None
+    trader: Optional[PaperTrader] = None
+    if not args.once and not args.no_paper and mock_configured():
+        notify = (lambda text: None) if args.no_telegram else (
+            lambda text: send_telegram_message(text, parse_mode="HTML" if "<pre>" in text else ""))
+        try:
+            trader = PaperTrader(build_mock_client(), market, store, now.date(), notify)
+        except Exception:
+            logging.exception("모의투자 준비 실패 (알림만 실행)")
+            if not args.no_telegram:
+                send_telegram_message("⚠️ 모의투자 준비 실패 — 오늘은 🎯 알림만 보냅니다 (로그 확인)")
+
     def send_summary() -> None:
-        for message in build_summary(store, now.date(), board, market):
+        messages = build_summary(store, now.date(), board, market)
+        if trader is not None:
+            messages.append(trader.status_message())
+        for message in messages:
             send_telegram_message(message, parse_mode="HTML" if "<pre>" in message else "")
         logging.info("텔레그램 '정리' 응답 전송")
 
-    listener = StopListener(enabled=not args.no_telegram, on_summary=send_summary)
+    listener = StopListener(enabled=not args.no_telegram, on_summary=send_summary,
+                            on_tick=(lambda: trader.tick(datetime.now(KST))) if trader else None)
     stop_command: Optional[str] = None
     try:
         if not args.force:
@@ -379,20 +413,30 @@ def main() -> int:
                     if probe and probe[0].as_of and probe[0].as_of != now.strftime("%Y%m%d"):
                         logging.info("오늘 데이터가 없음(휴장일로 판단, 기준일 %s) → 종료", probe[0].as_of)
                         break
-                run_once(screener, market, store, telegram=not args.no_telegram, watcher=watcher, early=early, investors=investors, themes=themes, board=board)
+                run_once(screener, market, store, telegram=not args.no_telegram, watcher=watcher, early=early, investors=investors,
+                         themes=themes, board=board, trader=trader)
             except Exception:
                 logging.exception("스캔 실패 (다음 주기에 재시도)")
             if args.once:
                 break
             stop_command = listener.sleep(max(1.0, args.interval - (time.monotonic() - started)))
     finally:
+        # 19:55 전에 꺼져도(멈춰·장애) 정규장이 끝났으면 그때까지 결과로 리포트
+        if trader is not None and not trader.reported and datetime.now(KST).time() >= dtime(15, 30):
+            try:
+                trader.send_report(datetime.now(KST))
+            except Exception:
+                logging.exception("모의투자 리포트 실패")
         store.close()
     if stop_command:
         logging.info("텔레그램 '%s' 명령으로 장중 스캐너 종료", stop_command)
+        held = [t.name for t in trader.active()] if trader else []
         send_telegram_message(
             f"🛑 장중 스캐너를 멈췄습니다 ({datetime.now(KST):%H:%M})\n"
             "다시 켜려면 PC에서: Start-ScheduledTask -TaskName EllieTrading_ScreenerIntraday\n"
             "(다음 평일 07:50에는 자동으로 다시 시작됩니다)"
+            + (f"\n⚠️ 모의투자 보유 종목이 남아 있습니다: {', '.join(held)} — 손절·정리 감시도 멈춥니다 "
+               "(다시 켜면 이어서 감시, 그대로 두면 다음 날 09:00 정리)" if held else "")
         )
     return 0
 
