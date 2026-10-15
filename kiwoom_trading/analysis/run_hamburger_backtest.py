@@ -35,7 +35,7 @@ CACHE_DB = os.path.join(PROJECT_ROOT, "data", "hamburger_minute_cache.duckdb")
 
 
 def _copy(path: str) -> str:
-    dst = os.path.join(tempfile.gettempdir(), "hb_" + os.path.basename(path))
+    dst = os.path.join(tempfile.gettempdir(), f"hb_{os.getpid()}_" + os.path.basename(path))   # 동시 실행해도 겹치지 않게
     shutil.copy(path, dst)
     return dst
 
