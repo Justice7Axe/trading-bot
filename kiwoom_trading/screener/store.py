@@ -132,7 +132,8 @@ CREATE TABLE IF NOT EXISTS paper_days (       -- 모의투자 하루 기록 (계
     asset_end     BIGINT,
     reported      BOOLEAN DEFAULT false
 );
-ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS virtual BOOLEAN DEFAULT false;   -- NXT 프리·애프터장 가상 체결 (주문 없음)
+ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS virtual BOOLEAN DEFAULT false;
+ALTER TABLE paper_days ADD COLUMN IF NOT EXISTS reported_close BOOLEAN DEFAULT false;   -- 15:40 정규장 마감 리포트 (reported = 19:55 최종)   -- NXT 프리·애프터장 가상 체결 (주문 없음)
 CREATE TABLE IF NOT EXISTS watch_adds (       -- ②③④ 장중 조기 감시 추가 (재시작해도 유지)
     date        DATE,
     code        VARCHAR,

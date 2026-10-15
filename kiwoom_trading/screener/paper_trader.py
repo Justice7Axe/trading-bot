@@ -12,7 +12,7 @@
 - 가상 체결 (2026-10-15 사용자 선택 1번): 모의 서버가 지원하지 않는 NXT 프리장(08:00~08:50)·애프터장(15:30~20:00)은
   주문 없이 그 시점 통합(_AL) 시세로 사고판 것으로 기록한다. 매도 규칙은 같고, 프리장 물량은 08:49, 애프터장 물량은 19:50 에 정리.
   (신호 박스 고점은 09:00 이후로 잡으므로 프리장 신호는 사실상 나오지 않는다. 애프터장 신호는 15:30~19:30 만 통과)
-- 애프터장까지 끝난 뒤(19:55) 텔레그램 리포트: 당일 결과 + 지금까지 누적 결과 (실주문·가상 구분).
+- 텔레그램 리포트 두 번 (2026-10-15 사용자): 15:40 정규장 마감, 19:55 최종(애프터장 포함). 당일 결과 + 누적 결과 (실주문·가상 구분).
 
 모의 서버 제약 (2026-10-15 확인): NXT·SOR 주문, KRX 시간외(장전·장후·단일가) 주문 모두 미지원 → 09:00~15:30 정규장만 실주문.
 주문 API 는 초당 1회 제한이 있어 모의 서버 호출은 1.05초 간격으로 보낸다.
@@ -55,7 +55,8 @@ LIQUIDATE_AT = time(15, 19)   # 15:20 부터 장 마감 동시호가
 SESSION_CLOSE = time(15, 30)
 PRE = (time(8, 0), time(8, 45), time(8, 49))        # NXT 프리장 가상 체결: 시작, 매수 마감, 정리
 AFTER = (time(15, 30), time(19, 45), time(19, 50))  # NXT 애프터장 가상 체결
-REPORT_AT = time(19, 55)
+CLOSE_REPORT_AT = time(15, 40)   # 정규장 마감 리포트
+REPORT_AT = time(19, 55)         # 최종 리포트 (애프터장 가상 체결 포함)
 FILL_TIMEOUT_SEC = 300        # 시장가 주문이 5분 안에 체결 확인되지 않으면 실패 처리
 TICK_SECONDS = 15             # 보유 종목 가격 확인 주기
 
@@ -227,11 +228,12 @@ class PaperTrader:
         # 오늘 기록 + 전날 끝나지 않은 기록(장애로 정리 못 한 경우)
         self.trades = load_trades(store, "date = ? OR status IN ('ordered', 'open', 'selling')", [today])
         asset, holdings = mock.account()
-        row = store.conn.execute("SELECT asset_start, reported FROM paper_days WHERE date = ?", [today]).fetchone()
+        row = store.conn.execute("SELECT asset_start, reported, reported_close FROM paper_days WHERE date = ?", [today]).fetchone()
         if row is None:
             store.conn.execute("INSERT INTO paper_days (date, asset_start) VALUES (?, ?)", [today, asset])
         self.asset_start = row[0] if row else asset
-        self.reported = bool(row[1]) if row else False
+        self.reported = bool(row[1]) if row else False          # 19:55 최종
+        self.reported_close = bool(row[2]) if row else False    # 15:40 정규장 마감
         tracked = {t.code for t in self.active()}
         for code, (qty, avg, _, name) in holdings.items():       # 기록 없이 남아 있는 보유분 → 첫 정규장에 정리
             if code not in tracked:
@@ -332,6 +334,8 @@ class PaperTrader:
             self._check_halt()
         if t_now >= REPORT_AT and not self.reported:
             self.send_report(now)
+        elif t_now >= CLOSE_REPORT_AT and not self.reported_close and not self.reported:
+            self.send_report(now, final=False)
 
     def _watch(self, now: datetime, t: Trade, sess: str) -> None:
         tm = now.time()
@@ -427,7 +431,8 @@ class PaperTrader:
             self.notify(f"⛔ 모의투자 하루 손실 한도 도달 ({pnl:+,.0f}원) — 오늘은 새로 사지 않습니다 (보유 종목 매도 규칙은 계속)")
 
     # ------------------------------------------------------------ 리포트
-    def send_report(self, now: datetime) -> None:
+    def send_report(self, now: datetime, final: bool = True) -> None:
+        """final=False: 15:40 정규장 마감 리포트, True: 19:55 최종 리포트."""
         try:
             asset, _ = self.mock.account()
         except Exception:
@@ -435,11 +440,15 @@ class PaperTrader:
             asset = None
         if asset:
             self.store.conn.execute("UPDATE paper_days SET asset_end = ? WHERE date = ?", [asset, self.today])
-        for msg in build_report(self.store, self.today):
+        for msg in build_report(self.store, self.today, final):
             self.notify(msg)
-        self.store.conn.execute("UPDATE paper_days SET reported = true WHERE date = ?", [self.today])
-        self.reported = True
-        logging.info("모의투자 리포트 전송")
+        column = "reported" if final else "reported_close"
+        self.store.conn.execute(f"UPDATE paper_days SET {column} = true WHERE date = ?", [self.today])
+        if final:
+            self.reported = True
+        else:
+            self.reported_close = True
+        logging.info("모의투자 %s 리포트 전송", "최종" if final else "정규장 마감")
 
     def status_message(self) -> str:
         """'정리' 명령에 붙이는 현재 보유 현황."""
@@ -460,8 +469,8 @@ def _won(x: float) -> str:
     return f"{x / 1e4:+,.1f}만"
 
 
-def build_report(store: ScreenerStore, day: date) -> list[str]:
-    """장 마감 후 리포트: 당일 결과 + 누적 결과 (HTML <pre> 표)."""
+def build_report(store: ScreenerStore, day: date, final: bool = True) -> list[str]:
+    """장 마감 후 리포트: 당일 결과 + 누적 결과 (HTML <pre> 표). final=False 면 15:40 정규장 마감 리포트."""
     today = load_trades(store, "date = ?", [day])
     done = [t for t in today if t.status == "closed" and t.buy_price and t.sell_price]
     skipped = [t for t in today if t.status in ("skipped", "failed")]
@@ -471,7 +480,8 @@ def build_report(store: ScreenerStore, day: date) -> list[str]:
     pnl = sum(net_pnl(t) for t in done)
     wins = sum(1 for t in done if net_pnl(t) > 0)
     n_virtual = sum(1 for t in done if t.virtual)
-    lines = [f"📒 모의투자 당일 결과 {day:%m-%d}",
+    title = "최종 (애프터장 포함)" if final else "정규장 마감 (애프터장 가상 매매는 19:55 최종 리포트에)"
+    lines = [f"📒 모의투자 당일 결과 {day:%m-%d} — {title}",
              f"매매 {len(done)}건" + (f"(가상 {n_virtual})" if n_virtual else "")
              + f" · 이긴 매매 {wins}건 · 손익 {pnl:+,.0f}원 (추정 비용 0.25% 포함)"]
     if a0 and a1:
