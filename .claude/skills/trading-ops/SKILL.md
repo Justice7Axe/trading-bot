@@ -19,7 +19,13 @@ description: Ellie trading 운영 — 일일 일봉 업데이트/리포트 스�
 ## 텔레그램
 - 항상 **gooseogi 봇**을 쓴다. 토큰과 채팅 ID는 `.env.local` 에 있다. 비밀값은 절대 출력하거나 커밋하지 않는다.
 - '멈춰'(중지/정지/stop)를 보내면 5초 안에 스캐너가 멈춘다. getUpdates 는 offset 없이 읽으므로 gooseogi bot.py 에 영향을 주지 않는다.
+- **'정리'(요약/현황)** 를 보내면 그때까지의 오늘 결과를 섹션별 고정폭 표로 보낸다(`daily_summary.py`, 스캐너 실행 중 07:50~20:00).
+  - 섹션: 🧩 테마(★대장, 포착 → 현재 등락), 🏁/🔥/🚀, ⚡ 장중 포착, 🎯 매수 신호(최근 25건, 진입가 대비 수익)
+  - 현재 등락은 매분 받는 순위 데이터(PriceBoard)에서, 없으면 ka10001 시세로 채운다. 같은 메시지에는 한 번만 답한다.
+  - HTML `<pre>` 를 쓰므로 섹션마다 따로 보낸다(태그가 잘리지 않게).
 - 4,000자 단위로 나눠 전송한다(`common/telegram.py`).
+  - 일시적 네트워크 오류는 3회 재시도한다(2026-10-15 08:28 🔥 알림이 한 번 실패해 빠졌다).
+  - 예외 메시지 URL 에 봇 토큰이 들어가므로 로그에는 `***` 로 가린다.
 
 ## 데이터
 - `data/daily_ohlcv.duckdb`: daily_ohlcv, stocks(sector, listed_shares), minute_ohlcv, investor_daily(투자자별 일별 순매수, 원), backfill_status, refetch_queue

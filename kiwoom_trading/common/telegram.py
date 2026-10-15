@@ -6,6 +6,7 @@
 """
 import logging
 import os
+import time
 
 import requests
 
@@ -13,6 +14,7 @@ from kiwoom_trading.common.daily_store import load_env
 
 
 MAX_MESSAGE_LENGTH = 4000  # 텔레그램 한도 4096자, 여유를 둔다
+SEND_RETRIES = 3
 
 
 def _split(text: str) -> list[str]:
@@ -34,8 +36,11 @@ def is_configured() -> bool:
     return bool(os.getenv("TELEGRAM_TOKEN") and os.getenv("TELEGRAM_CHAT_ID"))
 
 
-def send_telegram_message(text: str) -> bool:
-    """전송 성공 시 True. 설정이 없거나 실패하면 로그만 남기고 False (수집 작업을 멈추지 않는다)."""
+def send_telegram_message(text: str, parse_mode: str = "") -> bool:
+    """전송 성공 시 True. 설정이 없거나 실패하면 로그만 남기고 False (수집 작업을 멈추지 않는다).
+
+    parse_mode="HTML": <pre> 고정폭 표 등. 이때 text 는 4,000자 이하로 직접 나눠 보낸다(태그가 잘리지 않게).
+    """
     load_env()
     token = os.getenv("TELEGRAM_TOKEN", "")
     chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -44,19 +49,27 @@ def send_telegram_message(text: str) -> bool:
         return False
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    try:
-        for chunk in _split(text):
-            response = requests.post(
-                url,
-                data={"chat_id": chat_id, "text": chunk, "disable_web_page_preview": "true"},
-                timeout=15,
-            )
-            if not response.ok:
-                logging.error("텔레그램 전송 실패: status=%s body=%s", response.status_code, response.text[:300])
-                return False
-    except requests.RequestException as exc:
-        logging.error("텔레그램 전송 오류: %s", exc)
-        return False
+    for chunk in (_split(text) if not parse_mode else [text]):
+        for attempt in range(1, SEND_RETRIES + 1):        # 일시적 네트워크 오류로 알림이 사라지지 않도록 재시도
+            try:
+                response = requests.post(
+                    url,
+                    data={"chat_id": chat_id, "text": chunk, "disable_web_page_preview": "true",
+                          **({"parse_mode": parse_mode} if parse_mode else {})},
+                    timeout=15,
+                )
+            except requests.RequestException as exc:
+                # 예외 메시지에 URL(봇 토큰 포함)이 들어가므로 로그에는 가린다
+                logging.warning("텔레그램 전송 오류 (%s/%s): %s", attempt, SEND_RETRIES, str(exc).replace(token, "***"))
+                time.sleep(2 * attempt)
+                continue
+            if response.ok:
+                break
+            logging.error("텔레그램 전송 실패: status=%s body=%s", response.status_code, response.text[:300])
+            return False
+        else:
+            logging.error("텔레그램 전송 포기 (%s회 실패)", SEND_RETRIES)
+            return False
     logging.info("텔레그램 전송 완료 (%s자)", len(text))
     return True
 
