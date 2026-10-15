@@ -6,6 +6,7 @@
 - 매 주기: 실시간 조회 순위(1분, 당일 누적) + 거래대금 상위 100 → 후보 → 조건 판정
 - 새로 조건을 만족한 종목만 텔레그램으로 알림 (같은 날 같은 종목은 1회)
 - 텔레그램으로 '멈춰'(또는 중지/정지/stop)를 보내면 5초 안에 스캐너 종료
+- 텔레그램으로 '정리'(또는 요약/현황)를 보내면 오늘 포착 종목·테마·매수 신호를 표로 전송 (daily_summary.py)
 - 매수 신호: 전일 '다음 거래일 관심 종목' + 전일 '쉬어 가는 주도주' + 장중 포착 종목 + 조기 트리거 종목의
   1분봉에서 지지 반등/돌파 후 눌림 → 🎯 알림
 - 테마 특징주 트랙(theme_track.py): 🔥 조회 상위 + 7% + 대금 100억 / 🧩 같은 테마 2종목↑ 급등 → 즉시 알림 + 감시
@@ -32,6 +33,7 @@ from kiwoom_trading.common.keep_awake import prevent_sleep_until_exit
 from kiwoom_trading.common.telegram import peek_messages, send_telegram_message
 from kiwoom_trading.ingestion.collectors.daily_backfill import build_client
 from kiwoom_trading.screener.conditions import format_evaluation
+from kiwoom_trading.screener.daily_summary import SUMMARY_WORDS, PriceBoard, build_summary
 from kiwoom_trading.screener.early_watch import EarlyDetector, EarlyHit, format_premarket, format_watch_adds
 from kiwoom_trading.screener.engine import Screener
 from kiwoom_trading.screener.market_data import KiwoomMarket
@@ -60,14 +62,19 @@ STOP_CHECK_SECONDS = 5
 
 
 class StopListener:
-    """텔레그램 '멈춰' 명령 감지. 등록된 채팅방에서, 스캐너 시작 이후에 온 메시지만 본다."""
+    """텔레그램 명령 감지: '멈춰' → 스캐너 종료, '정리' → 오늘 포착 종목·테마·매수 신호 표 전송.
 
-    def __init__(self, enabled: bool) -> None:
+    등록된 채팅방에서, 스캐너 시작 이후에 온 메시지만 본다. '정리' 는 메시지(update_id)당 한 번만 답한다.
+    """
+
+    def __init__(self, enabled: bool, on_summary=None) -> None:
         load_env()
         self.enabled = enabled
         self.chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
         self.started_at = time.time()
         self._last_check = 0.0
+        self.on_summary = on_summary
+        self._handled: set = set()
 
     def requested(self) -> Optional[str]:
         if not self.enabled or not self.chat_id or time.monotonic() - self._last_check < STOP_CHECK_SECONDS:
@@ -75,8 +82,16 @@ class StopListener:
         self._last_check = time.monotonic()
         for msg in peek_messages():
             text = msg["text"].strip().lstrip("/").rstrip("!.~ ").lower()
-            if msg["chat_id"] == self.chat_id and msg["date"] >= self.started_at and text in STOP_WORDS:
+            if msg["chat_id"] != self.chat_id or msg["date"] < self.started_at:
+                continue
+            if text in STOP_WORDS:
                 return msg["text"]
+            if text in SUMMARY_WORDS and self.on_summary and msg["update_id"] not in self._handled:
+                self._handled.add(msg["update_id"])
+                try:
+                    self.on_summary()
+                except Exception:
+                    logging.exception("'정리' 응답 실패")
         return None
 
     def sleep(self, seconds: float) -> Optional[str]:
@@ -129,7 +144,9 @@ URGENT_HEADERS = {         # 즉시 알림하는 조기 트리거
 class ThemeRunner:
     """테마 특징주 트랙: 🔥 테마 특징주 / 🧩 테마 형성 → 즉시 알림 + 감시 목록 추가 (대형 주도주 트랙과 별도)."""
 
-    def __init__(self, screener: Screener, watcher: SignalWatcher, store: ScreenerStore, now: datetime) -> None:
+    def __init__(self, screener: Screener, watcher: SignalWatcher, store: ScreenerStore, now: datetime,
+                 board: Optional[PriceBoard] = None) -> None:
+        self.board = board
         conn = duckdb.connect(DEFAULT_DB_PATH, read_only=True)
         try:
             peers = build_peer_graph(conn, now.date())
@@ -140,11 +157,18 @@ class ThemeRunner:
         self.store = store
         self.today = now.date()
         self.tracker.featured = {c for src, c in store.early_alerted(self.today) if src == "테마 특징주"}
+        # 재시작해도 오늘 이미 알린 🧩 묶음은 다시 알리지 않도록 (대장별 구성 복원)
+        groups: dict[str, set[str]] = {}
+        for leader, code in store.conn.execute("SELECT leader, code FROM theme_alerts WHERE date = ?", [self.today]).fetchall():
+            groups.setdefault(leader, set()).add(code)
+        self.tracker.clusters_alerted = list(groups.values())
 
     def step(self, now: datetime, market: KiwoomMarket, search_1m: list, telegram: bool) -> None:
         if not (THEME_WINDOW[0] <= now.time() <= THEME_WINDOW[1]):
             return
         movers = market.risers()
+        if self.board is not None:
+            self.board.update(movers)
         hits, clusters = self.tracker.update(now, search_1m, movers)
         naive = now.replace(tzinfo=None)
         for h in hits:
@@ -252,7 +276,8 @@ class EarlyRunner:
 
 def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, telegram: bool,
              watcher: Optional[SignalWatcher] = None, early: Optional[EarlyRunner] = None,
-             investors: Optional[InvestorRecorder] = None, themes: Optional[ThemeRunner] = None) -> int:
+             investors: Optional[InvestorRecorder] = None, themes: Optional[ThemeRunner] = None,
+             board: Optional[PriceBoard] = None) -> int:
     now = datetime.now(KST)
     search_1m = market.search_rank("1")
     search_day = market.search_rank("4")
@@ -260,6 +285,8 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
     store.save_ranks(now, "search_1m", search_1m)
     store.save_ranks(now, "search_day", search_day)
     store.save_ranks(now, "value_krx", value_top)
+    if board is not None:
+        board.update(search_1m + value_top)
     if early is not None:
         try:
             early.step(now, market, search_1m, value_top, telegram)
@@ -321,13 +348,19 @@ def main() -> int:
     store = ScreenerStore()
     watcher = SignalWatcher(client, store, now.date(), prev_close={c: h.last_close for c, h in screener.hist.items()})
     early = EarlyRunner(screener, watcher, store, now)
+    board = PriceBoard()
     investors = InvestorRecorder(on_snapshot=early.on_investor_snapshot)
     try:
-        themes: Optional[ThemeRunner] = ThemeRunner(screener, watcher, store, now)
+        themes: Optional[ThemeRunner] = ThemeRunner(screener, watcher, store, now, board)
     except Exception:
         logging.exception("테마 특징주 트랙 준비 실패 (대형 주도주 트랙만 실행)")
         themes = None
-    listener = StopListener(enabled=not args.no_telegram)
+    def send_summary() -> None:
+        for message in build_summary(store, now.date(), board, market):
+            send_telegram_message(message, parse_mode="HTML" if "<pre>" in message else "")
+        logging.info("텔레그램 '정리' 응답 전송")
+
+    listener = StopListener(enabled=not args.no_telegram, on_summary=send_summary)
     stop_command: Optional[str] = None
     try:
         if not args.force:
@@ -345,7 +378,7 @@ def main() -> int:
                     if probe and probe[0].as_of and probe[0].as_of != now.strftime("%Y%m%d"):
                         logging.info("오늘 데이터가 없음(휴장일로 판단, 기준일 %s) → 종료", probe[0].as_of)
                         break
-                run_once(screener, market, store, telegram=not args.no_telegram, watcher=watcher, early=early, investors=investors, themes=themes)
+                run_once(screener, market, store, telegram=not args.no_telegram, watcher=watcher, early=early, investors=investors, themes=themes, board=board)
             except Exception:
                 logging.exception("스캔 실패 (다음 주기에 재시도)")
             if args.once:
