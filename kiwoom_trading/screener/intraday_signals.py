@@ -4,9 +4,10 @@
   ① 지지 반등: 당일 저점(L)과 박스 고점(H)의 중간값 S = (L+H)/2 까지 눌렸다가 버티는 봉
      - 박스 확정: H 를 만든 뒤 box_age_bars 분 동안 H 를 넘지 못함, 박스 폭 (H-L)/L ≥ min_box_pct
        (H 는 KRX 정규장 09:00 이후 고가로 잡는다 — 프리마켓의 얇은 박스는 제외. L 은 당일 전체 저가)
-     - 터치: 저가 ≤ S×(1+touch_tol), 저가 ≥ S×(1-max_pierce) (너무 깊게 깨지면 지지 실패)
+     - 터치: 저가 ≤ S×(1+support_touch_tol), 저가 ≥ S×(1-max_pierce) (너무 깊게 깨지면 지지 실패)
+       (지지선을 정확히 찍지 않고 살짝 위에서 받쳐도 지지 — 기준 차트 11:45 자리는 지지선 +0.2%)
      - 지지 확인: 종가 > S (선을 지키고 마감)
-     - 같은 눌림에서 중복 신호 금지: 신호 후 고가가 S×(1+reset_pct) 를 넘어야 다음 터치 인정
+     - 같은 눌림에서 중복 신호 금지: 신호 후 고가가 S×(1+reset_pct, 1.0%) 를 넘어야 다음 터치 인정
   ② 돌파 후 눌림: 종가가 H 를 넘고 거래량이 직전 20분 평균의 vol_mult 배 이상 → 돌파 확정
      - 이후 retest_window 분 안에 저가가 돌파선 H 근처(H×(1+touch_tol) 이하)까지 눌림
        (직전 봉에서 눌렸어도 됨, 단 H×(1-max_retest_drop) 아래로는 깨지지 않음)
@@ -23,9 +24,11 @@ class SignalConfig:
     box_age_bars: int = 30          # 박스 고점 이후 최소 경과 분
     min_box_pct: float = 0.05       # 박스 폭 (H-L)/L 최소 5%
     support_ratio: float = 0.5      # 지지선 = L + (H-L) × 0.5
-    touch_tol: float = 0.001        # 지지선/돌파선 +0.1% 이내로 내려오면 터치
+    touch_tol: float = 0.001        # 돌파 후 눌림: 돌파선 +0.1% 이내로 내려오면 터치
+    support_min_gap: int = 10       # 지지 반등 신호 사이 최소 10분 (같은 눌림 안 꼬리 반등 중복 방지, 기준 차트 간격 19~44분)
+    support_touch_tol: float = 0.003  # 지지 반등: 지지선 +0.3% 이내 (2026-10-15 사용자 기준 차트의 4번째 지지 자리 11:45 = +0.2%)
     max_pierce: float = 0.008       # 지지선 -0.8% 넘게 깨지면 지지 실패
-    reset_pct: float = 0.015        # 지지 반등: 다음 터치로 인정하려면 +1.5% 이상 반등했다 와야 함
+    reset_pct: float = 0.010        # 지지 반등: 다음 터치로 인정하려면 +1.0% 이상 반등했다 와야 함 (기준 차트: 같은 눌림 안 +0.7%, 새 반등 +1.4% — 2026-10-15 1.5%→1.0%)
     breakout_reset_pct: float = 0.008  # 돌파 후 눌림: 다음 눌림 인정 조건 (신호가 +0.8%)
     box_start: time = time(9, 0)    # 박스 고점은 KRX 정규장부터
     vol_mult: float = 3.0           # 돌파 봉 거래량 ≥ 직전 20분 평균 × 3
@@ -61,12 +64,13 @@ class QualityConfig:
     min_box_minutes: int = 60            # 지지 반등: 박스 고점 이후 60분↑ 유지 (기준 76분)
     max_from_high: float = 0.06          # 당일 고가 대비 -6% 넘게 빠진 눌림 제외 (추세 훼손)
     no_repeat_after_stop: bool = True    # 같은 종류 앞 신호가 손절가에 닿았으면 반복 신호 금지
+    breakout_above_prev_close: bool = True   # 돌파 후 눌림: 돌파선이 전일 종가 이상일 때만 (오늘 박스만 넘고 전일 종가·고가 매물대 아래면 진짜 돌파 아님)
     start: time = time(9, 0)
     end: time = time(14, 30)             # 이후 신호는 상승 여지 작음, 애프터마켓(NXT) 신호는 거래 얇음
 
 
 def reject_reason(bars: list[dict[str, Any]], s: Signal, earlier: list[Signal],
-                  config: Optional[QualityConfig] = None) -> Optional[str]:
+                  config: Optional[QualityConfig] = None, prev_close: Optional[float] = None) -> Optional[str]:
     """신호가 품질 필터에 걸리면 사유, 통과하면 None.
 
     bars: 당일 1분봉(신호 봉 이후가 섞여 있어도 신호 시각까지만 사용), earlier: 같은 종목 오늘 앞서 통과한 신호들.
@@ -83,6 +87,9 @@ def reject_reason(bars: list[dict[str, Any]], s: Signal, earlier: list[Signal],
     high = max(b["high"] for b in regular)
     if s.price < high * (1 - q.max_from_high):
         return f"당일 고가 대비 {s.price / high - 1:+.1%} (깊은 눌림)"
+    if s.kind == "돌파 후 눌림" and q.breakout_above_prev_close and prev_close and s.level < prev_close:
+        # 2026-10-15 이수스페셜티: 오늘 박스 고점 89,700 돌파 → 전일 종가 91,700·고가 92,900 아래라 매물대에 막힘
+        return f"돌파선 {s.level:,.0f} 이 전일 종가 {prev_close:,.0f} 아래 (오늘 박스만 넘은 반등)"
     if q.no_repeat_after_stop:
         for e in earlier:
             if e.kind == s.kind and any(b["low"] <= e.stop for b in upto if e.ts < b["ts"] < s.ts):
@@ -106,6 +113,7 @@ def detect_signals(bars: list[dict[str, Any]], config: Optional[SignalConfig] = 
     box_high_idx = -1
 
     support_armed = True             # 지지 반등: 다음 터치를 받을 준비
+    last_support = -10**9            # 마지막 지지 반등 신호 봉 위치
     breakout: Optional[dict] = None  # {"level", "idx", "armed", "last_signal"}
 
     for i, b in enumerate(bars):
@@ -113,6 +121,9 @@ def detect_signals(bars: list[dict[str, Any]], config: Optional[SignalConfig] = 
         if breakout is not None:
             level = breakout["level"]
             if i - breakout["idx"] > cfg.retest_window:
+                breakout = None
+            elif i > breakout["idx"] and b["close"] < level * (1 - cfg.max_retest_drop):
+                # 돌파 후 돌파선 -1.5% 아래로 마감 = 돌파 실패 → 이후 다시 튀어도 '돌파 후 눌림' 아님 (2026-10-15 레메디·서산 복기)
                 breakout = None
             else:
                 # 눌림은 (돌파 봉 또는 재무장 봉) '이후' 봉의 저가만 센다: 현재 봉 또는 직전 봉
@@ -144,14 +155,15 @@ def detect_signals(bars: list[dict[str, Any]], config: Optional[SignalConfig] = 
             support = day_low + (box_high - day_low) * cfg.support_ratio
             if not support_armed and b["high"] >= support * (1 + cfg.reset_pct):
                 support_armed = True
-            touched = b["low"] <= support * (1 + cfg.touch_tol)
+            touched = b["low"] <= support * (1 + cfg.support_touch_tol)
             held = b["low"] >= support * (1 - cfg.max_pierce) and b["close"] > support
-            if support_armed and touched and held and b["high"] < box_high:
+            if support_armed and touched and held and b["high"] < box_high and i - last_support >= cfg.support_min_gap:
                 signals.append(Signal(
                     b["ts"], "지지 반등", b["close"], support, min(b["low"], support * (1 - cfg.max_pierce)) * (1 - cfg.stop_buffer),
                     f"박스 {day_low:,.0f}~{box_high:,.0f} 의 50% {support:,.0f} 지지 (저가 {b['low']:,} = {b['low'] / support - 1:+.1%})",
                 ))
                 support_armed = False
+                last_support = i
 
         # ---- 상태 갱신 (봉 마감 후)
         if b["low"] < day_low:

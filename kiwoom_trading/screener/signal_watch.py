@@ -28,7 +28,7 @@ class SignalWatcher:
         self.today = today
         self.config = config or SignalConfig()
         self.quality = quality or QualityConfig()
-        self.prev_close = prev_close or {}            # 전일 종가 (알림 표시용)
+        self.prev_close = prev_close or {}            # 전일 종가 (돌파선이 전일 종가 위인지 판정)
         self.passed = store.passed_signals(today)     # 종목 → 오늘 통과한 신호 (손절 후 반복 금지 판정)
         self.watch: dict[str, tuple[str, str]] = {
             code: (name, "전일 관심") for code, name in store.previous_daily_watchlist(today).items()
@@ -68,7 +68,7 @@ class SignalWatcher:
                     continue
                 self.seen.add(key)
                 earlier = self.passed.setdefault(code, [])
-                reject = reject_reason(bars, s, earlier, self.quality)
+                reject = reject_reason(bars, s, earlier, self.quality, prev_close=self.prev_close.get(code))
                 if reject is None:
                     earlier.append(s)
                 alert = reject is None and s.ts >= minute_start - ALERT_WINDOW
