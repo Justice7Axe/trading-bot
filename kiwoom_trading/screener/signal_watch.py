@@ -8,27 +8,34 @@
 진행 중인 현재 분의 봉은 제외하고, 마감된 봉으로만 판단한다.
 """
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
+from typing import Optional
 
 from kiwoom_trading.ingestion.collectors.daily_backfill import KiwoomDailyClient
 from kiwoom_trading.ingestion.collectors.minute_collector import fetch_minute_bars
-from kiwoom_trading.screener.early_watch import active_rest_leaders
+from kiwoom_trading.screener.early_watch import active_rest_leaders, usual_value
 from kiwoom_trading.screener.intraday_signals import QualityConfig, Signal, SignalConfig, detect_signals, reject_reason
 from kiwoom_trading.screener.store import ScreenerStore
 
 
 ALERT_WINDOW = timedelta(minutes=5)   # 재시작 시 과거 신호를 한꺼번에 보내지 않도록 최근 신호만 알림
+STRONG_FLOW = 5.0                      # 최근 5분 대금이 같은 시간대 평소의 5배↑ → 손절·청산 안내
+STRONG_FLOW_GUIDE = ("⚡ 돈이 많이 붙은 신호 — 손절 -5%, +5% 도달 후 고점 대비 -3% 따라 올리기 권장 (당일 정리)\n"
+                     "    (1년 검증: 평소 5배↑ 신호는 이 방식이 지금보다 앞·뒤 기간 모두 나음, 아직 수익 확정은 아님)")
 
 
 class SignalWatcher:
     def __init__(self, client: KiwoomDailyClient, store: ScreenerStore, today: date, config: SignalConfig | None = None,
-                 prev_close: dict[str, float] | None = None, quality: QualityConfig | None = None) -> None:
+                 prev_close: dict[str, float] | None = None, quality: QualityConfig | None = None,
+                 avg_value: dict[str, float] | None = None) -> None:
         self.client = client
         self.store = store
         self.today = today
         self.config = config or SignalConfig()
         self.quality = quality or QualityConfig()
         self.prev_close = prev_close or {}            # 전일 종가 (돌파선이 전일 종가 위인지 판정)
+        self.avg_value = avg_value or {}              # 20일 평균 거래대금 (신호 시점 돈이 붙은 정도 계산)
+        self.flow: dict[tuple[str, datetime], tuple[float, Optional[float]]] = {}   # (종목, 신호 시각) → (최근 5분 대금, 평소 대비 배수)
         self.passed = store.passed_signals(today)     # 종목 → 오늘 통과한 신호 (손절 후 반복 금지 판정)
         self.watch: dict[str, tuple[str, str]] = {
             code: (name, "전일 관심") for code, name in store.previous_daily_watchlist(today).items()
@@ -76,16 +83,31 @@ class SignalWatcher:
                 if reject:
                     logging.info("신호 제외 %s %s %s: %s", name, s.kind, f"{s.ts:%H:%M}", reject)
                 if alert:
+                    self.flow[(code, s.ts)] = signal_flow(bars, s, self.avg_value.get(code))
                     fresh.append((code, name, source, s))
         return fresh
 
 
-def format_signals(now: datetime, items: list[tuple[str, str, str, Signal]]) -> str:
-    lines = [f"🎯 매수 신호 {now:%H:%M} ({len(items)}건) — 관찰용 (근거 필터 후에도 1년 백테스트 손익분기 부근, 진입 방식 개선 전)"]
+def signal_flow(bars: list[dict], s: Signal, avg_value_20: Optional[float]) -> tuple[float, Optional[float]]:
+    """신호 시점 최근 5분 정규장 거래대금(원)과 같은 시간대 평소 대비 배수(20일 평균 × 시간대 비중)."""
+    reg = [b for b in bars if time(9, 0) <= b["ts"].time() and b["ts"] <= s.ts]
+    v5 = float(sum(b["close"] * b["volume"] for b in reg[-5:]))
+    usual = usual_value(avg_value_20, s.ts.time(), 5) if avg_value_20 else 0
+    return v5, (v5 / usual if usual else None)
+
+
+def format_signals(now: datetime, items: list[tuple[str, str, str, Signal]],
+                   flow: Optional[dict[tuple[str, datetime], tuple[float, Optional[float]]]] = None) -> str:
+    lines = [f"🎯 매수 신호 {now:%H:%M} ({len(items)}건) — 관찰용 (1년 검증상 아직 비용을 넘는 수익 규칙 없음)"]
     for code, name, source, s in items:
         lines.append(
             f"\n{name}({code}) [{s.kind}] {s.ts:%H:%M}봉\n"
             f"  진입 {s.price:,.0f} / 손절 {s.stop:,.0f} ({s.stop / s.price - 1:+.1%}) — {source}\n"
             f"  {s.reason}"
         )
+        v5, mult = (flow or {}).get((code, s.ts), (None, None))
+        if v5 is not None:
+            lines.append(f"  돈: 최근 5분 {v5 / 1e8:,.0f}억" + (f" = 이 시간대 평소의 {mult:,.1f}배" if mult is not None else ""))
+            if mult is not None and mult >= STRONG_FLOW:
+                lines.append("  " + STRONG_FLOW_GUIDE)
     return "\n".join(lines)
