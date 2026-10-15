@@ -7,7 +7,7 @@
 🔥 테마 특징주: 1분 조회 순위 20위 이내(최근 10분 안) + 등락 +7%↑ + 누적 대금 100억↑ (순위 제한 없음)
 🧩 테마 형성: +10%↑ 급등주(대장 후보)를 씨앗으로, 씨앗과 '같은 테마'로 직접 연결된 급등주(+5%↑, 대금 30억↑)가 1개↑ 이면 알림
    (연쇄 연결 금지 — 처음 버전은 A-B, B-C 가 이어져 50종목 거대 묶음이 됐다)
-   같은 테마 = ① 과거 120일 '시장 영향 뺀 잔차 수익률' 상관 ≥ 0.25 (무작위 쌍 2%, 정리표 기존 테마 쌍 50~100%)
+   같은 테마 = ① 평소 함께 오르내림: 과거 120일 수익률이 시장 전체 영향을 빼고도 함께 움직임(상관 ≥ 0.25 — 무작위 쌍 2%, 정리표 기존 테마 쌍 50~100%)
               ② 키움 테마 공유 ③ 오늘 처음 생긴 테마(예: 알래스카LNG, 과거 상관 없음)는 같은 업종 + 둘 다 +10%↑
    대장 = 묶음 안에서 누적 대금 1위
 급등주 목록: ka10027 등락률 상위(통합 KRX+NXT, ETF·ETN 제외, 대금 30억↑) 매분 1회.
@@ -60,8 +60,21 @@ def build_peer_graph(conn: duckdb.DuckDBPyConnection, before: date, threshold: f
     graph: dict[str, set[str]] = {}
     for i, j in zip(*np.where(C >= threshold)):
         graph.setdefault(cols[i], set()).add(cols[j])
-    logging.info("동조 종목 그래프: %s종목, 쌍 %s", len(graph), sum(len(v) for v in graph.values()) // 2)
+    logging.info("평소 함께 오르내리는 종목 쌍: %s종목, %s쌍", len(graph), sum(len(v) for v in graph.values()) // 2)
     return graph
+
+
+PEER_LINK = "평소 함께 오르내림"      # 과거 120일 수익률이 (시장 전체 영향을 빼고도) 함께 움직인 종목끼리
+SECTOR_SUFFIX = "업종 동시 급등"
+
+
+def display_label(label: str) -> str:
+    """예전에 저장된 묶음 이름('동조', '업종 X 동반 급등')을 쉬운 말로."""
+    if label == "동조":
+        return "평소 함께 오르내리는 종목"
+    if label.startswith("업종 ") and label.endswith(" 동반 급등"):
+        return f"{label[3:-6]} 업종 동시 급등"
+    return label
 
 
 @dataclass
@@ -100,13 +113,13 @@ class ThemeTracker:
     def _linked(self, a: RankItem, b: RankItem) -> Optional[str]:
         cfg = self.config
         if b.code in self.peers.get(a.code, ()):
-            return "동조"
+            return PEER_LINK
         shared = set(self.theme_map.get(a.code, ())) & set(self.theme_map.get(b.code, ()))
         if shared:
             return self.theme_names.get(sorted(shared)[0], "키움 테마")
         sa, sb = self.sectors.get(a.code), self.sectors.get(b.code)
         if sa and sa == sb and (a.change_rate or 0) >= cfg.same_sector_change and (b.change_rate or 0) >= cfg.same_sector_change:
-            return f"업종 {sa} 동반 급등"
+            return f"{sa} 업종 동시 급등"
         return None
 
     def clusters(self, movers: list[RankItem]) -> list[ThemeCluster]:
@@ -135,9 +148,14 @@ class ThemeTracker:
             if len(members) < cfg.min_members:
                 continue
             assigned |= set(members)
-            named = [w for w in reasons if w != "동조" and not w.startswith("업종")]
-            label = max(set(named), key=named.count) if named else (reasons[0] if reasons else "동조")
             leader = max(members.values(), key=lambda m: m.trade_value or 0)
+            named = [w for w in reasons if w != PEER_LINK and not w.endswith(SECTOR_SUFFIX)]
+            if named:                                     # 키움 테마 이름이 있으면 그것을
+                label = max(set(named), key=named.count)
+            elif any(w.endswith(SECTOR_SUFFIX) for w in reasons):
+                label = next(w for w in reasons if w.endswith(SECTOR_SUFFIX))
+            else:                                         # 과거에 함께 오르내린 종목끼리 → 대장 이름으로 부른다
+                label = f"{leader.name} 관련주 · 평소 함께 오르내림"
             out.append(ThemeCluster(members, label, leader))
         return out
 
