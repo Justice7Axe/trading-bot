@@ -1,0 +1,548 @@
+"""🎯 매수 신호 모의투자 — 키움 모의 서버(mockapi.kiwoom.com) 정규장 실주문 + NXT 프리·애프터장 가상 체결.
+
+규칙 (2026-10-15 사용자 확정):
+- 매수: 품질 필터를 통과해 알림한 🎯 신호만, 시장가. 현재가가 신호가(신호 봉 종가)보다 +1% 넘게 올랐으면 추격하지 않는다.
+- 금액: 종목당 100만 원 안에서 살 수 있는 만큼. 1주 가격이 100만 원을 넘으면 1주 (상한 없음).
+- 동시 보유 최대 5종목, 이미 보유한 종목은 추가 매수 안 함.
+- 하루 손실 한도: 실현 + 평가 손익이 그날 시작 자산의 -3% 에 닿으면 새로 사지 않는다.
+- 매도:
+    · 돈이 평소 5배↑ 붙은 신호('추적'): 처음 손절 -5%, +5% 도달 뒤 고점 대비 -3% 에 청산
+    · 그 밖('기본'): 신호 손절가
+    · 15:19 남은 종목은 모두 시장가 정리 (15:20 부터는 장 마감 동시호가)
+- 가상 체결 (2026-10-15 사용자 선택 1번): 모의 서버가 지원하지 않는 NXT 프리장(08:00~08:50)·애프터장(15:30~20:00)은
+  주문 없이 그 시점 통합(_AL) 시세로 사고판 것으로 기록한다. 매도 규칙은 같고, 프리장 물량은 08:49, 애프터장 물량은 19:50 에 정리.
+  (신호 박스 고점은 09:00 이후로 잡으므로 프리장 신호는 사실상 나오지 않는다. 애프터장 신호는 15:30~19:30 만 통과)
+- 애프터장까지 끝난 뒤(19:55) 텔레그램 리포트: 당일 결과 + 지금까지 누적 결과 (실주문·가상 구분).
+
+모의 서버 제약 (2026-10-15 확인): NXT·SOR 주문, KRX 시간외(장전·장후·단일가) 주문 모두 미지원 → 09:00~15:30 정규장만 실주문.
+주문 API 는 초당 1회 제한이 있어 모의 서버 호출은 1.05초 간격으로 보낸다.
+시세는 실서버 클라이언트(KiwoomMarket, KRX 시세)로 본다. 주문·잔고만 모의 서버.
+
+    .venv\\Scripts\\python.exe -m kiwoom_trading.screener.paper_trader --status            # 모의 계좌 잔고·예수금
+    .venv\\Scripts\\python.exe -m kiwoom_trading.screener.paper_trader --report [YYYYMMDD] # 리포트 콘솔 미리보기
+"""
+import argparse
+import html
+import logging
+import os
+import sys
+import time as _time
+from dataclasses import dataclass
+from datetime import date, datetime, time
+from typing import Any, Callable, Optional
+
+from kiwoom_trading.common.daily_store import load_env
+from kiwoom_trading.ingestion.collectors.daily_backfill import KiwoomDailyClient, _to_int
+from kiwoom_trading.screener.daily_summary import _pct, _table
+from kiwoom_trading.screener.intraday_signals import Signal
+from kiwoom_trading.screener.market_data import KiwoomMarket, _code
+from kiwoom_trading.screener.store import ScreenerStore
+
+
+MOCK_BASE_URL = "https://mockapi.kiwoom.com"
+BUDGET_PER_STOCK = 1_000_000
+MAX_POSITIONS = 5
+DAILY_LOSS_LIMIT = 0.03
+MAX_CHASE = 0.01              # 신호가 대비 +1% 넘게 오르면 추격 안 함
+STRONG_FLOW = 5.0             # 평소 5배↑ → '추적' 방식
+STRONG_STOP = 0.05            # 추적: 처음 손절 -5%
+TRAIL_START = 0.05            # 추적: +5% 도달 뒤
+TRAIL_GAP = 0.03              # 추적: 고점 대비 -3%
+COST = 0.0025                 # 추정 왕복 비용 (수수료+세금, 백테스트와 같은 값)
+
+SESSION_OPEN = time(9, 0)
+LIQUIDATE_AT = time(15, 19)   # 15:20 부터 장 마감 동시호가
+SESSION_CLOSE = time(15, 30)
+PRE = (time(8, 0), time(8, 45), time(8, 49))        # NXT 프리장 가상 체결: 시작, 매수 마감, 정리
+AFTER = (time(15, 30), time(19, 45), time(19, 50))  # NXT 애프터장 가상 체결
+REPORT_AT = time(19, 55)
+FILL_TIMEOUT_SEC = 300        # 시장가 주문이 5분 안에 체결 확인되지 않으면 실패 처리
+TICK_SECONDS = 15             # 보유 종목 가격 확인 주기
+
+ACTIVE = ("ordered", "open", "selling")
+
+
+def session(t: time) -> Optional[str]:
+    """'real' = KRX 정규장(실주문), 'pre'/'after' = NXT 프리·애프터장(가상 체결), None = 매매 없음."""
+    if SESSION_OPEN <= t < SESSION_CLOSE:
+        return "real"
+    if PRE[0] <= t < SESSION_OPEN:
+        return "pre"
+    if AFTER[0] <= t < time(20, 0):
+        return "after"
+    return None
+
+
+class MockClient(KiwoomDailyClient):
+    """모의 서버 전용 클라이언트. 실서버 주소면 만들지 않는다 (실계좌 주문 방지)."""
+
+    MIN_GAP = 1.05
+
+    def __init__(self, base_url: str, app_key: str, secret_key: str) -> None:
+        if "mockapi" not in base_url:
+            raise RuntimeError(f"모의투자는 모의 서버에서만 실행합니다: {base_url}")
+        super().__init__(base_url, app_key, secret_key)
+        self._last_mock = 0.0
+
+    def _post(self, path: str, api_id: str, body: dict[str, Any], cont_yn: str = "N", next_key: str = ""):
+        wait = self.MIN_GAP - (_time.monotonic() - self._last_mock)
+        if wait > 0:
+            _time.sleep(wait)
+        try:
+            return super()._post(path, api_id, body, cont_yn, next_key)
+        finally:
+            self._last_mock = _time.monotonic()
+
+    # ------------------------------------------------------------ 계좌·주문
+    def account(self) -> tuple[int, dict[str, tuple[int, float, int, str]]]:
+        """kt00018 → (추정 예탁자산, {코드: (보유수량, 매입단가, 주문가능수량, 이름)})"""
+        payload, _, _ = self._post("/api/dostk/acnt", "kt00018", {"qry_tp": "1", "dmst_stex_tp": "KRX"})
+        holdings = {}
+        for row in payload.get("acnt_evlt_remn_indv_tot") or []:
+            qty = _to_int(row.get("rmnd_qty")) or 0
+            if qty > 0:
+                holdings[_code(row.get("stk_cd"))] = (qty, float(_to_int(row.get("pur_pric")) or 0),
+                                                      _to_int(row.get("trde_able_qty")) or 0, str(row.get("stk_nm") or "").strip())
+        return _to_int(payload.get("prsm_dpst_aset_amt")) or 0, holdings
+
+    def cash(self) -> int:
+        """kt00001 주문 가능 금액."""
+        payload, _, _ = self._post("/api/dostk/acnt", "kt00001", {"qry_tp": "3"})
+        return _to_int(payload.get("ord_alow_amt")) or 0
+
+    def market_order(self, side: str, code: str, qty: int) -> str:
+        """시장가 주문 → 주문번호. side: 'buy' | 'sell'"""
+        api = {"buy": "kt10000", "sell": "kt10001"}[side]
+        payload, _, _ = self._post("/api/dostk/ordr", api, {"dmst_stex_tp": "KRX", "stk_cd": code, "ord_qty": str(qty),
+                                                            "ord_uv": "", "trde_tp": "3", "cond_uv": ""})
+        return str(payload.get("ord_no") or "")
+
+    def fill_price(self, order_no: str, code: str) -> Optional[float]:
+        """ka10076 체결 내역(그 종목만)에서 주문번호의 평균 체결가."""
+        payload, _, _ = self._post("/api/dostk/acnt", "ka10076", {"stk_cd": code, "qry_tp": "1", "sell_tp": "0", "ord_no": "", "stex_tp": "0"})
+        qty = amount = 0
+        for row in payload.get("cntr") or []:
+            if str(row.get("ord_no") or "").lstrip("0") == order_no.lstrip("0"):
+                q, p = _to_int(row.get("cntr_qty")) or 0, _to_int(row.get("cntr_pric")) or 0
+                qty, amount = qty + q, amount + q * p
+        return amount / qty if qty else None
+
+
+def build_mock_client() -> MockClient:
+    load_env()
+    app_key, secret = os.getenv("KIWOOM_MOCK_APP_KEY", ""), os.getenv("KIWOOM_MOCK_SECRET_KEY", "")
+    if not app_key or not secret:
+        raise RuntimeError("KIWOOM_MOCK_APP_KEY / KIWOOM_MOCK_SECRET_KEY 를 .env.local 에 설정해주세요.")
+    return MockClient(os.getenv("KIWOOM_MOCK_BASE_URL", MOCK_BASE_URL), app_key, secret)
+
+
+def mock_configured() -> bool:
+    load_env()
+    return bool(os.getenv("KIWOOM_MOCK_APP_KEY") and os.getenv("KIWOOM_MOCK_SECRET_KEY"))
+
+
+# ---------------------------------------------------------------- 규칙 (순수 함수)
+def order_qty(price: float, budget: int = BUDGET_PER_STOCK) -> int:
+    """100만 원 안에서 살 수 있는 수량, 1주가 100만 원을 넘으면 1주."""
+    return max(1, int(budget // price))
+
+
+def exit_check(mode: str, buy_price: float, stop: float, peak: float, price: float) -> tuple[float, float, Optional[str]]:
+    """현재가로 (새 손절가, 새 고점, 매도 사유|None). 추적 방식은 +5% 도달 뒤 손절가를 고점 -3% 로 따라 올린다."""
+    peak = max(peak, price)
+    if mode == "추적" and peak >= buy_price * (1 + TRAIL_START):
+        stop = max(stop, peak * (1 - TRAIL_GAP))
+    if price <= stop:
+        trailing = mode == "추적" and stop > buy_price * (1 - STRONG_STOP) + 1e-9
+        return stop, peak, ("고점 대비 -3%" if trailing else "손절")
+    return stop, peak, None
+
+
+@dataclass
+class Trade:
+    id: str
+    date: date
+    code: str
+    name: str
+    kind: str
+    source: str
+    signal_ts: Optional[datetime]
+    signal_price: Optional[float]
+    flow_mult: Optional[float]
+    mode: str
+    status: str
+    qty: int = 0
+    buy_ts: Optional[datetime] = None
+    buy_order_no: str = ""
+    buy_price: Optional[float] = None
+    stop: Optional[float] = None
+    peak: Optional[float] = None
+    sell_ts: Optional[datetime] = None
+    sell_order_no: str = ""
+    sell_price: Optional[float] = None
+    sell_reason: str = ""
+    note: str = ""
+    virtual: bool = False       # NXT 프리·애프터장 가상 체결 (주문 없음)
+
+
+FIELDS = list(Trade.__dataclass_fields__)
+
+
+def save_trade(store: ScreenerStore, t: Trade) -> None:
+    cols = ", ".join(FIELDS)
+    store.conn.execute(f"INSERT OR REPLACE INTO paper_trades ({cols}) VALUES ({', '.join('?' * len(FIELDS))})",
+                       [getattr(t, f) for f in FIELDS])
+
+
+def load_trades(store: ScreenerStore, where: str, params: list) -> list[Trade]:
+    rows = store.conn.execute(f"SELECT {', '.join(FIELDS)} FROM paper_trades WHERE {where} ORDER BY coalesce(buy_ts, signal_ts)", params).fetchall()
+    return [Trade(*[(v or "") if FIELDS[k] in ("buy_order_no", "sell_order_no", "sell_reason", "note") else v
+                    for k, v in enumerate(r)]) for r in rows]
+
+
+def net_pnl(t: Trade, price: Optional[float] = None) -> Optional[float]:
+    """원 단위 손익 (추정 비용 0.25% 차감). price 를 주면 평가 손익."""
+    exit_price = price if price is not None else t.sell_price
+    if not t.buy_price or not exit_price or not t.qty:
+        return None
+    return (exit_price - t.buy_price) * t.qty - t.buy_price * t.qty * COST
+
+
+def net_ret(t: Trade) -> Optional[float]:
+    return t.sell_price / t.buy_price - 1 - COST if t.buy_price and t.sell_price else None
+
+
+# ---------------------------------------------------------------- 실행
+class PaperTrader:
+    def __init__(self, mock: MockClient, market: KiwoomMarket, store: ScreenerStore, today: date,
+                 notify: Optional[Callable[[str], Any]] = None) -> None:
+        self.mock = mock
+        self.market = market
+        self.store = store
+        self.today = today
+        self.notify = notify or (lambda text: None)
+        self.halted = False
+        self.last_price: dict[str, float] = {}
+        self._last_tick = 0.0
+        # 오늘 기록 + 전날 끝나지 않은 기록(장애로 정리 못 한 경우)
+        self.trades = load_trades(store, "date = ? OR status IN ('ordered', 'open', 'selling')", [today])
+        asset, holdings = mock.account()
+        row = store.conn.execute("SELECT asset_start, reported FROM paper_days WHERE date = ?", [today]).fetchone()
+        if row is None:
+            store.conn.execute("INSERT INTO paper_days (date, asset_start) VALUES (?, ?)", [today, asset])
+        self.asset_start = row[0] if row else asset
+        self.reported = bool(row[1]) if row else False
+        tracked = {t.code for t in self.active()}
+        for code, (qty, avg, _, name) in holdings.items():       # 기록 없이 남아 있는 보유분 → 첫 정규장에 정리
+            if code not in tracked:
+                t = Trade(f"{today:%Y%m%d}-{code}-carry", today, code, name, "이월", "이월", None, None, None, "이월", "open",
+                          qty=qty, buy_ts=datetime.combine(today, SESSION_OPEN), buy_price=avg, stop=None, peak=avg,
+                          note="기록 없는 보유분 — 첫 정규장에 정리")
+                self.trades.append(t)
+                save_trade(store, t)
+        logging.info("모의투자 준비: 추정자산 %s원, 보유 %s종목, 오늘 기록 %s건", f"{asset:,}", len(holdings), len(self.trades))
+
+    def active(self) -> list[Trade]:
+        return [t for t in self.trades if t.status in ACTIVE]
+
+    # ------------------------------------------------------------ 매수
+    def on_signals(self, now: datetime, items: list[tuple[str, str, str, Signal]],
+                   flow: dict[tuple[str, datetime], tuple[float, Optional[float]]]) -> None:
+        for code, name, source, s in items:
+            mult = (flow.get((code, s.ts)) or (None, None))[1]
+            mode = "추적" if mult is not None and mult >= STRONG_FLOW else "기본"
+            t = Trade(f"{s.ts:%Y%m%d}-{code}-{s.ts:%H%M}-{s.kind}", self.today, code, name, s.kind, source, s.ts, s.price,
+                      mult, mode, "skipped", stop=s.stop)
+            if any(x.id == t.id for x in self.trades):
+                continue
+            try:
+                self._buy(now, t, s)
+            except Exception as exc:
+                logging.exception("모의 매수 실패 %s", name)
+                t.status, t.note = "failed", f"주문 오류: {exc}"[:300]
+                self.notify(f"⚠️ 모의 매수 실패 {name}({code}) — {t.note}")
+            self.trades.append(t)
+            save_trade(self.store, t)
+
+    def _skip_reason(self, now: datetime, t: Trade) -> Optional[str]:
+        tm = now.time()
+        if not (SESSION_OPEN <= tm < LIQUIDATE_AT or PRE[0] <= tm < PRE[1] or AFTER[0] <= tm < AFTER[1]):
+            return "매수 시간 아님 (정규장 09:00~15:19, 가상 08:00~08:45·15:30~19:45)"
+        if self.halted:
+            return f"하루 손실 한도 -{DAILY_LOSS_LIMIT:.0%} 도달"
+        if any(x.code == t.code for x in self.active()):
+            return "이미 보유 중"
+        if len(self.active()) >= MAX_POSITIONS:
+            return f"최대 {MAX_POSITIONS}종목 보유 중"
+        return None
+
+    def _buy(self, now: datetime, t: Trade, s: Signal) -> None:
+        reason = self._skip_reason(now, t)
+        t.virtual = session(now.time()) != "real"
+        price = None
+        if reason is None:
+            q = self.market.quote(t.code, integrated=t.virtual)   # 가상은 NXT 체결까지 반영한 통합 시세
+            price = q.price if q else None
+            if not price:
+                reason = "시세 조회 실패"
+            elif price > s.price * (1 + MAX_CHASE):
+                reason = f"현재가 {price:,}원이 신호가보다 {price / s.price - 1:+.1%} — 추격 안 함"
+        if reason is None:
+            t.qty = order_qty(price)
+            cash = self.mock.cash() if not t.virtual else t.qty * price
+            if cash < t.qty * price:
+                reason = f"주문 가능 금액 부족 ({cash:,}원 < {t.qty * price:,}원)"
+        if reason:
+            t.note = reason
+            logging.info("모의 매수 건너뜀 %s: %s", t.name, reason)
+            self.notify(f"⏭ 모의 매수 건너뜀 {t.name}({t.code}) [{t.kind} {s.ts:%H:%M}] — {reason}")
+            return
+        if t.virtual:
+            t.status, t.buy_ts, t.buy_price, t.peak = "open", now.replace(tzinfo=None), float(price), float(price)
+            if t.mode == "추적":
+                t.stop = t.buy_price * (1 - STRONG_STOP)
+            self.last_price[t.code] = price
+            logging.info("가상 매수 %s %s주 × %s", t.name, t.qty, price)
+            self.notify(f"🟣 가상 매수 {t.name}({t.code}) {t.qty}주 × {price:,}원 = {t.qty * price / 1e4:,.0f}만 원 "
+                        f"(NXT {'프리장' if now.time() < SESSION_OPEN else '애프터장'}, 주문 없이 기록만)\n"
+                        f"  [{t.kind} {s.ts:%H:%M}] 손절 {t.stop:,.0f}원 ({t.stop / price - 1:+.1%}) — {t.source}")
+            return
+        t.buy_order_no = self.mock.market_order("buy", t.code, t.qty)
+        t.status, t.buy_ts, t.peak = "ordered", now.replace(tzinfo=None), float(price)
+        self.last_price[t.code] = price
+        how = (f"손절 -{STRONG_STOP:.0%}, +{TRAIL_START:.0%} 뒤 고점 -{TRAIL_GAP:.0%} (평소 {t.flow_mult:.1f}배)"
+               if t.mode == "추적" else f"손절 {s.stop:,.0f}원 ({s.stop / price - 1:+.1%})")
+        logging.info("모의 매수 주문 %s %s주 (주문 %s)", t.name, t.qty, t.buy_order_no)
+        self.notify(f"🟢 모의 매수 {t.name}({t.code}) {t.qty}주 × 약 {price:,}원 = {t.qty * price / 1e4:,.0f}만 원\n"
+                    f"  [{t.kind} {s.ts:%H:%M}] {how} — {t.source}")
+
+    # ------------------------------------------------------------ 보유·매도
+    def tick(self, now: datetime, force: bool = False) -> None:
+        """보유 종목 가격 확인 → 손절·추적·15:19 정리(가상은 08:49·19:50), 주문 체결 확인, 19:55 리포트. 15초에 한 번만 실행."""
+        if not force and _time.monotonic() - self._last_tick < TICK_SECONDS:
+            return
+        self._last_tick = _time.monotonic()
+        t_now = now.time()
+        sess = session(t_now)
+        if sess == "real" and any(t.status in ("ordered", "selling") for t in self.trades):
+            self._reconcile(now)
+        if sess:
+            for t in [x for x in self.trades if x.status == "open" and (x.virtual or sess == "real")]:
+                self._watch(now, t, sess)
+            self._check_halt()
+        if t_now >= REPORT_AT and not self.reported:
+            self.send_report(now)
+
+    def _watch(self, now: datetime, t: Trade, sess: str) -> None:
+        tm = now.time()
+        if t.date < self.today or t.mode == "이월":
+            return self._sell(now, t, "전날 남은 물량 정리")
+        if t.virtual:
+            bought = session(t.buy_ts.time())
+            if bought != sess or tm >= {"pre": PRE[2], "after": AFTER[2]}[sess]:
+                return self._sell(now, t, "가상 시간 끝 정리")
+        elif tm >= LIQUIDATE_AT:
+            return self._sell(now, t, "장 마감 정리")
+        q = self.market.quote(t.code, integrated=t.virtual)
+        if not q:
+            return
+        self.last_price[t.code] = q.price
+        stop, peak, reason = exit_check(t.mode, t.buy_price, t.stop, t.peak or t.buy_price, q.price)
+        if (stop, peak) != (t.stop, t.peak):
+            t.stop, t.peak = stop, peak
+            save_trade(self.store, t)
+        if reason:
+            self._sell(now, t, reason)
+
+    def _sell(self, now: datetime, t: Trade, reason: str) -> None:
+        try:   # 매도 직전 시세: 실주문은 체결가를 못 받을 때 쓸 추정가, 가상은 이 값이 체결가
+            q = self.market.quote(t.code, integrated=t.virtual)
+            if q:
+                self.last_price[t.code] = q.price
+        except Exception:
+            logging.warning("매도 전 시세 조회 실패 %s", t.code)
+        if t.virtual:
+            if t.code not in self.last_price:
+                return                                  # 다음 확인 때 다시
+            t.status, t.sell_ts, t.sell_reason = "closed", now.replace(tzinfo=None), reason
+            t.sell_price = float(self.last_price[t.code])
+            save_trade(self.store, t)
+            self._notify_closed(t)
+            return
+        try:
+            _, holdings = self.mock.account()
+            qty = holdings.get(t.code, (0, 0, 0, ""))[2] or t.qty
+            t.sell_order_no = self.mock.market_order("sell", t.code, qty)
+        except Exception as exc:
+            logging.exception("모의 매도 주문 실패 %s", t.name)
+            t.note = f"매도 오류: {exc}"[:300]
+            save_trade(self.store, t)
+            self.notify(f"⚠️ 모의 매도 실패 {t.name}({t.code}) — {reason}, 다음 확인 때 다시 시도\n  {t.note}")
+            return
+        t.status, t.sell_ts, t.sell_reason = "selling", now.replace(tzinfo=None), reason
+        save_trade(self.store, t)
+        logging.info("모의 매도 주문 %s %s주 (%s, 주문 %s)", t.name, qty, reason, t.sell_order_no)
+
+    def _reconcile(self, now: datetime) -> None:
+        """주문 체결 확인: 매수 → 계좌 보유 수량·매입단가, 매도 → 보유 사라짐 + 체결가."""
+        _, holdings = self.mock.account()
+        naive = now.replace(tzinfo=None)
+        for t in [x for x in self.trades if x.status in ("ordered", "selling")]:
+            held = holdings.get(t.code)
+            if t.status == "ordered":
+                if held:
+                    t.qty, t.buy_price = held[0], held[1]
+                    t.peak = t.buy_price
+                    if t.mode == "추적":
+                        t.stop = t.buy_price * (1 - STRONG_STOP)
+                    t.status = "open"
+                    self.notify(f"✅ 모의 매수 체결 {t.name} {t.qty}주 × {t.buy_price:,.0f}원, 손절 {t.stop:,.0f}원")
+                elif (naive - t.buy_ts).total_seconds() > FILL_TIMEOUT_SEC:
+                    t.status, t.note = "failed", "5분 안에 체결 확인 안 됨"
+                    self.notify(f"⚠️ 모의 매수 미체결 {t.name} — {t.note}")
+            elif not held:
+                t.sell_price = (self.mock.fill_price(t.sell_order_no, t.code) if t.sell_order_no else None) or self.last_price.get(t.code)
+                t.status = "closed"
+                self._notify_closed(t)
+            elif (naive - t.sell_ts).total_seconds() > FILL_TIMEOUT_SEC:
+                t.status = "open"          # 매도가 안 됐으면 다시 감시 → 다음 확인 때 재주문
+                t.note = "매도 미체결 — 재시도"
+            save_trade(self.store, t)
+
+    def _notify_closed(self, t: Trade) -> None:
+        pnl, ret = net_pnl(t), net_ret(t)
+        icon = "🔴" if (pnl or 0) < 0 else "🔵"
+        price = f"{t.sell_price:,.0f}원" if t.sell_price else "체결가 확인 안 됨"
+        result = f"{_pct(ret)}% ({pnl:+,.0f}원, 비용 0.25% 포함)" if pnl is not None else "손익 계산 불가"
+        self.notify(f"{icon} {'가상' if t.virtual else '모의'} 매도 {t.name} {t.qty}주 × {price} — {t.sell_reason}\n"
+                    f"  매수 {t.buy_price:,.0f}원 → {result}")
+
+    def _check_halt(self) -> None:
+        if self.halted or not self.asset_start:
+            return
+        today = [t for t in self.trades if t.date == self.today and t.buy_price]
+        pnl = sum((net_pnl(t) or 0) if t.status == "closed" else (net_pnl(t, self.last_price.get(t.code)) or 0) for t in today)
+        if pnl <= -self.asset_start * DAILY_LOSS_LIMIT:
+            self.halted = True
+            self.notify(f"⛔ 모의투자 하루 손실 한도 도달 ({pnl:+,.0f}원) — 오늘은 새로 사지 않습니다 (보유 종목 매도 규칙은 계속)")
+
+    # ------------------------------------------------------------ 리포트
+    def send_report(self, now: datetime) -> None:
+        try:
+            asset, _ = self.mock.account()
+        except Exception:
+            logging.exception("모의 계좌 조회 실패 (리포트는 기록만으로 작성)")
+            asset = None
+        if asset:
+            self.store.conn.execute("UPDATE paper_days SET asset_end = ? WHERE date = ?", [asset, self.today])
+        for msg in build_report(self.store, self.today):
+            self.notify(msg)
+        self.store.conn.execute("UPDATE paper_days SET reported = true WHERE date = ?", [self.today])
+        self.reported = True
+        logging.info("모의투자 리포트 전송")
+
+    def status_message(self) -> str:
+        """'정리' 명령에 붙이는 현재 보유 현황."""
+        held = [t for t in self.active() if t.buy_price]
+        if not held:
+            done = [t for t in self.trades if t.date == self.today and t.status == "closed"]
+            pnl = sum(net_pnl(t) or 0 for t in done)
+            return f"💼 모의투자: 보유 없음 · 오늘 청산 {len(done)}건 {pnl:+,.0f}원"
+        rows = []
+        for t in held:
+            px = self.last_price.get(t.code)
+            rows.append((t.buy_ts.strftime("%H:%M") if t.buy_ts else "", t.name,
+                         _pct(px / t.buy_price - 1 if px else None), f"{t.stop:,.0f}" if t.stop else "-"))
+        return f"💼 모의투자 보유 {len(held)}종목" + _table(rows, ("매수", "종목", "현재%", "손절가"), (5, 14, 6, 9))
+
+
+def _won(x: float) -> str:
+    return f"{x / 1e4:+,.1f}만"
+
+
+def build_report(store: ScreenerStore, day: date) -> list[str]:
+    """장 마감 후 리포트: 당일 결과 + 누적 결과 (HTML <pre> 표)."""
+    today = load_trades(store, "date = ?", [day])
+    done = [t for t in today if t.status == "closed" and t.buy_price and t.sell_price]
+    skipped = [t for t in today if t.status in ("skipped", "failed")]
+    days = dict((d, (a0, a1)) for d, a0, a1 in store.conn.execute("SELECT date, asset_start, asset_end FROM paper_days ORDER BY date").fetchall())
+    a0, a1 = days.get(day, (None, None))
+
+    pnl = sum(net_pnl(t) for t in done)
+    wins = sum(1 for t in done if net_pnl(t) > 0)
+    n_virtual = sum(1 for t in done if t.virtual)
+    lines = [f"📒 모의투자 당일 결과 {day:%m-%d}",
+             f"매매 {len(done)}건" + (f"(가상 {n_virtual})" if n_virtual else "")
+             + f" · 이긴 매매 {wins}건 · 손익 {pnl:+,.0f}원 (추정 비용 0.25% 포함)"]
+    if a0 and a1:
+        lines.append(f"계좌 추정자산 {a0:,} → {a1:,}원 ({a1 - a0:+,}원, {a1 / a0 - 1:+.2%})")
+    msgs = ["\n".join(lines)]
+    if done:
+        rows = [(t.buy_ts.strftime("%H:%M"), ("◇" if t.virtual else "") + t.name, _pct(net_ret(t)), _won(net_pnl(t)), t.sell_reason)
+                for t in done]
+        msgs[-1] += _table(rows, ("매수", "종목", "수익%", "손익", "사유"), (5, 12, 6, 7, 16))
+        if any(t.virtual for t in done):
+            msgs[-1] += "\n◇ = NXT 프리·애프터장 가상 체결 (주문 없음, 계좌 자산에는 반영 안 됨)"
+    if skipped:
+        counts: dict[str, int] = {}
+        for t in skipped:
+            key = t.note.split(" (")[0].split("원이")[0] if t.note else "?"
+            key = "추격 안 함 (+1% 초과)" if "추격" in t.note else key
+            counts[key] = counts.get(key, 0) + 1
+        msgs[-1] += "\n건너뛴 신호 " + str(len(skipped)) + "건: " + ", ".join(f"{k} {n}" for k, n in counts.items())
+
+    allt = [t for t in load_trades(store, "status = 'closed'", []) if t.buy_price and t.sell_price and t.mode != "이월"]
+    if allt:
+        total = sum(net_pnl(t) for t in allt)
+        win = sum(1 for t in allt if net_pnl(t) > 0)
+        avg = sum(net_ret(t) for t in allt) / len(allt)
+        first = min(days) if days else day
+        lines = [f"📚 모의투자 누적 ({first:%m-%d}~{day:%m-%d}, {len({t.date for t in allt})}거래일)",
+                 f"매매 {len(allt)}건 · 승률 {win / len(allt):.0%} · 평균 {avg:+.2%} · 합계 {total:+,.0f}원"]
+        start_asset = days[first][0] if days else None
+        last_asset = next((a for d, (_, a) in sorted(days.items(), reverse=True) if a), None)
+        if start_asset and last_asset:
+            lines.append(f"계좌 추정자산 {start_asset:,} → {last_asset:,}원 ({last_asset / start_asset - 1:+.2%}, 정규장 주문만·실제 수수료·세금 반영)")
+        groups = []
+        for label, key in (("거래", lambda t: "가상(NXT)" if t.virtual else "정규장 주문"), ("방식", lambda t: t.mode),
+                           ("신호", lambda t: t.kind)):
+            for g in sorted({key(t) for t in allt}):
+                xs = [t for t in allt if key(t) == g]
+                groups.append((label, g, str(len(xs)), f"{sum(1 for t in xs if net_pnl(t) > 0) / len(xs):.0%}",
+                               _pct(sum(net_ret(t) for t in xs) / len(xs)), _won(sum(net_pnl(t) for t in xs))))
+        table = _table([g[1:] for g in groups], ("구분", "건수", "승률", "평균%", "손익"), (12, 4, 4, 6, 8))
+        by_day: dict[date, list[Trade]] = {}
+        for t in allt:
+            by_day.setdefault(t.date, []).append(t)
+        day_rows = [(d.strftime("%m-%d"), str(len(xs)), f"{sum(1 for t in xs if net_pnl(t) > 0)}", _won(sum(net_pnl(t) for t in xs)))
+                    for d, xs in sorted(by_day.items())]
+        msgs.append("\n".join(lines) + table + "\n날짜별" + _table(day_rows, ("날짜", "건수", "승", "손익"), (5, 4, 4, 8), latest=True))
+    return msgs
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    parser = argparse.ArgumentParser(description="매수 신호 모의투자 점검")
+    parser.add_argument("--status", action="store_true", help="모의 계좌 잔고·예수금")
+    parser.add_argument("--report", nargs="?", const="", default=None, help="리포트 미리보기 (YYYYMMDD, 기본 오늘)")
+    args = parser.parse_args()
+    from kiwoom_trading.common.config import KST
+
+    if args.status:
+        mock = build_mock_client()
+        asset, holdings = mock.account()
+        print(f"추정자산 {asset:,}원 · 주문 가능 {mock.cash():,}원")
+        for code, (qty, avg, sellable, name) in holdings.items():
+            print(f"  {name}({code}) {qty}주 × {avg:,.0f}원 (매도 가능 {sellable})")
+    if args.report is not None:
+        day = datetime.strptime(args.report, "%Y%m%d").date() if args.report else datetime.now(KST).date()
+        store = ScreenerStore()
+        try:
+            for m in build_report(store, day):
+                print(html.unescape(m.replace("<pre>", "\n").replace("</pre>", "\n")), "\n")
+        finally:
+            store.close()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

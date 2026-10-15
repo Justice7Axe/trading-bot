@@ -102,6 +102,37 @@ CREATE TABLE IF NOT EXISTS investor_intraday (  -- 장중 외국인·기관 순�
     code        VARCHAR,
     net_amount  BIGINT        -- 원, 장 시작부터 누적
 );
+CREATE TABLE IF NOT EXISTS paper_trades (     -- 🎯 매수 신호 모의투자 (키움 모의 서버, KRX 정규장만) — paper_trader.py
+    id            VARCHAR PRIMARY KEY,   -- 'YYYYMMDD-코드-HHMM-종류'
+    date          DATE,
+    code          VARCHAR,
+    name          VARCHAR,
+    kind          VARCHAR,     -- 신호 종류 ('지지 반등' | '돌파 후 눌림' | '이월')
+    source        VARCHAR,
+    signal_ts     TIMESTAMP,
+    signal_price  DOUBLE,
+    flow_mult     DOUBLE,      -- 신호 시점 최근 5분 대금 ÷ 같은 시간대 평소
+    mode          VARCHAR,     -- '추적'(평소 5배↑: -5% 손절, +5% 뒤 고점 -3%) | '기본'(신호 손절가) | '이월'
+    status        VARCHAR,     -- 'skipped' | 'ordered' | 'open' | 'selling' | 'closed' | 'failed'
+    qty           INTEGER,
+    buy_ts        TIMESTAMP,
+    buy_order_no  VARCHAR,
+    buy_price     DOUBLE,
+    stop          DOUBLE,
+    peak          DOUBLE,
+    sell_ts       TIMESTAMP,
+    sell_order_no VARCHAR,
+    sell_price    DOUBLE,
+    sell_reason   VARCHAR,
+    note          VARCHAR      -- 건너뛴 이유·주문 실패 메시지
+);
+CREATE TABLE IF NOT EXISTS paper_days (       -- 모의투자 하루 기록 (계좌 추정자산, 리포트 전송 여부)
+    date          DATE PRIMARY KEY,
+    asset_start   BIGINT,
+    asset_end     BIGINT,
+    reported      BOOLEAN DEFAULT false
+);
+ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS virtual BOOLEAN DEFAULT false;   -- NXT 프리·애프터장 가상 체결 (주문 없음)
 CREATE TABLE IF NOT EXISTS watch_adds (       -- ②③④ 장중 조기 감시 추가 (재시작해도 유지)
     date        DATE,
     code        VARCHAR,

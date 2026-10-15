@@ -45,6 +45,18 @@ description: Ellie trading 운영 — 일일 일봉 업데이트/리포트 스�
 - 오래 도는 수집·백필에는 `prevent_sleep_until_exit()` 를 건다. 2026-10-14 새벽 절전으로 수집이 멈춘 적이 있다.
 - 종목코드 접미사: `_AL` 통합, `_NX` NXT, 없으면 KRX. 호출 간격 0.25초.
 
+## 모의투자 (키움 모의 서버)
+- 키는 `.env.local` 의 `KIWOOM_MOCK_APP_KEY`, `KIWOOM_MOCK_SECRET_KEY`, `KIWOOM_MOCK_BASE_URL=https://mockapi.kiwoom.com` 이다.
+  - 실전 키(`KIWOOM_APP_KEY`)와 따로 둔다. `chapter_0/1/config.py` 의 옛 모의 키는 만료됐다(8001).
+- 모의 앱키는 허용 IP 를 등록해야 한다. 등록 전에는 8001(키 검증 실패)이 난다. 공인 IP 확인: `curl https://api.ipify.org`.
+- 모의 계좌 시작 자금은 1,000만 원이다. `MockClient` 는 주소에 `mockapi` 가 없으면 만들지 않는다(실계좌 주문 방지).
+- 장중 스캐너가 자동으로 매매한다(정규장 실주문, NXT 프리·애프터장 가상 체결, 19:55 리포트). `--once` 나 `--no-paper` 로 실행하면 주문하지 않는다. 규칙은 `buy-signals` 스킬 5장에 있다.
+- 점검: `python -m kiwoom_trading.screener.paper_trader --status`(잔고), `--report [YYYYMMDD]`(리포트 미리보기)
+- 키움 API 메모:
+  - kt10000 매수, kt10001 매도(`trde_tp` 3 = 시장가, `dmst_stex_tp` KRX)
+  - kt00018 잔고(`acnt_evlt_remn_indv_tot`), kt00001 예수금(`ord_alow_amt`), ka10076 체결(`cntr`), ka10075 미체결(`oso`)
+- '멈춰' 로 스캐너를 끄면 손절 감시도 멈춘다. 보유 종목이 있으면 멈춤 알림에 함께 표시한다.
+
 ## 커밋 절차 (사용자 요청 "커밋 pr 머지")
 1. 새 브랜치 → 커밋 → push → PR → merge → 로컬 main fast-forward
 2. 공개 저장소다. push 전에 staged 파일에 비밀값이 없는지 검사한다. `.env*`, `chapter_0/1/config.py`, `data/` 는 ignore 되어 있다.
