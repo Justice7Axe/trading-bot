@@ -323,7 +323,7 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
         if signals:
             logging.info("매수 신호 %s건: %s", len(signals), ", ".join(f"{n} {s.kind} {s.ts:%H:%M}" for _, n, _, s in signals))
             if telegram:
-                send_telegram_message(format_signals(now, signals))
+                send_telegram_message(format_signals(now, signals, watcher.flow))
     return len(new)
 
 
@@ -346,7 +346,8 @@ def main() -> int:
     market = KiwoomMarket(client)
     screener = Screener(market, now.date())
     store = ScreenerStore()
-    watcher = SignalWatcher(client, store, now.date(), prev_close={c: h.last_close for c, h in screener.hist.items()})
+    watcher = SignalWatcher(client, store, now.date(), prev_close={c: h.last_close for c, h in screener.hist.items()},
+                            avg_value={c: h.avg_value_20 for c, h in screener.hist.items() if h.avg_value_20})
     early = EarlyRunner(screener, watcher, store, now)
     board = PriceBoard()
     investors = InvestorRecorder(on_snapshot=early.on_investor_snapshot)
