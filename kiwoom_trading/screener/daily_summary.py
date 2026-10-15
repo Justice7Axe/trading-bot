@@ -15,6 +15,7 @@ from typing import Optional
 
 from kiwoom_trading.screener.market_data import KiwoomMarket, RankItem
 from kiwoom_trading.screener.store import ScreenerStore
+from kiwoom_trading.screener.theme_track import display_label
 
 
 SUMMARY_WORDS = {"정리", "요약", "현황"}
@@ -123,7 +124,7 @@ def build_summary(store: ScreenerStore, day: date, board: PriceBoard, market: Op
         for leader, g in sorted(groups.items(), key=lambda x: x[1]["t"]):
             rows = [(g["t"].strftime("%H:%M") if code == leader else "", ("★" if code == leader else "") + name, _pct(chg), _pct(cur(code)))
                     for code, (name, chg) in sorted(g["members"].items(), key=lambda x: -(x[1][1] or 0))]
-            blocks.append(f"[{html.escape(g['label'])}]\n" + _table(rows, ("시각", "종목 (★대장)", "포착", "현재")))
+            blocks.append(f"[{html.escape(display_label(g['label']))}]\n" + _table(rows, ("시각", "종목 (★대장)", "포착", "현재")))
         text = "🧩 테마 형성"
         for b in blocks:                                  # 4,000자 넘으면 나눠 보냄
             if len(text) + len(b) > 3800:
@@ -140,13 +141,29 @@ def build_summary(store: ScreenerStore, day: date, board: PriceBoard, market: Op
         rows = [(t.strftime("%H:%M"), name, _pct(cur(code))) for code, name, t in detections]
         msgs.append(f"⚡ 장중 포착 {len(rows)}\n" + _table(rows, ("시각", "종목", "현재"), (5, NAME_WIDTH, 6)))
     if signals:
-        rows = []
+        # 종목별로 묶고, 종목 안에서는 시각 순 — 그 종목에 언제 어떤 신호가 났는지 한눈에 (종목 순서 = 첫 신호 시각)
+        by_stock: dict[str, list] = {}
         for ts, code, name, kind, price in signals:
+            by_stock.setdefault(code, []).append((ts, name, kind, price))
+        blocks = []
+        for code, items in by_stock.items():
+            name = items[0][1]
             px = board.price.get(code)
-            rows.append((ts.strftime("%H:%M"), name, "지지" if kind == "지지 반등" else "돌파",
-                         f"{price:,.0f}", _pct(px / price - 1) if px and price else "-"))
-        msgs.append(f"🎯 매수 신호 {len(rows)} (관찰용, 수익 = 진입가 대비 현재 %)\n"
-                    + _table(rows, ("시각", "종목", "종류", "진입가", "수익"), (5, NAME_WIDTH, 4, 9, 6), latest=True))
+            now_chg = cur(code)
+            head = f"{name} — 신호 {len(items)}회" + (f", 오늘 {_pct(now_chg)}%" if now_chg is not None else "")
+            lines = [head] + [
+                f"  {ts:%H:%M} {'지지 반등' if kind == '지지 반등' else '돌파 눌림'} {_rfit(f'{price:,.0f}', 9)} "
+                f"{_rfit(_pct(px / price - 1) if px and price else '-', 6)}"
+                for ts, _, kind, price in items]
+            blocks.append("\n".join(lines))
+        title = f"🎯 매수 신호 {len(signals)}건 · {len(by_stock)}종목 (관찰용, 오른쪽 = 진입가 대비 현재 %)"
+        chunk: list[str] = []
+        for b in blocks:                                  # 메시지 하나가 4,000자를 넘지 않도록 종목 단위로 나눔
+            if chunk and sum(len(x) for x in chunk) + len(b) > 3300:
+                msgs.append(title + "\n<pre>" + html.escape("\n\n".join(chunk)) + "</pre>")
+                title, chunk = "🎯 매수 신호 (계속)", []
+            chunk.append(b)
+        msgs.append(title + "\n<pre>" + html.escape("\n\n".join(chunk)) + "</pre>")
     if len(msgs) == 1:
         msgs.append("아직 오늘 포착된 종목이 없습니다.")
     return msgs
