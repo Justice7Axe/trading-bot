@@ -74,6 +74,31 @@ def send_telegram_message(text: str, parse_mode: str = "") -> bool:
     return True
 
 
+def send_telegram_document(path: str, caption: str = "") -> bool:
+    """파일 전송 (예: 모의투자 타점 차트 HTML — 휴대폰에서 받아 브라우저로 연다). 실패해도 False 만 돌려준다."""
+    load_env()
+    token = os.getenv("TELEGRAM_TOKEN", "")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+    if not token or not chat_id or not os.path.exists(path):
+        return False
+    for attempt in range(1, SEND_RETRIES + 1):
+        try:
+            with open(path, "rb") as f:
+                response = requests.post(f"https://api.telegram.org/bot{token}/sendDocument",
+                                         data={"chat_id": chat_id, "caption": caption[:1000]},
+                                         files={"document": (os.path.basename(path), f)}, timeout=60)
+        except requests.RequestException as exc:
+            logging.warning("텔레그램 파일 전송 오류 (%s/%s): %s", attempt, SEND_RETRIES, str(exc).replace(token, "***"))
+            time.sleep(2 * attempt)
+            continue
+        if response.ok:
+            logging.info("텔레그램 파일 전송 완료 (%s)", os.path.basename(path))
+            return True
+        logging.error("텔레그램 파일 전송 실패: status=%s body=%s", response.status_code, response.text[:300])
+        return False
+    return False
+
+
 def peek_messages(timeout: int = 0) -> list[dict]:
     """봇으로 온 메시지를 '읽기만' 한다 (offset 미지정 → 읽음 처리하지 않음).
 
