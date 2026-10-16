@@ -35,6 +35,7 @@ from kiwoom_trading.common.daily_store import load_env
 from kiwoom_trading.ingestion.collectors.daily_backfill import KiwoomDailyClient, _to_int
 from kiwoom_trading.screener.daily_summary import _pct, _table
 from kiwoom_trading.screener.intraday_signals import Signal
+from kiwoom_trading.screener.leader_shape import KIND as LEADER_KIND
 from kiwoom_trading.screener.market_data import KiwoomMarket, _code
 from kiwoom_trading.screener.store import ScreenerStore
 
@@ -49,6 +50,7 @@ STRONG_STOP = 0.05            # 추적: 처음 손절 -5%
 TRAIL_START = 0.05            # 추적: +5% 도달 뒤
 TRAIL_GAP = 0.03              # 추적: 고점 대비 -3%
 COST = 0.0025                 # 추정 왕복 비용 (수수료+세금, 백테스트와 같은 값)
+HALF_TP = 0.02                # '반반'(🎯 주도주 모양): +2% 에서 절반 매도, 나머지는 손절 또는 15:19 (2026-10-17 사용자)
 
 SESSION_OPEN = time(9, 0)
 LIQUIDATE_AT = time(15, 19)   # 15:20 부터 장 마감 동시호가
@@ -184,6 +186,9 @@ class Trade:
     sell_reason: str = ""
     note: str = ""
     virtual: bool = False       # NXT 프리·애프터장 가상 체결 (주문 없음)
+    part_qty: int = 0           # '반반' 방식에서 먼저 판 절반 수량
+    part_price: Optional[float] = None
+    part_order_no: str = ""
 
 
 FIELDS = list(Trade.__dataclass_fields__)
@@ -197,7 +202,8 @@ def save_trade(store: ScreenerStore, t: Trade) -> None:
 
 def load_trades(store: ScreenerStore, where: str, params: list) -> list[Trade]:
     rows = store.conn.execute(f"SELECT {', '.join(FIELDS)} FROM paper_trades WHERE {where} ORDER BY coalesce(buy_ts, signal_ts)", params).fetchall()
-    return [Trade(*[(v or "") if FIELDS[k] in ("buy_order_no", "sell_order_no", "sell_reason", "note") else v
+    return [Trade(*[(v or "") if FIELDS[k] in ("buy_order_no", "sell_order_no", "sell_reason", "note", "part_order_no")
+                    else (v or 0) if FIELDS[k] == "part_qty" else v
                     for k, v in enumerate(r)]) for r in rows]
 
 
@@ -206,11 +212,14 @@ def net_pnl(t: Trade, price: Optional[float] = None) -> Optional[float]:
     exit_price = price if price is not None else t.sell_price
     if not t.buy_price or not exit_price or not t.qty:
         return None
-    return (exit_price - t.buy_price) * t.qty - t.buy_price * t.qty * COST
+    part = min(t.part_qty or 0, t.qty)   # '반반': 먼저 판 절반은 그 체결가로
+    gain = (exit_price - t.buy_price) * (t.qty - part) + ((t.part_price or exit_price) - t.buy_price) * part
+    return gain - t.buy_price * t.qty * COST
 
 
 def net_ret(t: Trade) -> Optional[float]:
-    return t.sell_price / t.buy_price - 1 - COST if t.buy_price and t.sell_price else None
+    pnl = net_pnl(t)
+    return pnl / (t.buy_price * t.qty) if pnl is not None else None
 
 
 # ---------------------------------------------------------------- 실행
@@ -252,7 +261,7 @@ class PaperTrader:
                    flow: dict[tuple[str, datetime], tuple[float, Optional[float]]]) -> None:
         for code, name, source, s in items:
             mult = (flow.get((code, s.ts)) or (None, None))[1]
-            mode = "추적" if mult is not None and mult >= STRONG_FLOW else "기본"
+            mode = "반반" if s.kind == LEADER_KIND else "추적" if mult is not None and mult >= STRONG_FLOW else "기본"
             t = Trade(f"{s.ts:%Y%m%d}-{code}-{s.ts:%H%M}-{s.kind}", self.today, code, name, s.kind, source, s.ts, s.price,
                       mult, mode, "skipped", stop=s.stop)
             if any(x.id == t.id for x in self.trades):
@@ -358,7 +367,36 @@ class PaperTrader:
             t.stop, t.peak = stop, peak
             save_trade(self.store, t)
         if reason:
-            self._sell(now, t, reason)
+            return self._sell(now, t, reason)
+        if t.mode == "반반" and not t.part_qty and q.price >= t.buy_price * (1 + HALF_TP):
+            self._sell_half(now, t, q.price)
+
+    def _sell_half(self, now: datetime, t: Trade, price: float) -> None:
+        """'반반': +2% 에 절반 매도. 1주뿐이면 전부 판다. 나머지는 원래 손절가 또는 15:19 정리."""
+        if t.virtual:
+            if t.qty < 2:
+                return self._sell(now, t, f"익절 +{HALF_TP:.0%}")
+            t.part_qty, t.part_price = t.qty // 2, float(price)
+        else:
+            try:
+                _, holdings = self.mock.account()
+                held = holdings.get(t.code)
+                if not held or not held[2]:
+                    return
+                if held[0] < 2:
+                    return self._sell(now, t, f"익절 +{HALF_TP:.0%}")
+                half = held[0] // 2
+                order_no = self.mock.market_order("sell", t.code, half)
+                t.part_qty, t.part_order_no = half, order_no
+                t.part_price = self.mock.fill_price(order_no, t.code) or float(price)
+            except Exception as exc:
+                logging.exception("모의 절반 매도 실패 %s", t.name)
+                self.notify(f"⚠️ 모의 절반 매도 실패 {t.name}({t.code}) — 다음 확인 때 다시 시도\n  {exc}"[:300])
+                return
+        save_trade(self.store, t)
+        logging.info("%s 절반 매도 %s %s주 × %s", "가상" if t.virtual else "모의", t.name, t.part_qty, t.part_price)
+        self.notify(f"💰 {'가상' if t.virtual else '모의'} 절반 익절 {t.name} {t.part_qty}주 × {t.part_price:,.0f}원 "
+                    f"({t.part_price / t.buy_price - 1:+.1%}) — 나머지 {t.qty - t.part_qty}주는 손절 {t.stop:,.0f}원 또는 15:19 정리")
 
     def _sell(self, now: datetime, t: Trade, reason: str) -> None:
         try:   # 매도 직전 시세: 실주문은 체결가를 못 받을 때 쓸 추정가, 가상은 이 값이 체결가
@@ -388,6 +426,9 @@ class PaperTrader:
                     logging.info("모의 매도 대기 %s: %s", t.name, "이미 팔림" if not held else "앞선 매도 주문 체결 대기")
                 return
             qty = held[2]
+            if (held[0] + t.part_qty, held[1]) != (t.qty, t.buy_price):   # 체결 확인 뒤 늘어난 수량·바뀐 평균 단가를 기록에 맞춘다 (먼저 판 절반 포함)
+                logging.info("모의 보유 수량 보정 %s: %s주 × %s → %s주 × %s", t.name, t.qty, t.buy_price, held[0] + t.part_qty, held[1])
+                t.qty, t.buy_price = held[0] + t.part_qty, held[1]
             t.sell_order_no = self.mock.market_order("sell", t.code, qty)
         except Exception as exc:
             logging.exception("모의 매도 주문 실패 %s", t.name)
@@ -406,6 +447,9 @@ class PaperTrader:
         for t in [x for x in self.trades if x.status in ("ordered", "selling")]:
             held = holdings.get(t.code)
             if t.status == "ordered":
+                timed_out = (naive - t.buy_ts).total_seconds() > FILL_TIMEOUT_SEC
+                if held and held[0] < t.qty and not timed_out:
+                    continue   # 주문 수량보다 적게 잡히면(일부 체결·잔고 반영 지연) 다 찰 때까지 기다린다 (2026-10-16 하나마이크론 24주 → 2주 기록)
                 if held:
                     t.qty, t.buy_price = held[0], held[1]
                     t.peak = t.buy_price
@@ -413,11 +457,13 @@ class PaperTrader:
                         t.stop = t.buy_price * (1 - STRONG_STOP)
                     t.status = "open"
                     self.notify(f"✅ 모의 매수 체결 {t.name} {t.qty}주 × {t.buy_price:,.0f}원, 손절 {t.stop:,.0f}원")
-                elif (naive - t.buy_ts).total_seconds() > FILL_TIMEOUT_SEC:
+                elif timed_out:
                     t.status, t.note = "failed", "5분 안에 체결 확인 안 됨"
                     self.notify(f"⚠️ 모의 매수 미체결 {t.name} — {t.note}")
             elif not held:
                 t.sell_price = (self.mock.fill_price(t.sell_order_no, t.code) if t.sell_order_no else None) or self.last_price.get(t.code)
+                if t.part_order_no:   # 절반 매도 체결가를 다시 확인 (주문 직후엔 체결 내역이 늦게 잡힐 수 있다)
+                    t.part_price = self.mock.fill_price(t.part_order_no, t.code) or t.part_price
                 t.status = "closed"
                 self._notify_closed(t)
             elif held[2] and (naive - t.sell_ts).total_seconds() > FILL_TIMEOUT_SEC:
@@ -432,7 +478,8 @@ class PaperTrader:
         icon = "🔴" if (pnl or 0) < 0 else "🔵"
         price = f"{t.sell_price:,.0f}원" if t.sell_price else "체결가 확인 안 됨"
         result = f"{_pct(ret)}% ({pnl:+,.0f}원, 비용 0.25% 포함)" if pnl is not None else "손익 계산 불가"
-        self.notify(f"{icon} {'가상' if t.virtual else '모의'} 매도 {t.name} {t.qty}주 × {price} — {t.sell_reason}\n"
+        part = f" (먼저 판 절반 {t.part_qty}주 × {t.part_price:,.0f}원 포함)" if t.part_qty and t.part_price else ""
+        self.notify(f"{icon} {'가상' if t.virtual else '모의'} 매도 {t.name} {t.qty - t.part_qty}주 × {price} — {t.sell_reason}{part}\n"
                     f"  매수 {t.buy_price:,.0f}원 → {result}")
 
     def _check_halt(self) -> None:

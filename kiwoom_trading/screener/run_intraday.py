@@ -41,6 +41,7 @@ from kiwoom_trading.screener.engine import Screener
 from kiwoom_trading.screener.market_data import KiwoomMarket
 from kiwoom_trading.screener.paper_trader import PaperTrader, build_mock_client, mock_configured
 from kiwoom_trading.screener.intraday_signals import QualityConfig
+from kiwoom_trading.screener.leader_shape import KIND as LEADER_KIND, LeaderShapeWatcher
 from kiwoom_trading.screener.signal_watch import SignalWatcher, format_signals
 from kiwoom_trading.screener.store import ScreenerStore
 from kiwoom_trading.screener.theme_track import ThemeTracker, build_peer_graph, format_clusters, format_features
@@ -287,7 +288,8 @@ class EarlyRunner:
 def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, telegram: bool,
              watcher: Optional[SignalWatcher] = None, early: Optional[EarlyRunner] = None,
              investors: Optional[InvestorRecorder] = None, themes: Optional[ThemeRunner] = None,
-             board: Optional[PriceBoard] = None, trader: Optional[PaperTrader] = None) -> int:
+             board: Optional[PriceBoard] = None, trader: Optional[PaperTrader] = None,
+             leader: Optional[LeaderShapeWatcher] = None) -> int:
     now = datetime.now(KST)
     if trader is not None:
         try:
@@ -330,17 +332,29 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
         body = "\n\n".join(format_evaluation(e) for e in new)
         send_telegram_message(f"⚡ 장중 포착 {now:%H:%M} ({len(new)}종목)\n\n{body}")
 
-    # 매수 신호: 전일 관심 + 장중 포착 종목의 1분봉 패턴
+    # 매수 신호: 전일 관심 + 장중 포착 종목의 1분봉 패턴 + 🎯 주도주 모양(09:30~10:30, 대금 100위 안)
+    signals = []
     if watcher is not None:
         for e in passed:
             watcher.add(e.candidate.code, e.candidate.name)
         signals = watcher.check(now)
+    if leader is not None:
+        try:
+            found = leader.check(now, value_top)
+        except Exception:
+            logging.exception("주도주 모양 판정 실패")
+            found = []
+        for code, name, source, s in found:
+            store.save_signal(screener.today, code, name, s, source, True)
+        signals += found
+    if watcher is not None or leader is not None:
         if signals:
             logging.info("매수 신호 %s건: %s", len(signals), ", ".join(f"{n} {s.kind} {s.ts:%H:%M}" for _, n, _, s in signals))
+            flow = watcher.flow if watcher is not None else {}
             if telegram:
-                send_telegram_message(format_signals(now, signals, watcher.flow))
+                send_telegram_message(format_signals(now, signals, flow))
             if trader is not None:
-                trader.on_signals(now, signals, watcher.flow)
+                trader.on_signals(now, signals, flow)
     return len(new)
 
 
@@ -368,6 +382,8 @@ def main() -> int:
                             avg_value={c: h.avg_value_20 for c, h in screener.hist.items() if h.avg_value_20},
                             quality=QualityConfig(allow_after=True))   # 애프터마켓 신호 → 모의투자 가상 체결
     early = EarlyRunner(screener, watcher, store, now)
+    leader = LeaderShapeWatcher(client, now.date(), prev_close={c: h.last_close for c, h in screener.hist.items()},
+                                done={c for c, _, k in store.signal_keys(now.date()) if k == LEADER_KIND})
     board = PriceBoard()
     investors = InvestorRecorder(on_snapshot=early.on_investor_snapshot)
     try:
@@ -414,7 +430,7 @@ def main() -> int:
                         logging.info("오늘 데이터가 없음(휴장일로 판단, 기준일 %s) → 종료", probe[0].as_of)
                         break
                 run_once(screener, market, store, telegram=not args.no_telegram, watcher=watcher, early=early, investors=investors,
-                         themes=themes, board=board, trader=trader)
+                         themes=themes, board=board, trader=trader, leader=leader)
             except Exception:
                 logging.exception("스캔 실패 (다음 주기에 재시도)")
             if args.once:

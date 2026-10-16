@@ -112,7 +112,7 @@ CREATE TABLE IF NOT EXISTS paper_trades (     -- 🎯 매수 신호 모의투자
     signal_ts     TIMESTAMP,
     signal_price  DOUBLE,
     flow_mult     DOUBLE,      -- 신호 시점 최근 5분 대금 ÷ 같은 시간대 평소
-    mode          VARCHAR,     -- '추적'(평소 5배↑: -5% 손절, +5% 뒤 고점 -3%) | '기본'(신호 손절가) | '이월'
+    mode          VARCHAR,     -- '추적'(평소 5배↑: -5% 손절, +5% 뒤 고점 -3%) | '기본'(신호 손절가) | '반반'(+2% 절반, 나머지 15:19) | '이월'
     status        VARCHAR,     -- 'skipped' | 'ordered' | 'open' | 'selling' | 'closed' | 'failed'
     qty           INTEGER,
     buy_ts        TIMESTAMP,
@@ -133,6 +133,9 @@ CREATE TABLE IF NOT EXISTS paper_days (       -- 모의투자 하루 기록 (계
     reported      BOOLEAN DEFAULT false
 );
 ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS virtual BOOLEAN DEFAULT false;
+ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS part_qty INTEGER DEFAULT 0;      -- '반반'(🎯 주도주 모양): +2% 에 먼저 판 절반
+ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS part_price DOUBLE;
+ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS part_order_no VARCHAR;
 ALTER TABLE paper_days ADD COLUMN IF NOT EXISTS reported_close BOOLEAN DEFAULT false;   -- 15:40 정규장 마감 리포트 (reported = 19:55 최종)   -- NXT 프리·애프터장 가상 체결 (주문 없음)
 CREATE TABLE IF NOT EXISTS watch_adds (       -- ②③④ 장중 조기 감시 추가 (재시작해도 유지)
     date        DATE,
