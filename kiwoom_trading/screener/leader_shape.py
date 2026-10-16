@@ -121,6 +121,12 @@ class LeaderShapeWatcher:
         self.done: set[str] = set(done or ())       # 오늘 이미 신호를 낸 종목
         self.excluded: dict[str, str] = {}           # 그날 다시 바뀌지 않는 조건(갭)에 걸린 종목
         self.last_check: dict[str, datetime] = {}
+        self.cache: dict[str, list] = {}               # 같은 분에 받은 KRX 1분봉 (주도주 모양·눌림 돌파가 함께 씀, run_once 가 매분 비움)
+
+    def _bars(self, code: str) -> list:
+        if code not in self.cache:
+            self.cache[code] = fetch_minute_bars(self.client, code, self.today, "KRX")
+        return self.cache[code]
 
     def check(self, now: datetime, value_top: list[RankItem]) -> list[tuple[str, str, str, Signal]]:
         cfg = self.config
@@ -140,7 +146,7 @@ class LeaderShapeWatcher:
                 continue
             self.last_check[item.code] = minute_start
             try:
-                bars = [b for b in fetch_minute_bars(self.client, item.code, self.today, "KRX") if b["ts"] < minute_start]
+                bars = [b for b in self._bars(item.code) if b["ts"] < minute_start]
             except Exception as exc:
                 logging.warning("주도주 모양 1분봉 조회 실패 %s: %s", item.code, exc)
                 continue
