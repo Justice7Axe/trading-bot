@@ -35,7 +35,8 @@ from kiwoom_trading.common.daily_store import load_env
 from kiwoom_trading.ingestion.collectors.daily_backfill import KiwoomDailyClient, _to_int
 from kiwoom_trading.screener.daily_summary import _pct, _table
 from kiwoom_trading.screener.intraday_signals import Signal
-from kiwoom_trading.screener.leader_shape import KIND as LEADER_KIND
+from kiwoom_trading.ingestion.collectors.minute_collector import fetch_minute_bars
+from kiwoom_trading.screener.leader_shape import KIND as LEADER_KIND, big_red_exit
 from kiwoom_trading.screener.market_data import KiwoomMarket, _code
 from kiwoom_trading.screener.store import ScreenerStore
 
@@ -234,6 +235,7 @@ class PaperTrader:
         self.halted = False
         self.last_price: dict[str, float] = {}
         self._last_tick = 0.0
+        self._chart_checked: dict[str, datetime] = {}   # '차트' 매도: 거래별 마지막으로 본 분
         # 오늘 기록 + 전날 끝나지 않은 기록(장애로 정리 못 한 경우)
         self.trades = load_trades(store, "date = ? OR status IN ('ordered', 'open', 'selling')", [today])
         asset, holdings = mock.account()
@@ -261,7 +263,7 @@ class PaperTrader:
                    flow: dict[tuple[str, datetime], tuple[float, Optional[float]]]) -> None:
         for code, name, source, s in items:
             mult = (flow.get((code, s.ts)) or (None, None))[1]
-            mode = "반반" if s.kind == LEADER_KIND else "추적" if mult is not None and mult >= STRONG_FLOW else "기본"
+            mode = "차트" if s.kind == LEADER_KIND else "추적" if mult is not None and mult >= STRONG_FLOW else "기본"
             t = Trade(f"{s.ts:%Y%m%d}-{code}-{s.ts:%H%M}-{s.kind}", self.today, code, name, s.kind, source, s.ts, s.price,
                       mult, mode, "skipped", stop=s.stop)
             if any(x.id == t.id for x in self.trades):
@@ -368,8 +370,25 @@ class PaperTrader:
             save_trade(self.store, t)
         if reason:
             return self._sell(now, t, reason)
+        if t.mode == "차트" and not t.virtual:
+            why = self._chart_exit(now, t)
+            if why:
+                return self._sell(now, t, why)
         if t.mode == "반반" and not t.part_qty and q.price >= t.buy_price * (1 + HALF_TP):
             self._sell_half(now, t, q.price)
+
+    def _chart_exit(self, now: datetime, t: Trade) -> Optional[str]:
+        """'차트' 매도: 새 1분봉이 마감될 때마다 그 종목 KRX 1분봉을 받아 큰 음봉인지 본다 (1분에 한 번)."""
+        minute = now.replace(second=0, microsecond=0, tzinfo=None)
+        if self._chart_checked.get(t.id) == minute:
+            return None
+        self._chart_checked[t.id] = minute
+        try:
+            bars = [b for b in fetch_minute_bars(self.market.client, t.code, self.today, "KRX") if b["ts"] < minute]
+        except Exception:
+            logging.warning("차트 매도 1분봉 조회 실패 %s", t.code)
+            return None
+        return big_red_exit(bars, t.buy_ts.replace(second=0, microsecond=0))
 
     def _sell_half(self, now: datetime, t: Trade, price: float) -> None:
         """'반반': +2% 에 절반 매도. 1주뿐이면 전부 판다. 나머지는 원래 손절가 또는 15:19 정리."""

@@ -16,7 +16,8 @@
 - 규칙을 만들 때 안 본 날 — 10-13: 13종목 +0.40%(후보 평균 −0.65%), 10-14: 17종목 −1.63%(−2.19%), 10-15: 1종목 +7.82%(−2.09%)
 - 나흘 모두 후보 평균보다 나았지만 42건 평균은 +0.06% 로 본전 근처다. 시장이 오후에 밀린 날(10-14)은 손실. 1년 검증 전까지 실험용.
 
-매도(사용자 2026-10-17): 반반 — +2% 에서 절반, 나머지는 15:19 정리. 손절 = 직전 10분 저가 −0.5% (매수가 대비 −2% ~ −5%).
+매도(사용자 2026-10-17): 1분봉 차트로 종목마다 — 매수 뒤 '큰 음봉'(몸통 평소 3배↑·대금 2배↑)이 나오면 다음 확인 때 매도 (big_red_exit).
+손절 = 직전 10분 저가 −0.5% (매수가 대비 −2% ~ −5%), 남으면 15:19 정리.
 """
 import logging
 from dataclasses import dataclass
@@ -155,6 +156,35 @@ class LeaderShapeWatcher:
             sig_ts = bars[-1]["ts"]
             stop = stop_price(f["price"], f["low10"], cfg)
             reason = (f"대금 {item.rank}위 · 시가 대비 {f['from_open']:+.1%}(갭 {f['gap']:+.1%}) · 매끄러움 {f['eff']:.2f} · "
-                      f"VWAP 위 {f['vwap_share']:.0%} · 신고가 {f['new_highs']}번 · 눌림 {f['pull']:.1f}배 — 반반 매도(+2% 절반, 나머지 15:19)")
+                      f"VWAP 위 {f['vwap_share']:.0%} · 신고가 {f['new_highs']}번 · 눌림 {f['pull']:.1f}배 — 매도: 큰 음봉(몸통 3배·대금 2배) 또는 손절, 남으면 15:19")
             out.append((item.code, item.name, KIND, Signal(sig_ts, KIND, float(f["price"]), float(f["low10"]), float(stop), reason)))
         return out
+
+
+# ---------------------------------------------------------------- 매도: 1분봉 큰 음봉 (2026-10-17 사용자: 차트·음봉 추이로 종목마다 다른 매도)
+BIG_RED_BODY = 3.0      # 음봉 몸통 ≥ 직전 20봉 평균 몸통 × 3
+BIG_RED_VALUE = 2.0     # 그 봉 대금 ≥ 직전 20봉 평균 대금 × 2
+
+
+def big_red_exit(bars: list[dict[str, Any]], buy_ts: datetime) -> Optional[str]:
+    """매수 뒤 마지막 마감 봉이 '큰 음봉'(몸통·대금 모두 평소보다 크게 나온 음봉)이면 사유, 아니면 None.
+
+    비교 (주도주 모양 진입, 처음 손절·15:19 공통):
+    - 10-16 사용자 주도주 9종목 + 하이브: 큰 음봉 +2.33% / 끝까지 보유 +1.67% / 20분선 2봉 이탈 +1.30% / 고점 −3% +0.98%
+      (한화시스템 11:03, 셀트리온 14:01, 현대차 13:52 매도, HT로보틱스는 끝까지 보유 — 종목마다 매도 시각이 다르다)
+    - 35일 편향 없는 표본(736건): 모든 매도 방식이 −0.14~−0.32% 로 비슷 → 매수 신호 자체의 우위가 먼저다.
+    """
+    if not bars or bars[-1]["ts"] <= buy_ts:
+        return None
+    j = len(bars) - 1
+    b = bars[j]
+    prior = bars[max(0, j - 20):j]
+    if len(prior) < 5 or b["close"] >= b["open"]:
+        return None
+    body = b["open"] - b["close"]
+    avg_body = sum(abs(x["close"] - x["open"]) for x in prior) / len(prior)
+    value = b["close"] * b["volume"]
+    avg_value = sum(x["close"] * x["volume"] for x in prior) / len(prior)
+    if avg_body > 0 and avg_value > 0 and body >= avg_body * BIG_RED_BODY and value >= avg_value * BIG_RED_VALUE:
+        return f"큰 음봉 {b['ts']:%H:%M} (몸통 평소 {body / avg_body:.1f}배, 대금 {value / avg_value:.1f}배)"
+    return None
