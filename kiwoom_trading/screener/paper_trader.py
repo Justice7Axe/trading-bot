@@ -326,7 +326,9 @@ class PaperTrader:
         self._last_tick = _time.monotonic()
         t_now = now.time()
         sess = session(t_now)
-        if sess == "real" and any(t.status in ("ordered", "selling") for t in self.trades):
+        # 체결 확인은 정규장 밖에서도 한다: 15:19 정리 주문은 15:30 동시호가에 체결되므로
+        # 15:30 이후에 확인하지 않으면 '매도 중'으로 남아 애프터장 보유 한도(5종목)를 막는다.
+        if any(t.status in ("ordered", "selling") and not t.virtual for t in self.trades):
             self._reconcile(now)
         if sess:
             for t in [x for x in self.trades if x.status == "open" and (x.virtual or sess == "real")]:
@@ -375,7 +377,17 @@ class PaperTrader:
             return
         try:
             _, holdings = self.mock.account()
-            qty = holdings.get(t.code, (0, 0, 0, ""))[2] or t.qty
+            held = holdings.get(t.code)
+            if not held or not held[2]:
+                # 보유가 없으면 이미 팔렸고, 매도 가능 수량이 0 이면 앞서 낸 매도 주문이 아직 걸려 있다
+                # (2026-10-16 아모레퍼시픽: 동시호가 중 재주문 → '매도가능수량 부족' 반복).
+                # 새로 주문하지 않고 체결 확인(_reconcile)으로 넘긴다.
+                if t.status != "selling":
+                    t.status, t.sell_ts, t.sell_reason = "selling", now.replace(tzinfo=None), reason
+                    save_trade(self.store, t)
+                    logging.info("모의 매도 대기 %s: %s", t.name, "이미 팔림" if not held else "앞선 매도 주문 체결 대기")
+                return
+            qty = held[2]
             t.sell_order_no = self.mock.market_order("sell", t.code, qty)
         except Exception as exc:
             logging.exception("모의 매도 주문 실패 %s", t.name)
@@ -408,8 +420,10 @@ class PaperTrader:
                 t.sell_price = (self.mock.fill_price(t.sell_order_no, t.code) if t.sell_order_no else None) or self.last_price.get(t.code)
                 t.status = "closed"
                 self._notify_closed(t)
-            elif (naive - t.sell_ts).total_seconds() > FILL_TIMEOUT_SEC:
-                t.status = "open"          # 매도가 안 됐으면 다시 감시 → 다음 확인 때 재주문
+            elif held[2] and (naive - t.sell_ts).total_seconds() > FILL_TIMEOUT_SEC:
+                # 매도 가능 수량이 다시 생겼다 = 주문이 취소·거부됐다 → 다시 감시해 다음 확인 때 재주문.
+                # 매도 가능 0 이면 주문이 아직 걸려 있으니(15:20~15:30 동시호가 등) 체결될 때까지 기다린다.
+                t.status = "open"
                 t.note = "매도 미체결 — 재시도"
             save_trade(self.store, t)
 
