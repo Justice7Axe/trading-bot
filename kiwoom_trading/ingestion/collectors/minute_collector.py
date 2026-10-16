@@ -78,6 +78,8 @@ def watchlist_codes(day: date) -> list[str]:
         codes |= set(store.intraday_watchlist(day)) | set(store.watch_adds(day))
         codes |= {c for _, c in store.early_alerted(day)}                       # 🏁 🚀 🔥 (포착 복기용)
         codes |= {r[0] for r in store.conn.execute("SELECT DISTINCT code FROM theme_alerts WHERE date = ?", [day]).fetchall()}   # 🧩
+        codes |= {r[0] for r in store.conn.execute("SELECT DISTINCT code FROM buy_signals WHERE date = ?", [day]).fetchall()}   # 🎯 (주도주 모양·눌림 돌파는 감시 목록 밖 종목도 신호)
+        codes |= {r[0] for r in store.conn.execute("SELECT DISTINCT code FROM paper_trades WHERE date = ?", [day]).fetchall()}   # 모의투자 타점 차트용
         return sorted(codes)
     finally:
         store.close()

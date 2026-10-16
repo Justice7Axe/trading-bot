@@ -100,20 +100,26 @@ def build_data(day: date) -> dict:
     return {"date": day.isoformat(), "asset": list(asset) if asset else None, "trades": out, "candles": candles}
 
 
+def write_chart(day: date, out: str = "") -> tuple[str, int]:
+    """day 의 타점 차트 HTML 을 쓰고 (경로, 매매 건수)."""
+    data = build_data(day)
+    with open(TEMPLATE, encoding="utf-8") as f:
+        page = f.read().replace("/*__DATA__*/null", json.dumps(data, ensure_ascii=False))
+    out = out or os.path.join(PROJECT_ROOT, "data", "reports", f"paper_chart_{day:%Y%m%d}.html")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    with open(out, "w", encoding="utf-8") as f:
+        f.write(page)
+    return out, len(data["trades"])
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="모의투자 매매 타점 차트 HTML")
     parser.add_argument("day", nargs="?", default="", help="YYYYMMDD (기본 오늘)")
     parser.add_argument("--out", default="", help="저장 경로 (기본 data/reports/paper_chart_YYYYMMDD.html)")
     args = parser.parse_args()
     day = datetime.strptime(args.day, "%Y%m%d").date() if args.day else datetime.now(KST).date()
-    data = build_data(day)
-    with open(TEMPLATE, encoding="utf-8") as f:
-        page = f.read().replace("/*__DATA__*/null", json.dumps(data, ensure_ascii=False))
-    out = args.out or os.path.join(PROJECT_ROOT, "data", "reports", f"paper_chart_{day:%Y%m%d}.html")
-    os.makedirs(os.path.dirname(out), exist_ok=True)
-    with open(out, "w", encoding="utf-8") as f:
-        f.write(page)
-    print(f"{out} — 매매 {len(data['trades'])}건, 1분봉 {len(data['candles'])}종목")
+    out, n = write_chart(day, args.out)
+    print(f"{out} — 매매 {n}건")
 
 
 if __name__ == "__main__":

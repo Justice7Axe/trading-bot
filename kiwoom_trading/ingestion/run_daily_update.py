@@ -126,6 +126,19 @@ def main() -> int:
             send_telegram_message(build_capture_review())
         except Exception:
             logging.exception("포착 복기표 생성/전송 실패")
+
+    # 오늘 모의투자 매매 타점 차트 (1분봉 + 매수·매도 자리) — 1분봉 저장 뒤에 만들어 텔레그램으로 파일 전송
+    try:
+        from kiwoom_trading.screener.paper_chart import write_chart
+
+        path, n = write_chart(trading_day)
+        logging.info("모의투자 타점 차트: %s (매매 %s건)", path, n)
+        if n and not args.no_telegram:
+            from kiwoom_trading.common.telegram import send_telegram_document
+
+            send_telegram_document(path, f"📈 {trading_day:%m-%d} 모의투자 매매 타점 차트 ({n}건) — 받아서 브라우저로 여세요")
+    except Exception:
+        logging.exception("모의투자 타점 차트 생성 실패")
     return 0
 
 
