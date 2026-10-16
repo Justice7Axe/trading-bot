@@ -37,6 +37,7 @@ from kiwoom_trading.screener.daily_summary import _pct, _table
 from kiwoom_trading.screener.intraday_signals import Signal
 from kiwoom_trading.ingestion.collectors.minute_collector import fetch_minute_bars
 from kiwoom_trading.screener.leader_shape import KIND as LEADER_KIND, big_red_exit
+from kiwoom_trading.screener.pullback_breakout import KIND as PULLBACK_KIND, exit_reason as pullback_exit
 from kiwoom_trading.screener.market_data import KiwoomMarket, _code
 from kiwoom_trading.screener.store import ScreenerStore
 
@@ -263,7 +264,7 @@ class PaperTrader:
                    flow: dict[tuple[str, datetime], tuple[float, Optional[float]]]) -> None:
         for code, name, source, s in items:
             mult = (flow.get((code, s.ts)) or (None, None))[1]
-            mode = "차트" if s.kind == LEADER_KIND else "추적" if mult is not None and mult >= STRONG_FLOW else "기본"
+            mode = "차트" if s.kind == LEADER_KIND else "눌림" if s.kind == PULLBACK_KIND else "추적" if mult is not None and mult >= STRONG_FLOW else "기본"
             t = Trade(f"{s.ts:%Y%m%d}-{code}-{s.ts:%H%M}-{s.kind}", self.today, code, name, s.kind, source, s.ts, s.price,
                       mult, mode, "skipped", stop=s.stop)
             if any(x.id == t.id for x in self.trades):
@@ -370,7 +371,7 @@ class PaperTrader:
             save_trade(self.store, t)
         if reason:
             return self._sell(now, t, reason)
-        if t.mode == "차트" and not t.virtual:
+        if t.mode in ("차트", "눌림") and not t.virtual:
             why = self._chart_exit(now, t)
             if why:
                 return self._sell(now, t, why)
@@ -378,7 +379,8 @@ class PaperTrader:
             self._sell_half(now, t, q.price)
 
     def _chart_exit(self, now: datetime, t: Trade) -> Optional[str]:
-        """'차트' 매도: 새 1분봉이 마감될 때마다 그 종목 KRX 1분봉을 받아 큰 음봉인지 본다 (1분에 한 번)."""
+        """'차트'·'눌림' 매도: 새 1분봉이 마감될 때마다 그 종목 KRX 1분봉을 받아 매도 음봉인지 본다 (1분에 한 번).
+        차트(주도주 모양) = 몸통 직전 20봉 평균 3배·대금 2배 음봉, 눌림(눌림 돌파) = 5분선 아래 마감 + 몸통 직전 5봉 평균 2배 음봉."""
         minute = now.replace(second=0, microsecond=0, tzinfo=None)
         if self._chart_checked.get(t.id) == minute:
             return None
@@ -388,7 +390,8 @@ class PaperTrader:
         except Exception:
             logging.warning("차트 매도 1분봉 조회 실패 %s", t.code)
             return None
-        return big_red_exit(bars, t.buy_ts.replace(second=0, microsecond=0))
+        buy_minute = t.buy_ts.replace(second=0, microsecond=0)
+        return pullback_exit(bars, buy_minute) if t.mode == "눌림" else big_red_exit(bars, buy_minute)
 
     def _sell_half(self, now: datetime, t: Trade, price: float) -> None:
         """'반반': +2% 에 절반 매도. 1주뿐이면 전부 판다. 나머지는 원래 손절가 또는 15:19 정리."""
