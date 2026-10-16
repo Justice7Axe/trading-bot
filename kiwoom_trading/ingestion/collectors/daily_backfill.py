@@ -87,6 +87,12 @@ class KiwoomDailyClient:
             return_code = payload.get("return_code")
             if return_code not in (0, "0", None):
                 message = str(payload.get("return_msg", ""))
+                if "8005" in message and attempt < MAX_RETRIES:
+                    # 토큰 만료는 401 이 아니라 200 + return_code 3 [8005] 로 온다
+                    # (2026-10-16 20:40 이후 1분봉 백필 전부 실패, 20:00 스캐너 1분봉 조회 실패)
+                    logging.info("토큰 만료(8005) → 재발급")
+                    self.token = fetch_kiwoom_access_token(self.base_url, self.app_key, self.secret_key)
+                    continue
                 if "초과" in message:  # 허용된 요청 개수 초과
                     time.sleep(2 * attempt)
                     continue
