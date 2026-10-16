@@ -112,7 +112,7 @@ CREATE TABLE IF NOT EXISTS paper_trades (     -- 🎯 매수 신호 모의투자
     signal_ts     TIMESTAMP,
     signal_price  DOUBLE,
     flow_mult     DOUBLE,      -- 신호 시점 최근 5분 대금 ÷ 같은 시간대 평소
-    mode          VARCHAR,     -- '추적'(평소 5배↑: -5% 손절, +5% 뒤 고점 -3%) | '기본'(신호 손절가) | '반반'(+2% 절반, 나머지 15:19) | '이월'
+    mode          VARCHAR,     -- '추적'(평소 5배↑: -5% 손절, +5% 뒤 고점 -3%) | '기본'(신호 손절가) | '차트'(1분봉 큰 음봉 매도) | '반반'(+2% 절반, 나머지 15:19) | '이월'
     status        VARCHAR,     -- 'skipped' | 'ordered' | 'open' | 'selling' | 'closed' | 'failed'
     qty           INTEGER,
     buy_ts        TIMESTAMP,
