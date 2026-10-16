@@ -31,6 +31,7 @@ if __package__ is None or __package__ == "":
 
 from kiwoom_trading.common.config import KST
 from kiwoom_trading.common.daily_store import PROJECT_ROOT, DailyStore
+from kiwoom_trading.common.keep_awake import prevent_sleep_until_exit
 from kiwoom_trading.ingestion.collectors.daily_backfill import build_client
 from kiwoom_trading.ingestion.collectors.minute_collector import fetch_minute_bars
 
@@ -97,6 +98,7 @@ def main() -> None:
         store.close()
         return
 
+    prevent_sleep_until_exit()   # 2026-10-17 04:13 절전으로 3시간 멈춤 → 실행 중엔 자동 절전하지 않게
     client = build_client()
     started = time.monotonic()
     try:
