@@ -36,6 +36,7 @@ from kiwoom_trading.ingestion.collectors.daily_backfill import KiwoomDailyClient
 from kiwoom_trading.screener.daily_summary import _pct, _table
 from kiwoom_trading.screener.intraday_signals import Signal
 from kiwoom_trading.ingestion.collectors.minute_collector import fetch_minute_bars
+from kiwoom_trading.screener.early_nine import KIND as NINE_KIND
 from kiwoom_trading.screener.leader_shape import KIND as LEADER_KIND, big_red_exit
 from kiwoom_trading.screener.pullback_breakout import KIND as PULLBACK_KIND, exit_reason as pullback_exit
 from kiwoom_trading.screener.market_data import KiwoomMarket, _code
@@ -264,7 +265,7 @@ class PaperTrader:
                    flow: dict[tuple[str, datetime], tuple[float, Optional[float]]]) -> None:
         for code, name, source, s in items:
             mult = (flow.get((code, s.ts)) or (None, None))[1]
-            mode = "차트" if s.kind == LEADER_KIND else "눌림" if s.kind == PULLBACK_KIND else "추적" if mult is not None and mult >= STRONG_FLOW else "기본"
+            mode = "차트" if s.kind in (LEADER_KIND, NINE_KIND) else "눌림" if s.kind == PULLBACK_KIND else "추적" if mult is not None and mult >= STRONG_FLOW else "기본"
             t = Trade(f"{s.ts:%Y%m%d}-{code}-{s.ts:%H%M}-{s.kind}", self.today, code, name, s.kind, source, s.ts, s.price,
                       mult, mode, "skipped", stop=s.stop)
             if any(x.id == t.id for x in self.trades):

@@ -41,6 +41,7 @@ from kiwoom_trading.screener.engine import Screener
 from kiwoom_trading.screener.market_data import KiwoomMarket
 from kiwoom_trading.screener.paper_trader import PaperTrader, build_mock_client, mock_configured
 from kiwoom_trading.screener.intraday_signals import QualityConfig
+from kiwoom_trading.screener.early_nine import KIND as NINE_KIND, EarlyNineWatcher
 from kiwoom_trading.screener.leader_shape import KIND as LEADER_KIND, LeaderShapeWatcher
 from kiwoom_trading.screener.pullback_breakout import KIND as PULLBACK_KIND, PullbackWatcher
 from kiwoom_trading.screener.signal_watch import SignalWatcher, format_signals
@@ -290,7 +291,8 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
              watcher: Optional[SignalWatcher] = None, early: Optional[EarlyRunner] = None,
              investors: Optional[InvestorRecorder] = None, themes: Optional[ThemeRunner] = None,
              board: Optional[PriceBoard] = None, trader: Optional[PaperTrader] = None,
-             leader: Optional[LeaderShapeWatcher] = None, pullback: Optional[PullbackWatcher] = None) -> int:
+             leader: Optional[LeaderShapeWatcher] = None, pullback: Optional[PullbackWatcher] = None,
+             nine: Optional[EarlyNineWatcher] = None) -> int:
     now = datetime.now(KST)
     if trader is not None:
         try:
@@ -340,8 +342,8 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
             watcher.add(e.candidate.code, e.candidate.name)
         signals = watcher.check(now)
     shared_bars: dict = {}   # 같은 분에 받은 KRX 1분봉을 두 판정이 함께 쓴다
-    for label, w in (("주도주 모양", leader), ("눌림 돌파", pullback)):
-        if w is not None:
+    for label, w in (("장 초 공통점", nine), ("주도주 모양", leader), ("눌림 돌파", pullback)):
+        if w is not None and hasattr(w, "cache"):
             w.cache = shared_bars
         if w is None:
             continue
@@ -353,7 +355,7 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
         for code, name, source, s in found:
             store.save_signal(screener.today, code, name, s, source, True)
         signals += found
-    if watcher is not None or leader is not None or pullback is not None:
+    if watcher is not None or leader is not None or pullback is not None or nine is not None:
         if signals:
             logging.info("매수 신호 %s건: %s", len(signals), ", ".join(f"{n} {s.kind} {s.ts:%H:%M}" for _, n, _, s in signals))
             flow = watcher.flow if watcher is not None else {}
@@ -392,6 +394,12 @@ def main() -> int:
                                 done={c for c, _, k in store.signal_keys(now.date()) if k == LEADER_KIND})
     pullback = PullbackWatcher(client, now.date(), prev_close={c: h.last_close for c, h in screener.hist.items()},
                                seen={(c, ts) for c, ts, k in store.signal_keys(now.date()) if k == PULLBACK_KIND})
+    try:
+        nine: Optional[EarlyNineWatcher] = EarlyNineWatcher(
+            client, now.date(), done={c for c, _, k in store.signal_keys(now.date()) if k == NINE_KIND})
+    except Exception:
+        logging.exception("장 초 공통점 준비 실패 (나머지 신호만 실행)")
+        nine = None
     board = PriceBoard()
     investors = InvestorRecorder(on_snapshot=early.on_investor_snapshot)
     try:
@@ -438,7 +446,7 @@ def main() -> int:
                         logging.info("오늘 데이터가 없음(휴장일로 판단, 기준일 %s) → 종료", probe[0].as_of)
                         break
                 run_once(screener, market, store, telegram=not args.no_telegram, watcher=watcher, early=early, investors=investors,
-                         themes=themes, board=board, trader=trader, leader=leader, pullback=pullback)
+                         themes=themes, board=board, trader=trader, leader=leader, pullback=pullback, nine=nine)
             except Exception:
                 logging.exception("스캔 실패 (다음 주기에 재시도)")
             if args.once:
