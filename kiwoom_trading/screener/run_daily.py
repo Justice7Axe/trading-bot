@@ -25,6 +25,7 @@ from kiwoom_trading.ingestion.collectors.daily_backfill import build_client
 from kiwoom_trading.screener.conditions import format_evaluation
 from kiwoom_trading.screener.early_watch import active_rest_leaders, find_rest_leaders, format_rest_leaders
 from kiwoom_trading.screener.engine import Screener
+from kiwoom_trading.screener.bigcap_flow import evaluate as evaluate_bigcap_flow, summary as bigcap_flow_summary
 from kiwoom_trading.screener.gate_flow import evaluate as evaluate_gate_flow, summary as gate_flow_summary
 from kiwoom_trading.screener.market_data import KiwoomMarket
 from kiwoom_trading.screener.store import ScreenerStore
@@ -56,6 +57,7 @@ def build_daily_report(save: bool = True, as_of: Optional[date] = None) -> str:
 
     carried: dict[str, tuple[str, int]] = {}
     gate_summary = ""
+    bigcap_summary = ""
     if save:
         store = ScreenerStore()
         try:
@@ -73,6 +75,12 @@ def build_daily_report(save: bool = True, as_of: Optional[date] = None) -> str:
                 gate_summary = gate_flow_summary(store)
             except Exception:
                 logging.exception("관문×수급 평가 실패")
+            # 대형주 수급(장중 외국인 잠정치 → +2%) — 시총 상위 100 전체 평가하고 누적 요약
+            try:
+                evaluate_bigcap_flow(store, market.client, today)
+                bigcap_summary = bigcap_flow_summary(store)
+            except Exception:
+                logging.exception("대형주 수급 평가 실패")
         finally:
             store.close()
 
@@ -92,6 +100,8 @@ def build_daily_report(save: bool = True, as_of: Optional[date] = None) -> str:
         lines.append("계속 감시 (이전 쉬는 주도주): " + ", ".join(f"{name}(D+{k})" for _, (name, k) in carried.items()))
     if gate_summary:
         lines += ["", gate_summary]
+    if bigcap_summary:
+        lines += ["", bigcap_summary]
     return "\n".join(lines)
 
 
