@@ -36,6 +36,7 @@ from kiwoom_trading.ingestion.collectors.daily_backfill import KiwoomDailyClient
 from kiwoom_trading.screener.daily_summary import _pct, _table
 from kiwoom_trading.screener.intraday_signals import Signal
 from kiwoom_trading.ingestion.collectors.minute_collector import fetch_minute_bars
+from kiwoom_trading.screener.bigcap_flow import KIND as BIGCAP_KIND, TARGET as BIGCAP_TARGET
 from kiwoom_trading.screener.early_nine import KIND as NINE_KIND
 from kiwoom_trading.screener.leader_shape import KIND as LEADER_KIND, big_red_exit
 from kiwoom_trading.screener.pullback_breakout import KIND as PULLBACK_KIND, exit_reason as pullback_exit
@@ -154,10 +155,13 @@ def order_qty(price: float, budget: int = BUDGET_PER_STOCK) -> int:
 
 
 def exit_check(mode: str, buy_price: float, stop: float, peak: float, price: float) -> tuple[float, float, Optional[str]]:
-    """현재가로 (새 손절가, 새 고점, 매도 사유|None). 추적 방식은 +5% 도달 뒤 손절가를 고점 -3% 로 따라 올린다."""
+    """현재가로 (새 손절가, 새 고점, 매도 사유|None). 추적 방식은 +5% 도달 뒤 손절가를 고점 -3% 로 따라 올린다.
+    목표 방식(🎯 대형주 수급)은 +2% 에 전부 판다."""
     peak = max(peak, price)
     if mode == "추적" and peak >= buy_price * (1 + TRAIL_START):
         stop = max(stop, peak * (1 - TRAIL_GAP))
+    if mode == "목표" and price >= buy_price * (1 + BIGCAP_TARGET):
+        return stop, peak, f"목표 +{BIGCAP_TARGET:.0%}"
     if price <= stop:
         trailing = mode == "추적" and stop > buy_price * (1 - STRONG_STOP) + 1e-9
         return stop, peak, ("고점 대비 -3%" if trailing else "손절")
@@ -265,7 +269,7 @@ class PaperTrader:
                    flow: dict[tuple[str, datetime], tuple[float, Optional[float]]]) -> None:
         for code, name, source, s in items:
             mult = (flow.get((code, s.ts)) or (None, None))[1]
-            mode = "차트" if s.kind in (LEADER_KIND, NINE_KIND) else "눌림" if s.kind == PULLBACK_KIND else "추적" if mult is not None and mult >= STRONG_FLOW else "기본"
+            mode = "목표" if s.kind == BIGCAP_KIND else "차트" if s.kind in (LEADER_KIND, NINE_KIND) else "눌림" if s.kind == PULLBACK_KIND else "추적" if mult is not None and mult >= STRONG_FLOW else "기본"
             t = Trade(f"{s.ts:%Y%m%d}-{code}-{s.ts:%H%M}-{s.kind}", self.today, code, name, s.kind, source, s.ts, s.price,
                       mult, mode, "skipped", stop=s.stop)
             if any(x.id == t.id for x in self.trades):
