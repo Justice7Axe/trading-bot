@@ -139,6 +139,20 @@ def main() -> int:
             send_telegram_document(path, f"📈 {trading_day:%m-%d} 모의투자 매매 타점 차트 ({n}건) — 받아서 브라우저로 여세요")
     except Exception:
         logging.exception("모의투자 타점 차트 생성 실패")
+
+    # 모의투자 하루 복기 — 한도로 못 산 신호까지 같은 규칙으로 가상 매매 (1분봉 저장 뒤), paper_review 에 누적
+    try:
+        from kiwoom_trading.screener.paper_review import build_review, review
+        from kiwoom_trading.screener.store import ScreenerStore
+
+        store = ScreenerStore()
+        try:
+            if review(store, trading_day) and not args.no_telegram:
+                send_telegram_message(build_review(store, trading_day))
+        finally:
+            store.close()
+    except Exception:
+        logging.exception("모의투자 복기 실패")
     return 0
 
 
