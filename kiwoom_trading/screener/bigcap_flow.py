@@ -38,7 +38,7 @@ MIN_FOREIGN_RATIO = 0.05      # 외국인 잠정 순매수 ÷ KRX 누적 대금
 TARGET = 0.02                 # +2% 매도
 STOP = 0.02                   # −2% 손절
 COST = 0.0025
-MAX_PER_DAY = 3               # 모의투자 동시 보유 5종목을 다른 신호와 나눠 쓰도록 하루 3종목까지 (검증은 20:00 평가가 대형주 전체로 한다)
+MAX_PER_DAY = 3               # 모의투자 동시 보유 한도를 다른 신호와 나눠 쓰도록 하루 3종목까지 (검증은 20:00 평가가 대형주 전체로 한다)
 MIN_DAYS = 15
 
 
@@ -79,7 +79,7 @@ class BigcapFlowWatcher:
             "SELECT code, net_amount FROM investor_intraday WHERE date = ? AND investor = 'foreign' AND ts = ?", [self.today, ts]).fetchall())
         values = {i.code: i.trade_value for i in value_top if i.trade_value}
         out, seen = [], []
-        # 외국인 순매수 비율이 큰 종목부터 (모의투자 동시 보유 5종목 한도)
+        # 외국인 순매수 비율이 큰 종목부터 (모의투자 동시 보유 한도)
         cands = sorted(((flows[c] / values[c], c) for c in self.caps if flows.get(c) and values.get(c)), reverse=True)
         for ratio, code in cands:
             name = self.caps[code][0]

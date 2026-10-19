@@ -3,7 +3,7 @@
 규칙 (2026-10-15 사용자 확정):
 - 매수: 품질 필터를 통과해 알림한 🎯 신호만, 시장가. 현재가가 신호가(신호 봉 종가)보다 +1% 넘게 올랐으면 추격하지 않는다.
 - 금액: 종목당 100만 원 안에서 살 수 있는 만큼. 1주 가격이 100만 원을 넘으면 1주 (상한 없음).
-- 동시 보유 최대 5종목, 이미 보유한 종목은 추가 매수 안 함.
+- 동시 보유 최대 10종목(눌림 돌파는 2종목), 이미 보유한 종목은 추가 매수 안 함.
 - 하루 손실 한도: 실현 + 평가 손익이 그날 시작 자산의 -3% 에 닿으면 새로 사지 않는다.
 - 매도:
     · 돈이 평소 5배↑ 붙은 신호('추적'): 처음 손절 -5%, +5% 도달 뒤 고점 대비 -3% 에 청산
@@ -46,7 +46,8 @@ from kiwoom_trading.screener.store import ScreenerStore
 
 MOCK_BASE_URL = "https://mockapi.kiwoom.com"
 BUDGET_PER_STOCK = 1_000_000
-MAX_POSITIONS = 5
+MAX_POSITIONS = 10            # 키움 제한이 아니라 우리 규칙. 모의 계좌 약 1천만 원 ÷ 종목당 100만 원 (2026-10-20, 10-19 복기: 5종목 한도로 신호 85건 건너뜀)
+KIND_LIMIT = {PULLBACK_KIND: 2}  # 눌림 돌파는 장 초부터 자주 나와 자리를 차지 → 동시 2종목까지 (1년 −0.34%, 10-19 유일한 마이너스 −0.08%)
 DAILY_LOSS_LIMIT = 0.03
 MAX_CHASE = 0.01              # 신호가 대비 +1% 넘게 오르면 추격 안 함
 STRONG_FLOW = 5.0             # 평소 5배↑ → '추적' 방식
@@ -293,6 +294,9 @@ class PaperTrader:
             return "이미 보유 중"
         if len(self.active()) >= MAX_POSITIONS:
             return f"최대 {MAX_POSITIONS}종목 보유 중"
+        cap = KIND_LIMIT.get(t.kind)
+        if cap is not None and sum(1 for x in self.active() if x.kind == t.kind) >= cap:
+            return f"{t.kind} 동시 {cap}종목 보유 중"
         return None
 
     def _buy(self, now: datetime, t: Trade, s: Signal) -> None:
@@ -344,7 +348,7 @@ class PaperTrader:
         t_now = now.time()
         sess = session(t_now)
         # 체결 확인은 정규장 밖에서도 한다: 15:19 정리 주문은 15:30 동시호가에 체결되므로
-        # 15:30 이후에 확인하지 않으면 '매도 중'으로 남아 애프터장 보유 한도(5종목)를 막는다.
+        # 15:30 이후에 확인하지 않으면 '매도 중'으로 남아 애프터장 보유 한도를 막는다.
         if any(t.status in ("ordered", "selling") and not t.virtual for t in self.trades):
             self._reconcile(now)
         if sess:
