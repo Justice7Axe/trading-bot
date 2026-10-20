@@ -38,6 +38,7 @@ from kiwoom_trading.screener.intraday_signals import Signal
 from kiwoom_trading.ingestion.collectors.minute_collector import fetch_minute_bars
 from kiwoom_trading.screener.bigcap_flow import KIND as BIGCAP_KIND, TARGET as BIGCAP_TARGET
 from kiwoom_trading.screener.early_nine import KIND as NINE_KIND
+from kiwoom_trading.screener.market_regime import BIGCAP_MAX_WHEN_DOWN, CONSERVATIVE_LOSS_LIMIT
 from kiwoom_trading.screener.leader_shape import KIND as LEADER_KIND, big_red_exit
 from kiwoom_trading.screener.pullback_breakout import KIND as PULLBACK_KIND, exit_reason as pullback_exit
 from kiwoom_trading.screener.market_data import KiwoomMarket, _code
@@ -240,6 +241,7 @@ class PaperTrader:
         self.today = today
         self.notify = notify or (lambda text: None)
         self.halted = False
+        self.regime = None                      # MarketRegime (run_intraday 가 넣어 줌) — 강한 하락장이면 보수적 매매
         self.last_price: dict[str, float] = {}
         self._last_tick = 0.0
         self._chart_checked: dict[str, datetime] = {}   # '차트' 매도: 거래별 마지막으로 본 분
@@ -289,7 +291,13 @@ class PaperTrader:
         if not (SESSION_OPEN <= tm < LIQUIDATE_AT or PRE[0] <= tm < PRE[1] or AFTER[0] <= tm < AFTER[1]):
             return "매수 시간 아님 (정규장 09:00~15:19, 가상 08:00~08:45·15:30~19:45)"
         if self.halted:
-            return f"하루 손실 한도 -{DAILY_LOSS_LIMIT:.0%} 도달"
+            return f"하루 손실 한도 -{self._loss_limit():.1%} 도달"
+        if self.regime is not None and self.regime.strong_down and not t.virtual:
+            if t.kind != BIGCAP_KIND:
+                return "강한 하락장 — 차트 신호는 새로 사지 않음 (보수적 매매)"
+            bought = sum(1 for x in self.trades if x.date == self.today and x.kind == BIGCAP_KIND and x.buy_ts)
+            if bought >= BIGCAP_MAX_WHEN_DOWN:
+                return f"강한 하락장 — 대형주 수급은 {BIGCAP_MAX_WHEN_DOWN}종목까지 (보수적 매매)"
         if any(x.code == t.code for x in self.active()):
             return "이미 보유 중"
         if len(self.active()) >= MAX_POSITIONS:
@@ -513,12 +521,15 @@ class PaperTrader:
         self.notify(f"{icon} {'가상' if t.virtual else '모의'} 매도 {t.name} {t.qty - t.part_qty}주 × {price} — {t.sell_reason}{part}\n"
                     f"  매수 {t.buy_price:,.0f}원 → {result}")
 
+    def _loss_limit(self) -> float:
+        return CONSERVATIVE_LOSS_LIMIT if self.regime is not None and self.regime.strong_down else DAILY_LOSS_LIMIT
+
     def _check_halt(self) -> None:
         if self.halted or not self.asset_start:
             return
         today = [t for t in self.trades if t.date == self.today and t.buy_price]
         pnl = sum((net_pnl(t) or 0) if t.status == "closed" else (net_pnl(t, self.last_price.get(t.code)) or 0) for t in today)
-        if pnl <= -self.asset_start * DAILY_LOSS_LIMIT:
+        if pnl <= -self.asset_start * self._loss_limit():
             self.halted = True
             self.notify(f"⛔ 모의투자 하루 손실 한도 도달 ({pnl:+,.0f}원) — 오늘은 새로 사지 않습니다 (보유 종목 매도 규칙은 계속)")
 
