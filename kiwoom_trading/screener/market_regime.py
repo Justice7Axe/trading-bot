@@ -1,8 +1,10 @@
 """🧯 강한 하락장 장 초 판정 → 보수적 매매 (2026-10-20 사용자: 강한 하락장일 때는 아주 보수적으로, 때로는 매매하지 않는 게 낫다).
 
-판정: 09:10 에 한 번 (스캐너가 늦으면 09:20 까지 첫 스냅샷), KRX 대금 상위 200 중 주식만(ETF·인버스 제외)의
+판정: 09:10 과 09:20 두 번 (각 시각 뒤 5분 안 첫 스냅샷), KRX 대금 상위 200 중 주식만(ETF·인버스 제외)의
       전일 대비 등락 중앙값 ≤ −1.5% 이면 그날 '강한 하락장' (그날 끝까지 유지).
-      ⚠️ 09:10~10:00 매분 판정으로 하면 10-19(09:29 −1.5%, 종가 +1.3% 반등일)를 잘못 판정한다 → 1년 검증과 같은 '09:10 한 번'.
+      1년: 09:10 만 → 39일 정밀도 74% 포착 50% / 09:10 또는 09:20 → 46일 정밀도 72% 포착 57% (추가 7일 종가 중앙 −2.5%)
+           / 09:30 까지 더하면 50일 정밀도 66% 로 떨어진다.
+      ⚠️ 매분 판정으로 하면 10-19(09:29 −1.5%, 종가 +1.3% 반등일)를 잘못 판정한다 → 정해진 두 시점만.
 근거 (스크래치 regime_early.py / regime_signals.py, 1년 246일, 전날 대금 상위 200):
 - 09:10 중앙 ≤ −1.5% → 그날 종가 중앙 −1.5%↓ 강한 하락장 정밀도 74%, 강한 하락장 58일 중 50% 포착 (판정일 종가 중앙 −3.6%).
 - 판정된 날 차트 신호가 더 나쁘다: 주도주 모양 −0.72% (다른 날 −0.36%), 눌림 돌파 −0.46% (−0.34%), 앞·뒤 기간 모두.
@@ -19,7 +21,8 @@ from typing import Callable, Iterable, Optional
 
 from kiwoom_trading.screener.market_data import RankItem
 
-START, END = time(9, 10), time(9, 20)
+CHECKS = (time(9, 10), time(9, 20))   # 각 시각부터 5분 안 첫 스냅샷에서 한 번씩
+WINDOW_MIN = 5
 STRONG_DOWN = -0.015
 CONSERVATIVE_LOSS_LIMIT = 0.015
 BIGCAP_MAX_WHEN_DOWN = 1
@@ -32,15 +35,19 @@ class MarketRegime:
         self.strong_down = False
         self.last_median: Optional[float] = None
         self.decided_at: Optional[datetime] = None
-        self.checked = False
+        self.done: set[time] = set()
 
     def update(self, now: datetime, value_top: list[RankItem]) -> None:
-        if self.checked or not (START <= now.time() <= END):
+        if self.strong_down:
+            return
+        mins = now.hour * 60 + now.minute
+        due = [c for c in CHECKS if c not in self.done and c.hour * 60 + c.minute <= mins < c.hour * 60 + c.minute + WINDOW_MIN]
+        if not due:
             return
         xs = sorted(i.change_rate for i in value_top if i.code in self.stocks and i.change_rate is not None)
         if len(xs) < 50:
             return
-        self.checked = True
+        self.done.update(due)
         n = len(xs)
         med = xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2
         self.last_median = med
