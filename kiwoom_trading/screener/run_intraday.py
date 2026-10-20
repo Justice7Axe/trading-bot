@@ -43,6 +43,7 @@ from kiwoom_trading.screener.paper_trader import PaperTrader, build_mock_client,
 from kiwoom_trading.screener.intraday_signals import QualityConfig
 from kiwoom_trading.screener.bigcap_flow import KIND as BIGCAP_KIND, BigcapFlowWatcher
 from kiwoom_trading.screener.early_nine import KIND as NINE_KIND, EarlyNineWatcher
+from kiwoom_trading.screener.inverse_gap import KIND as INVERSE_KIND, InverseGapWatcher
 from kiwoom_trading.screener.market_regime import MarketRegime
 from kiwoom_trading.screener.leader_shape import KIND as LEADER_KIND, LeaderShapeWatcher
 from kiwoom_trading.screener.pullback_breakout import KIND as PULLBACK_KIND, PullbackWatcher
@@ -295,7 +296,7 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
              board: Optional[PriceBoard] = None, trader: Optional[PaperTrader] = None,
              leader: Optional[LeaderShapeWatcher] = None, pullback: Optional[PullbackWatcher] = None,
              nine: Optional[EarlyNineWatcher] = None, bigcap: Optional[BigcapFlowWatcher] = None,
-             regime: Optional[MarketRegime] = None) -> int:
+             regime: Optional[MarketRegime] = None, inverse: Optional[InverseGapWatcher] = None) -> int:
     now = datetime.now(KST)
     if trader is not None:
         try:
@@ -350,7 +351,7 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
             watcher.add(e.candidate.code, e.candidate.name)
         signals = watcher.check(now)
     shared_bars: dict = {}   # 같은 분에 받은 KRX 1분봉을 두 판정이 함께 쓴다
-    for label, w in (("장 초 공통점", nine), ("대형주 수급", bigcap), ("주도주 모양", leader), ("눌림 돌파", pullback)):
+    for label, w in (("인버스 갭", inverse), ("장 초 공통점", nine), ("대형주 수급", bigcap), ("주도주 모양", leader), ("눌림 돌파", pullback)):
         if w is not None and hasattr(w, "cache"):
             w.cache = shared_bars
         if w is None:
@@ -363,7 +364,7 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
         for code, name, source, s in found:
             store.save_signal(screener.today, code, name, s, source, True)
         signals += found
-    if watcher is not None or leader is not None or pullback is not None or nine is not None or bigcap is not None:
+    if watcher is not None or leader is not None or pullback is not None or nine is not None or bigcap is not None or inverse is not None:
         if signals:
             logging.info("매수 신호 %s건: %s", len(signals), ", ".join(f"{n} {s.kind} {s.ts:%H:%M}" for _, n, _, s in signals))
             flow = watcher.flow if watcher is not None else {}
@@ -432,6 +433,7 @@ def main() -> int:
             if not args.no_telegram:
                 send_telegram_message("⚠️ 모의투자 준비 실패 — 오늘은 🎯 알림만 보냅니다 (로그 확인)")
     regime = MarketRegime(screener.hist.keys(), notify=None if args.no_telegram else send_telegram_message)
+    inverse = InverseGapWatcher(market, screener.hist.keys(), done=any(k == INVERSE_KIND for _, _, k in store.signal_keys(now.date())))
     if trader is not None:
         trader.regime = regime
 
@@ -463,7 +465,7 @@ def main() -> int:
                         logging.info("오늘 데이터가 없음(휴장일로 판단, 기준일 %s) → 종료", probe[0].as_of)
                         break
                 run_once(screener, market, store, telegram=not args.no_telegram, watcher=watcher, early=early, investors=investors,
-                         themes=themes, board=board, trader=trader, leader=leader, pullback=pullback, nine=nine, bigcap=bigcap, regime=regime)
+                         themes=themes, board=board, trader=trader, leader=leader, pullback=pullback, nine=nine, bigcap=bigcap, regime=regime, inverse=inverse)
             except Exception:
                 logging.exception("스캔 실패 (다음 주기에 재시도)")
             if args.once:
