@@ -12,6 +12,7 @@
 1분봉은 20:00 업데이트가 저장한 감시 종목 1분봉(daily_ohlcv.duckdb minute_ohlcv, 모의투자 종목 포함)을 쓴다.
 09:15 시장 분위기(대금 상위 200 중앙 전일 대비)도 함께 기록한다. 1년 분석: +1.5%↑ 면 강한 상승장 정밀도 73%,
 그러나 그 뒤 종가까지는 평균 −0.2% 안팎이고 대형주 +2% 매매는 분위기와 상관없이 −0.2~−0.4% → 아직 분위기별 매매 방식 근거 없음, 쌓아서 본다.
+품질 필터에 걸린 🎯 신호(buy_signals.alerted = false)도 기본 매도로 가상 매매해 status='filtered' 로 쌓는다.
 10-19 검증: 실제 체결 23건을 거의 같게 재현 (예: 삼성바이오로직스 실제 +2.46% / 가상 +2.30%).
 """
 import argparse
@@ -96,6 +97,13 @@ def simulate(bars: list[dict], signal_ts: datetime, signal_price: float, stop: f
     return dict(ret=last["close"] / buy - 1 - COST, why="시간 정리", buy_ts=buy_ts, sell_ts=last["ts"])
 
 
+def filter_category(why: Optional[str]) -> str:
+    why = why or ""
+    return ("하락 차트(시가 아래)" if "시가" in why and "아래" in why else "깊은 눌림" if "깊은 눌림" in why
+            else "박스 짧음" if "박스" in why else "깨진 지지선" if "깨졌던" in why else "허용 시간 밖" if "시간" in why
+            else "같은 자리 손절 반복" if "손절" in why else "기타")
+
+
 def review(store: ScreenerStore, day: date, daily_path: str = DEFAULT_DB_PATH) -> int:
     """그날 모의투자 신호 전부를 가상 매매해 paper_review 에 저장. 반환: 저장 건수."""
     conn = store.conn
@@ -119,6 +127,16 @@ def review(store: ScreenerStore, day: date, daily_path: str = DEFAULT_DB_PATH) -
             why = note if status == "skipped" else None
             rows.append((day, tid, code, name, kind, mode, status, why, bool(ext), sig_ts, s.get("buy_ts"), s.get("sell_ts"),
                          actual, s.get("ret"), s.get("why")))
+        # 품질 필터에 걸려 모의투자로 넘어가지 않은 🎯 신호도 '기본' 매도(신호 손절가·15:19)로 가상 매매 (status='filtered')
+        for code, name, ts, kind, price, stop, why in conn.execute(
+                "SELECT code, name, ts, kind, price, stop, reject_reason FROM buy_signals WHERE date = ? AND NOT alerted ORDER BY ts", [day]).fetchall():
+            ext = not (time(9, 0) <= ts.time() < time(15, 30))
+            ex = "AL" if ext else "KRX"
+            if (code, ex) not in cache:
+                cache[(code, ex)] = _bars(d, code, day, ex)
+            sim = simulate(cache[(code, ex)], ts, price, stop or 0, "기본", time(19, 50) if ext else time(15, 19), False) or {}
+            rows.append((day, f"F-{ts:%H%M%S}-{code}-{kind}", code, name, kind, "기본", "filtered", filter_category(why), bool(ext), ts,
+                         sim.get("buy_ts"), sim.get("sell_ts"), None, sim.get("ret"), sim.get("why")))
     finally:
         d.close()
     conn.execute("DELETE FROM paper_review WHERE date = ?", [day])
@@ -179,7 +197,8 @@ def build_review(store: ScreenerStore, day: date, daily_path: str = DEFAULT_DB_P
     conn = store.conn
     conn.execute(SCHEMA)
     rows = conn.execute("""SELECT code, kind, status, skip_why, virtual, actual, sim, sim_why, buy_ts, sell_ts
-                           FROM paper_review WHERE date = ?""", [day]).fetchall()
+                           FROM paper_review WHERE date = ? AND status <> 'filtered'""", [day]).fetchall()
+    filtered = conn.execute("SELECT skip_why, sim FROM paper_review WHERE date = ? AND status = 'filtered' AND sim IS NOT NULL", [day]).fetchall()
     if not rows:
         return f"🔁 {day:%m-%d} 모의투자 복기: 신호 없음"
     d = duckdb.connect(daily_path, read_only=True)
@@ -202,6 +221,13 @@ def build_review(store: ScreenerStore, day: date, daily_path: str = DEFAULT_DB_P
         lines.append(f"시장: 대금 상위 200 중앙 {mkt[0]:+.1%}, {mkt[1]:.0%} 상승"
                      + (f" | 09:15 분위기: 중앙 {regime:+.1%} → {regime_label(regime)}" if regime is not None else ""))
     lines.append(f"실제 체결 {len(closed)}건 {pct(closed)} (승률 {win(closed)}) | 한도로 건너뜀 {len(limited)}건 → 가상 {pct(lim_sim)} (승률 {win(lim_sim)})")
+    if filtered:
+        fg = defaultdict(list)
+        for why, sim in filtered:
+            fg[why].append(sim)
+        fs = [x for _, x in filtered]
+        lines.append(f"품질 필터에 걸린 신호 {len(fs)}건 → 가상 {pct(fs)} (승률 {win(fs)}): "
+                     + " · ".join(f"{k} {len(v)}건 {pct(v)}" for k, v in sorted(fg.items(), key=lambda x: -len(x[1]))))
     by = defaultdict(list)
     for r in rows:
         if r[6] is not None:
@@ -217,15 +243,19 @@ def build_review(store: ScreenerStore, day: date, daily_path: str = DEFAULT_DB_P
         lines.append("보유 한도별 (정규장, 건당 100만 원): " + " / ".join(parts))
     # 누적
     days = conn.execute("SELECT count(DISTINCT date) FROM paper_review").fetchone()[0]
-    acc = conn.execute("""SELECT kind, count(*), avg(sim), avg((sim > 0)::INT) FROM paper_review WHERE sim IS NOT NULL
+    acc = conn.execute("""SELECT kind, count(*), avg(sim), avg((sim > 0)::INT) FROM paper_review WHERE sim IS NOT NULL AND status <> 'filtered'
                           GROUP BY kind ORDER BY count(*) DESC""").fetchall()
+    facc = conn.execute("""SELECT count(*), avg(sim), count(DISTINCT date) FROM paper_review WHERE sim IS NOT NULL AND status = 'filtered'""").fetchone()
     lines.append(f"누적 {days}일 (가상 매매 기준): " + " · ".join(f"{k} {n}건 {a:+.2%} 승률 {w:.0%}" for k, n, a, w in acc))
+    if facc and facc[0]:
+        lines.append(f"누적 품질 필터 탈락 {facc[0]}건 {facc[1]:+.2%} ({facc[2]}일) — 필터가 거르는 신호가 통과 신호보다 나쁜지 확인용")
     by_regime = defaultdict(list)
     for (dd,) in conn.execute("SELECT DISTINCT date FROM paper_review").fetchall():
         rg = morning_regime(store, dd)
         if rg is None:
             continue
-        by_regime[regime_label(rg)] += [r[0] for r in conn.execute("SELECT sim FROM paper_review WHERE date = ? AND sim IS NOT NULL", [dd]).fetchall()]
+        by_regime[regime_label(rg)] += [r[0] for r in conn.execute(
+            "SELECT sim FROM paper_review WHERE date = ? AND sim IS NOT NULL AND status <> 'filtered'", [dd]).fetchall()]
     if by_regime:
         lines.append("누적 09:15 분위기별 (가상 매매): " + " · ".join(f"{k} {len(v)}건 {pct(v)}" for k, v in by_regime.items()))
     lines.append("⚠️ 하루 결과는 시장 분위기에 크게 좌우된다. 신호 규칙 판단은 누적과 1년 검증으로 한다.")
