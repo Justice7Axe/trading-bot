@@ -146,7 +146,7 @@ def main() -> None:
         for r in store.conn.execute("""SELECT date, name, gate_ts::TIME, foreign_1st/1e8, inst_1st/1e8, fi_1000/1e8, leader, value_rank, day_ret
                                        FROM gate_flow_eval ORDER BY date, gate_ts""").fetchall():
             print(f"  {r[0]} {r[1]} {r[2]:%H:%M} 외국인 {r[3]:+,.0f}억 기관 {r[4]:+,.0f}억 10시 합 {(r[5] or 0):+,.0f}억 → "
-                  f"{'주도주' if r[6] else '아님'} (대금 {r[7]}위, {r[8]:+.1%})")
+                  f"{'주도주' if r[6] else '아님'} (대금 {r[7]}위, {(f'{r[8]:+.1%}' if r[8] is not None else '등락 없음')})")
     finally:
         store.close()
 
