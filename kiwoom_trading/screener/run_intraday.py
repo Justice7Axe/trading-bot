@@ -45,6 +45,7 @@ from kiwoom_trading.screener.bigcap_flow import KIND as BIGCAP_KIND, BigcapFlowW
 from kiwoom_trading.screener.early_nine import KIND as NINE_KIND, EarlyNineWatcher
 from kiwoom_trading.screener.inverse_gap import KIND as INVERSE_KIND, InverseGapWatcher
 from kiwoom_trading.screener.market_regime import MarketRegime
+from kiwoom_trading.screener.surge_groups import SurgeGroups
 from kiwoom_trading.screener.leader_shape import KIND as LEADER_KIND, LeaderShapeWatcher
 from kiwoom_trading.screener.pullback_breakout import KIND as PULLBACK_KIND, PullbackWatcher
 from kiwoom_trading.screener.signal_watch import SignalWatcher, format_signals
@@ -296,7 +297,8 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
              board: Optional[PriceBoard] = None, trader: Optional[PaperTrader] = None,
              leader: Optional[LeaderShapeWatcher] = None, pullback: Optional[PullbackWatcher] = None,
              nine: Optional[EarlyNineWatcher] = None, bigcap: Optional[BigcapFlowWatcher] = None,
-             regime: Optional[MarketRegime] = None, inverse: Optional[InverseGapWatcher] = None) -> int:
+             regime: Optional[MarketRegime] = None, inverse: Optional[InverseGapWatcher] = None,
+             surges: Optional[SurgeGroups] = None) -> int:
     now = datetime.now(KST)
     if trader is not None:
         try:
@@ -326,6 +328,11 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
             themes.step(now, market, search_1m, telegram)
         except Exception:
             logging.exception("테마 특징주 트랙 실패")
+    if surges is not None:
+        try:
+            surges.step(now, value_top)        # 🧭 09:10·09:20 오늘의 급등 묶음 (뉴스 제목 공통 단어)
+        except Exception:
+            logging.exception("급등 묶음 실패")
     if investors is not None:
         try:
             investors.step(now, market, store)
@@ -433,6 +440,12 @@ def main() -> int:
             if not args.no_telegram:
                 send_telegram_message("⚠️ 모의투자 준비 실패 — 오늘은 🎯 알림만 보냅니다 (로그 확인)")
     regime = MarketRegime(screener.hist.keys(), notify=None if args.no_telegram else send_telegram_message)
+    try:
+        surges: Optional[SurgeGroups] = SurgeGroups(store, now.date(), screener.names,
+                                                    notify=None if args.no_telegram else send_telegram_message)
+    except Exception:
+        logging.exception("급등 묶음 준비 실패")
+        surges = None
     inverse = InverseGapWatcher(market, screener.hist.keys(), done=any(k == INVERSE_KIND for _, _, k in store.signal_keys(now.date())))
     if trader is not None:
         trader.regime = regime
@@ -465,7 +478,7 @@ def main() -> int:
                         logging.info("오늘 데이터가 없음(휴장일로 판단, 기준일 %s) → 종료", probe[0].as_of)
                         break
                 run_once(screener, market, store, telegram=not args.no_telegram, watcher=watcher, early=early, investors=investors,
-                         themes=themes, board=board, trader=trader, leader=leader, pullback=pullback, nine=nine, bigcap=bigcap, regime=regime, inverse=inverse)
+                         themes=themes, board=board, trader=trader, leader=leader, pullback=pullback, nine=nine, bigcap=bigcap, regime=regime, inverse=inverse, surges=surges)
             except Exception:
                 logging.exception("스캔 실패 (다음 주기에 재시도)")
             if args.once:
