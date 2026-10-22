@@ -101,7 +101,7 @@ def evaluate(store: ScreenerStore, day: date, daily_path: str = DEFAULT_DB_PATH)
         i_amt, i_ts = first("institution", code)
         conn.execute("INSERT INTO gate_flow_eval VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [
             day, code, name, ts, price, f_amt, f_ts, i_amt, i_ts, latest_sum(code),
-            bool(vr <= 30 and ret >= 0.05), vr, ret, close / price - 1 if price else None])
+            bool(vr <= 30 and ret is not None and ret >= 0.05), vr, ret, close / price - 1 if price else None])
         n += 1
     logging.info("관문×수급 평가 %s: %s종목", day, n)
     return n
