@@ -14,6 +14,13 @@
 - 🎯 대형주 수급은 하루 1종목까지
 - 하루 손실 한도 −3% → −1.5%
 - 이미 산 종목은 원래 매도 규칙 그대로
+
+📈 강한 상승장 판정 (2026-10-23 사용자 B안: 차트 신호 3종은 강한 상승장에만 산다):
+      같은 두 시점에 중앙값 ≥ +2% 이면 그날 '강한 상승장' (그날 끝까지 유지).
+      그날만 지지 반등·돌파 후 눌림·주도주 모양을 실제 주문으로 산다. 다른 날은 알림·기록만 (복기에서 가상 매매로 검증).
+근거: 모의매매 5거래일(10-16~22) 이 셋 85건 −0.8% 안팎으로 손실 대부분. 1년: 09:10 중앙 ≥ +2% 22일에
+      주도주 모양 +0.25% vs 다른 날 −0.52% (스크래치 regime_up.py).
+⚠️ 10-19 처럼 약하게 출발해 크게 오른 날은 못 잡는다 (09:10 −1.49%). 10-21 은 +2.7% 출발 뒤 밀린 예외.
 """
 import logging
 from datetime import datetime, time
@@ -24,6 +31,8 @@ from kiwoom_trading.screener.market_data import RankItem
 CHECKS = (time(9, 10), time(9, 20))   # 각 시각부터 5분 안 첫 스냅샷에서 한 번씩
 WINDOW_MIN = 5
 STRONG_DOWN = -0.015
+STRONG_UP = 0.02
+UP_ONLY_KINDS = ("지지 반등", "돌파 후 눌림", "주도주 모양")   # 강한 상승장에만 실제 주문
 CONSERVATIVE_LOSS_LIMIT = 0.015
 BIGCAP_MAX_WHEN_DOWN = 1
 
@@ -33,12 +42,13 @@ class MarketRegime:
         self.stocks = set(stock_codes)
         self.notify = notify or (lambda text: None)
         self.strong_down = False
+        self.strong_up = False
         self.last_median: Optional[float] = None
         self.decided_at: Optional[datetime] = None
         self.done: set[time] = set()
 
     def update(self, now: datetime, value_top: list[RankItem]) -> None:
-        if self.strong_down:
+        if self.strong_down or self.strong_up:
             return
         mins = now.hour * 60 + now.minute
         due = [c for c in CHECKS if c not in self.done and c.hour * 60 + c.minute <= mins < c.hour * 60 + c.minute + WINDOW_MIN]
@@ -52,7 +62,11 @@ class MarketRegime:
         med = xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2
         self.last_median = med
         logging.info("시장 분위기 판정 %s: 대금 상위 주식 %s종목 중앙 %+.2f%% → %s", f"{now:%H:%M}", n, med * 100,
-                     "강한 하락장" if med <= STRONG_DOWN else "보통")
+                     "강한 하락장" if med <= STRONG_DOWN else "강한 상승장" if med >= STRONG_UP else "보통")
+        if med >= STRONG_UP:
+            self.strong_up, self.decided_at = True, now
+            self.notify(f"📈 강한 상승장 판정 {now:%H:%M} — 대금 상위 주식 {n}종목 중앙 {med:+.1%} (기준 {STRONG_UP:+.1%})\n"
+                        f"오늘은 차트 신호({'·'.join(UP_ONLY_KINDS)})도 모의 매수합니다. 강한 상승장이 아닌 날은 알림·기록만.")
         if med <= STRONG_DOWN:
             self.strong_down, self.decided_at = True, now
             self.notify(f"🧯 강한 하락장 판정 {now:%H:%M} — 대금 상위 주식 {n}종목 중앙 {med:+.1%} (기준 {STRONG_DOWN:+.1%})\n"
