@@ -6,7 +6,7 @@
 가상 매매 (paper_trader 와 같은 규칙):
 - 신호 봉 다음 1분봉 시가에 매수. 시가가 신호가보다 +1% 넘게 높으면 '추격 안 함'.
 - 정규장 신호는 KRX 1분봉, 프리·애프터장 신호는 통합(AL) 1분봉. 정리 시각 15:19 (가상 08:49 / 19:50).
-- 매도: 기본 = 신호 손절가 / 추적 = −5%, +5% 뒤 고점 −3% / 목표 = +2% 익절·−2% 손절 /
+- 매도: 기본 = 신호 손절가 / 추적 = −5%, +5% 뒤 고점 −3% / 목표 = +2% 익절·−2% 손절(햄버거는 전저점 손절) /
   차트 = 큰 음봉(leader_shape.big_red_exit) / 눌림 = 5분선 아래 큰 음봉(pullback_breakout.exit_reason), 손절가 공통.
 - 손절가는 1분봉 저가로 판정한다(실전은 15초마다 현재가). 비용 0.25%.
 1분봉은 20:00 업데이트가 저장한 감시 종목 1분봉(daily_ohlcv.duckdb minute_ohlcv, 모의투자 종목 포함)을 쓴다.
@@ -29,6 +29,7 @@ if __package__ is None or __package__ == "":
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from kiwoom_trading.common.daily_store import DEFAULT_DB_PATH
+from kiwoom_trading.screener.hamburger_watch import KIND as BURGER_KIND
 from kiwoom_trading.screener.leader_shape import big_red_exit
 from kiwoom_trading.screener.paper_trader import COST, KIND_LIMIT, MAX_CHASE, MAX_POSITIONS, STRONG_STOP, TRAIL_GAP, TRAIL_START
 from kiwoom_trading.screener.pullback_breakout import exit_reason as pullback_exit
@@ -63,7 +64,7 @@ def _bars(conn, code: str, day: date, exchange: str) -> list[dict]:
 
 
 def simulate(bars: list[dict], signal_ts: datetime, signal_price: float, stop: float, mode: str,
-             end: time, chart_exit: bool) -> Optional[dict]:
+             end: time, chart_exit: bool, keep_stop: bool = False) -> Optional[dict]:
     """신호 하나를 가상 매매. 반환: {ret, why, buy_ts, sell_ts} 또는 None(봉 없음)."""
     k0 = next((i for i, b in enumerate(bars) if b["ts"] > signal_ts and b["ts"].time() <= end), None)
     if k0 is None:
@@ -73,7 +74,7 @@ def simulate(bars: list[dict], signal_ts: datetime, signal_price: float, stop: f
         return dict(ret=None, why="추격 안 함", buy_ts=None, sell_ts=None)
     if mode == "추적":
         stop = buy * (1 - STRONG_STOP)
-    elif mode == "목표":
+    elif mode == "목표" and not keep_stop:    # 🎯 대형주 수급 −2% (🍔 햄버거는 신호의 전저점 손절을 그대로)
         stop = buy * 0.98
     peak = buy
     last = bars[k0]
@@ -122,7 +123,8 @@ def review(store: ScreenerStore, day: date, daily_path: str = DEFAULT_DB_PATH) -
             if (code, ex) not in cache:
                 cache[(code, ex)] = _bars(d, code, day, ex)
             end = (time(8, 49) if sig_ts.time() < time(9, 0) else time(19, 50)) if ext else time(15, 19)
-            s = simulate(cache[(code, ex)], sig_ts, sig_price, stop or 0, mode, end, chart_exit=not ext) or {}
+            s = simulate(cache[(code, ex)], sig_ts, sig_price, stop or 0, mode, end, chart_exit=not ext,
+                         keep_stop=kind == BURGER_KIND and bool(stop)) or {}
             actual = sp / bp - 1 - COST if status == "closed" and bp and sp else None
             why = note if status == "skipped" else None
             rows.append((day, tid, code, name, kind, mode, status, why, bool(ext), sig_ts, s.get("buy_ts"), s.get("sell_ts"),
