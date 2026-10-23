@@ -38,6 +38,7 @@ from kiwoom_trading.screener.intraday_signals import Signal
 from kiwoom_trading.ingestion.collectors.minute_collector import fetch_minute_bars
 from kiwoom_trading.screener.bigcap_flow import KIND as BIGCAP_KIND, TARGET as BIGCAP_TARGET
 from kiwoom_trading.screener.early_nine import KIND as NINE_KIND
+from kiwoom_trading.screener.hamburger_watch import KIND as BURGER_KIND
 from kiwoom_trading.screener.inverse_gap import KIND as INVERSE_KIND
 from kiwoom_trading.screener.market_regime import BIGCAP_MAX_WHEN_DOWN, CONSERVATIVE_LOSS_LIMIT, UP_ONLY_KINDS
 from kiwoom_trading.screener.leader_shape import KIND as LEADER_KIND, big_red_exit
@@ -273,7 +274,7 @@ class PaperTrader:
                    flow: dict[tuple[str, datetime], tuple[float, Optional[float]]]) -> None:
         for code, name, source, s in items:
             mult = (flow.get((code, s.ts)) or (None, None))[1]
-            mode = "보유" if s.kind == INVERSE_KIND else "목표" if s.kind == BIGCAP_KIND else "차트" if s.kind in (LEADER_KIND, NINE_KIND) else "눌림" if s.kind == PULLBACK_KIND else "추적" if mult is not None and mult >= STRONG_FLOW else "기본"
+            mode = "보유" if s.kind == INVERSE_KIND else "목표" if s.kind in (BIGCAP_KIND, BURGER_KIND) else "차트" if s.kind in (LEADER_KIND, NINE_KIND) else "눌림" if s.kind == PULLBACK_KIND else "추적" if mult is not None and mult >= STRONG_FLOW else "기본"
             t = Trade(f"{s.ts:%Y%m%d}-{code}-{s.ts:%H%M}-{s.kind}", self.today, code, name, s.kind, source, s.ts, s.price,
                       mult, mode, "skipped", stop=s.stop)
             if any(x.id == t.id for x in self.trades):

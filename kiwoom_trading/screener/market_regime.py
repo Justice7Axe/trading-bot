@@ -23,7 +23,7 @@
 ⚠️ 10-19 처럼 약하게 출발해 크게 오른 날은 못 잡는다 (09:10 −1.49%). 10-21 은 +2.7% 출발 뒤 밀린 예외.
 """
 import logging
-from datetime import datetime, time
+from datetime import date, datetime, time
 from typing import Callable, Iterable, Optional
 
 from kiwoom_trading.screener.market_data import RankItem
@@ -38,14 +38,27 @@ BIGCAP_MAX_WHEN_DOWN = 1
 
 
 class MarketRegime:
-    def __init__(self, stock_codes: Iterable[str], notify: Optional[Callable[[str], None]] = None) -> None:
+    def __init__(self, stock_codes: Iterable[str], notify: Optional[Callable[[str], None]] = None,
+                 store=None, today: Optional[date] = None) -> None:
         self.stocks = set(stock_codes)
         self.notify = notify or (lambda text: None)
+        self.store, self.today = store, today
         self.strong_down = False
         self.strong_up = False
         self.last_median: Optional[float] = None
         self.decided_at: Optional[datetime] = None
         self.done: set[time] = set()
+        if store is not None and today is not None:     # 장중에 다시 켜도 그날 판정 유지
+            row = store.conn.execute("SELECT regime, decided_at, median FROM market_regime WHERE date = ?", [today]).fetchone()
+            if row:
+                self.strong_down, self.strong_up = row[0] == "강한 하락장", row[0] == "강한 상승장"
+                self.decided_at, self.last_median = row[1], row[2]
+                logging.info("시장 분위기 판정 불러옴: %s (%s, 중앙 %+.2f%%)", row[0], f"{row[1]:%H:%M}", row[2] * 100)
+
+    def _save(self, regime: str, now: datetime, med: float) -> None:
+        if self.store is not None and self.today is not None:
+            self.store.conn.execute("INSERT OR REPLACE INTO market_regime VALUES (?, ?, ?, ?)",
+                                    [self.today, regime, now.replace(tzinfo=None), med])
 
     def update(self, now: datetime, value_top: list[RankItem]) -> None:
         if self.strong_down or self.strong_up:
@@ -65,10 +78,12 @@ class MarketRegime:
                      "강한 하락장" if med <= STRONG_DOWN else "강한 상승장" if med >= STRONG_UP else "보통")
         if med >= STRONG_UP:
             self.strong_up, self.decided_at = True, now
+            self._save("강한 상승장", now, med)
             self.notify(f"📈 강한 상승장 판정 {now:%H:%M} — 대금 상위 주식 {n}종목 중앙 {med:+.1%} (기준 {STRONG_UP:+.1%})\n"
                         f"오늘은 차트 신호({'·'.join(UP_ONLY_KINDS)})도 모의 매수합니다. 강한 상승장이 아닌 날은 알림·기록만.")
         if med <= STRONG_DOWN:
             self.strong_down, self.decided_at = True, now
+            self._save("강한 하락장", now, med)
             self.notify(f"🧯 강한 하락장 판정 {now:%H:%M} — 대금 상위 주식 {n}종목 중앙 {med:+.1%} (기준 {STRONG_DOWN:+.1%})\n"
                         f"오늘은 보수적으로: 차트 신호(주도주 모양·눌림 돌파·장 초 공통점·지지 반등·돌파 후 눌림)는 새로 사지 않고 알림만, "
                         f"대형주 수급은 {BIGCAP_MAX_WHEN_DOWN}종목까지, 하루 손실 한도 −{CONSERVATIVE_LOSS_LIMIT:.1%}. 보유 종목은 원래 매도 규칙대로.\n"
