@@ -39,7 +39,7 @@ from kiwoom_trading.ingestion.collectors.minute_collector import fetch_minute_ba
 from kiwoom_trading.screener.bigcap_flow import KIND as BIGCAP_KIND, TARGET as BIGCAP_TARGET
 from kiwoom_trading.screener.early_nine import KIND as NINE_KIND
 from kiwoom_trading.screener.inverse_gap import KIND as INVERSE_KIND
-from kiwoom_trading.screener.market_regime import BIGCAP_MAX_WHEN_DOWN, CONSERVATIVE_LOSS_LIMIT
+from kiwoom_trading.screener.market_regime import BIGCAP_MAX_WHEN_DOWN, CONSERVATIVE_LOSS_LIMIT, UP_ONLY_KINDS
 from kiwoom_trading.screener.leader_shape import KIND as LEADER_KIND, big_red_exit
 from kiwoom_trading.screener.pullback_breakout import KIND as PULLBACK_KIND, exit_reason as pullback_exit
 from kiwoom_trading.screener.market_data import KiwoomMarket, _code
@@ -299,6 +299,8 @@ class PaperTrader:
             bought = sum(1 for x in self.trades if x.date == self.today and x.kind == BIGCAP_KIND and x.buy_ts)
             if bought >= BIGCAP_MAX_WHEN_DOWN:
                 return f"강한 하락장 — 대형주 수급은 {BIGCAP_MAX_WHEN_DOWN}종목까지 (보수적 매매)"
+        if t.kind in UP_ONLY_KINDS and not t.virtual and not (self.regime is not None and self.regime.strong_up):
+            return "강한 상승장 아님 — 이 차트 신호는 강한 상승장에만 삼"
         if any(x.code == t.code for x in self.active()):
             return "이미 보유 중"
         if len(self.active()) >= MAX_POSITIONS:
@@ -309,8 +311,8 @@ class PaperTrader:
         return None
 
     def _buy(self, now: datetime, t: Trade, s: Signal) -> None:
+        t.virtual = session(now.time()) != "real"   # _skip_reason 이 가상 여부를 보므로 먼저
         reason = self._skip_reason(now, t)
-        t.virtual = session(now.time()) != "real"
         price = None
         if reason is None:
             q = self.market.quote(t.code, integrated=t.virtual)   # 가상은 NXT 체결까지 반영한 통합 시세

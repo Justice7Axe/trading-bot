@@ -224,6 +224,9 @@ def build_review(store: ScreenerStore, day: date, daily_path: str = DEFAULT_DB_P
     down = [r[6] for r in rows if r[2] == "skipped" and r[3] and "강한 하락장" in r[3] and r[6] is not None]
     if down:
         lines.append(f"🧯 강한 하락장이라 안 산 신호 {len(down)}건 → 가상 {pct(down)} (승률 {win(down)}) — 플러스면 보수적 매매가 손해, 마이너스면 손실을 막은 것")
+    notup = [r[6] for r in rows if r[2] == "skipped" and r[3] and "강한 상승장 아님" in r[3] and r[6] is not None]
+    if notup:
+        lines.append(f"📈 강한 상승장이 아니라 안 산 차트 신호 {len(notup)}건 → 가상 {pct(notup)} (승률 {win(notup)}) — 마이너스면 규칙이 손실을 막은 것")
     if filtered:
         fg = defaultdict(list)
         for why, sim in filtered:
