@@ -137,6 +137,12 @@ ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS part_qty INTEGER DEFAULT 0;   
 ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS part_price DOUBLE;
 ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS part_order_no VARCHAR;
 ALTER TABLE paper_days ADD COLUMN IF NOT EXISTS reported_close BOOLEAN DEFAULT false;   -- 15:40 정규장 마감 리포트 (reported = 19:55 최종)   -- NXT 프리·애프터장 가상 체결 (주문 없음)
+CREATE TABLE IF NOT EXISTS market_regime (    -- 09:10·09:20 시장 분위기 판정 (스캐너를 다시 켜도 그날 판정 유지)
+    date        DATE PRIMARY KEY,
+    regime      VARCHAR,      -- '강한 하락장' | '강한 상승장'
+    decided_at  TIMESTAMP,
+    median      DOUBLE
+);
 CREATE TABLE IF NOT EXISTS watch_adds (       -- ②③④ 장중 조기 감시 추가 (재시작해도 유지)
     date        DATE,
     code        VARCHAR,
