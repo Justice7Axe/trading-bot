@@ -1,4 +1,9 @@
-"""🧭 오늘의 급등 묶음 — 09:10·09:20 에 장 초 급등 종목을 모아 뉴스 제목 공통 단어로 묶어 알린다 (2026-10-23 사용자 결정).
+"""🧭 장 초 급등 종목 — 09:10·09:30 에 장 초 급등 종목을 주가·대금·수급 기준으로 알리고, 뉴스 공통 단어는 참고로 붙인다.
+
+사용자 원칙(2026-10-23): 뉴스 매매는 한계가 있다. 뉴스는 보조, 주된 판단은 주가·차트·외국인/기관 수급.
+- 주도 후보 = 대금 50위 안 · 장 초(첫 스냅샷)보다 위 · 외국인 또는 기관 장중 잠정 순매수 (09:10 엔 잠정치가 없을 수 있음)
+- 뉴스 공통 단어 묶음은 맨 아래 참고로만 (처음 버전은 뉴스로 묶었다).
+
 
 계기 (10-22 데이터센터 테마 역추적, 메모리 theme-datacenter-1022):
 - 대장(삼성E&A·엘리스)은 기존 🏁 조기 주도주·🚀 대금 가속이 09:02~09:10 에 잡았다.
@@ -29,7 +34,7 @@ from kiwoom_trading.common.daily_store import DEFAULT_DB_PATH
 from kiwoom_trading.screener.market_data import RankItem
 from kiwoom_trading.screener.store import ScreenerStore
 
-CHECKS = (time(9, 10), time(9, 20))
+CHECKS = (time(9, 10), time(9, 30))   # 09:30 은 외국인 잠정치(09:20~27 첫 값)가 들어온 뒤
 WINDOW_MIN = 5
 MIN_SURGE = 0.07
 MIN_CARRY_TODAY = 0.03
@@ -178,23 +183,58 @@ class SurgeGroups:
                                     [self.today, ts, label_of.get(c, ""), c, v["name"], v["chg"], v["rank"], v["value"],
                                      self.carry.get(c, ""), ", ".join(alerted.get(c, []))])
 
+        # 주된 판단 = 주가·대금·수급 (사용자 2026-10-23: 뉴스는 보조). 장 초 대비는 그날 첫 순위 스냅샷 가격 기준(근사).
+        first_px = dict(self.store.conn.execute(
+            """SELECT code, arg_min(price, ts) FROM rank_snapshots WHERE date = ? AND source = 'value_krx' AND ts::TIME >= TIME '09:00'
+               AND code IN (SELECT unnest(?)) GROUP BY code""", [self.today, list(stocks)]).fetchall())
+        price_now = {it.code: it.price for it in value_top}
+        flow: dict = {}
+        for inv in ("foreign", "institution"):
+            snap = self.store.conn.execute("SELECT max(ts) FROM investor_intraday WHERE date = ? AND investor = ? AND ts <= ?",
+                                           [self.today, inv, ts]).fetchone()[0]
+            if snap:
+                for code, amt in self.store.conn.execute("SELECT code, net_amount FROM investor_intraday WHERE ts = ? AND investor = ?",
+                                                         [snap, inv]).fetchall():
+                    flow.setdefault(code, {})[inv] = amt
+
+        def facts(c: str) -> dict:
+            fp, pn = first_px.get(c), price_now.get(c)
+            f = flow.get(c, {})
+            return dict(from_open=(pn / fp - 1) if fp and pn else None, foreign=f.get("foreign"), inst=f.get("institution"))
+
         def line(c: str) -> str:
-            v = stocks[c]
+            v, f = stocks[c], facts(c)
             tags = [f"대금 {v['rank']}위 {v['value'] / 1e8:,.0f}억"]
+            if f["from_open"] is not None:
+                tags.append(f"장 초 대비 {f['from_open']:+.1%}")
+            fl = [f"{n} {a / 1e8:+,.0f}억" for n, a in (("외국인", f["foreign"]), ("기관", f["inst"])) if a]
+            if fl:
+                tags.append("잠정 " + " ".join(fl))
             if c in self.carry:
                 tags.append("이어짐: " + self.carry[c])
             if alerted.get(c):
                 tags.append(alerted[c][0])
             return f"  {v['name']} {v['chg']:+.1%} · " + " · ".join(tags)
 
-        lines = [f"🧭 오늘의 급등 묶음 {now:%H:%M} — 뉴스 제목 공통 단어로 묶음 (매수 신호 아님)"]
-        for lbl, cs in groups:
-            lines.append(f"\n[{lbl}] 대장 {stocks[cs[0]]['name']}")
-            lines += [line(c) for c in cs]
-        rest = sorted((c for c in stocks if c not in grouped), key=lambda c: -_num(stocks[c]["value"]))
+        def leader(c: str) -> bool:
+            f = facts(c)
+            up = f["from_open"] is None or f["from_open"] > 0
+            if not flow:
+                return stocks[c]["rank"] <= 50 and up
+            return stocks[c]["rank"] <= 50 and up and ((f["foreign"] or 0) > 0 or (f["inst"] or 0) > 0)
+
+        order = sorted(stocks, key=lambda c: -_num(stocks[c]["value"]))
+        lead = [c for c in order if leader(c)]
+        lines = [f"🧭 장 초 급등 종목 {now:%H:%M} — 주가·대금·수급 기준 (뉴스는 참고, 매수 신호 아님)"]
+        lines.append("\n[주도 후보: 대금 50위 안 · 장 초보다 위 · 외국인/기관 잠정 순매수]" if flow else
+                     "\n[주도 후보: 대금 50위 안 · 장 초보다 위] (수급 잠정치 아직 없음)")
+        lines += [line(c) for c in lead] or ["  없음"]
+        rest = [c for c in order if c not in lead]
         if rest:
-            lines.append("\n[묶이지 않음]")
+            lines.append("\n[그 밖 급등]")
             lines += [line(c) for c in rest[:12]]
+        if groups:
+            lines.append("\n참고 — 뉴스 제목 공통 단어: " + " / ".join(f"{lbl}({'·'.join(stocks[c]['name'] for c in cs)})" for lbl, cs in groups))
         text = "\n".join(lines)
         logging.info("급등 묶음 %s: %s종목, 묶음 %s", f"{now:%H:%M}", len(stocks), "; ".join(f"{l}: {len(cs)}" for l, cs in groups) or "없음")
         self.notify(text)
