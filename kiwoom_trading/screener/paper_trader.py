@@ -5,6 +5,7 @@
 - 금액: 종목당 100만 원 안에서 살 수 있는 만큼. 1주 가격이 100만 원을 넘으면 1주 (상한 없음).
 - 동시 보유 최대 10종목(눌림 돌파는 2종목), 이미 보유한 종목은 추가 매수 안 함.
 - 하루 손실 한도: 실현 + 평가 손익이 그날 시작 자산의 -3% 에 닿으면 새로 사지 않는다.
+- 🎯 눌림 돌파는 사지 않는다(알림만). 🎯 주도주 모양은 강한 상승장 + 전날 외인·기관 둘 다 순매수 종목만 (2026-10-24 사용자, 1년 조건 겹치기 검증).
 - 09:10 시장 분위기 판정 전(정규장 09:00~09:10, 판정 스냅샷이 늦으면 늦어도 09:15)에는 차트 신호를 사지 않는다.
   대형주 수급·인버스 갭과 NXT 가상 체결은 예외 (2026-10-24 사용자).
 - Nada 손실 관리 (2026-10-24 사용자, nada-trading-kr 스킬 1절 3항): 매수 신호·매도 규칙은 그대로 두고 금액만 줄인다.
@@ -37,7 +38,9 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Any, Callable, Optional
 
-from kiwoom_trading.common.daily_store import load_env
+import duckdb
+
+from kiwoom_trading.common.daily_store import DEFAULT_DB_PATH, load_env
 from kiwoom_trading.ingestion.collectors.daily_backfill import KiwoomDailyClient, _to_int
 from kiwoom_trading.screener.daily_summary import _pct, _table
 from kiwoom_trading.screener.intraday_signals import Signal
@@ -162,6 +165,26 @@ def mock_configured() -> bool:
     return bool(os.getenv("KIWOOM_MOCK_APP_KEY") and os.getenv("KIWOOM_MOCK_SECRET_KEY"))
 
 
+def load_prev_flow(day: date, db_path: str = DEFAULT_DB_PATH) -> dict[str, tuple[Optional[int], Optional[int]]]:
+    """day 전 거래일의 종목별 (외인, 기관) 순매수 금액 — 20:00 일봉 업데이트가 넣은 investor_daily. 못 읽으면 빈 dict(주도주 모양은 안 삼)."""
+    try:
+        conn = duckdb.connect(db_path, read_only=True)
+        try:
+            prev = conn.execute("SELECT max(date) FROM investor_daily WHERE date < ?", [day]).fetchone()[0]
+            rows = conn.execute("SELECT code, foreign_, institution FROM investor_daily WHERE date = ?", [prev]).fetchall()
+        finally:
+            conn.close()
+        logging.info("전날 외인·기관 수급 %s종목 (%s)", len(rows), prev)
+        return {c: (f, i) for c, f, i in rows}
+    except Exception:
+        logging.exception("전날 외인·기관 수급 읽기 실패 — 오늘 주도주 모양은 사지 않음")
+        return {}
+
+
+def _flow_txt(x: Optional[int]) -> str:
+    return "자료 없음" if x is None else f"{x / 1e8:+,.0f}억"
+
+
 # ---------------------------------------------------------------- 규칙 (순수 함수)
 def order_qty(price: float, budget: int = BUDGET_PER_STOCK) -> int:
     """100만 원 안에서 살 수 있는 수량, 1주가 100만 원을 넘으면 1주."""
@@ -254,6 +277,7 @@ class PaperTrader:
         self.notify = notify or (lambda text: None)
         self.halted = False
         self.regime = None                      # MarketRegime (run_intraday 가 넣어 줌) — 강한 하락장이면 보수적 매매
+        self.prev_flow = load_prev_flow(today)  # 전날 외인·기관 순매수 (주도주 모양 매수 조건)
         self.last_price: dict[str, float] = {}
         self._last_tick = 0.0
         self._chart_checked: dict[str, datetime] = {}   # '차트' 매도: 거래별 마지막으로 본 분
@@ -314,8 +338,15 @@ class PaperTrader:
             bought = sum(1 for x in self.trades if x.date == self.today and x.kind == BIGCAP_KIND and x.buy_ts)
             if bought >= BIGCAP_MAX_WHEN_DOWN:
                 return f"강한 하락장 — 대형주 수급은 {BIGCAP_MAX_WHEN_DOWN}종목까지 (보수적 매매)"
+        if t.kind == PULLBACK_KIND:
+            return "눌림 돌파는 알림만 — 1년 어떤 조건에서도 손실 (2026-10-24)"
         if t.kind in UP_ONLY_KINDS and not t.virtual and not (self.regime is not None and self.regime.strong_up):
             return "강한 상승장 아님 — 이 차트 신호는 강한 상승장에만 삼"
+        if t.kind == LEADER_KIND and not t.virtual:
+            f, i = self.prev_flow.get(t.code, (None, None))
+            if not (f and f > 0 and i and i > 0):
+                return ("전날 외인·기관 둘 다 순매수 아님 — 주도주 모양은 둘 다 순매수 종목만 삼 "
+                        f"(외인 {_flow_txt(f)}, 기관 {_flow_txt(i)})")
         if any(x.code == t.code for x in self.active()):
             return "이미 보유 중"
         if len(self.active()) >= MAX_POSITIONS:
