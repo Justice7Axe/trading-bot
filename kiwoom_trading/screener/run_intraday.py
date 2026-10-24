@@ -447,7 +447,7 @@ def main() -> int:
             if not args.no_telegram:
                 send_telegram_message("⚠️ 모의투자 준비 실패 — 오늘은 🎯 알림만 보냅니다 (로그 확인)")
     regime = MarketRegime(screener.hist.keys(), notify=None if args.no_telegram else send_telegram_message,
-                          store=store, today=now.date())
+                          store=store, today=now.date(), client=client)
     try:
         surges: Optional[SurgeGroups] = SurgeGroups(store, now.date(), screener.names,
                                                     notify=None if args.no_telegram else send_telegram_message)
