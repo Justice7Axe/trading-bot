@@ -173,6 +173,35 @@ class KiwoomMarket:
                 break
         return out
 
+    def program_intraday(self, day: str, max_pages: int = 100) -> dict[str, tuple[int, int, int]]:
+        """ka90004 종목별 프로그램 매매(KRX) 코스피+코스닥 전 종목 → 코드 → (매수, 매도, 순매수) 금액(원), 장 시작부터 누적.
+
+        day: 'YYYYMMDD' — 넣어도 마지막 거래일 값만 오므로 장중에 쌓아야 한다. 전 종목 약 74쪽·18초.
+        외인 방향 대용으로 잠정치보다 정확하다 (10-23 하루: 10:00 74%, 15:00 86% vs 잠정치 마감 값 70%).
+        """
+        out: dict[str, tuple[int, int, int]] = {}
+
+        def won(value: Any) -> int:
+            text = str(value or "0").replace(",", "").strip()
+            try:
+                amount = int(float(text.lstrip("+-") or 0)) * 1_000_000
+            except ValueError:
+                return 0
+            return -amount if text.startswith("-") else amount
+
+        for market_tp in ("P00101", "P10102"):
+            cont, next_key = "N", ""
+            for _ in range(max_pages):
+                payload, cont, next_key = self.client._post(
+                    "/api/dostk/stkinfo", "ka90004", {"dt": day, "mrkt_tp": market_tp, "stex_tp": "1"}, cont, next_key,
+                )
+                for row in payload.get("stk_prm_trde_prst") or []:
+                    out[_code(row.get("stk_cd"))] = (won(row.get("buy_cntr_amt")), won(row.get("sel_cntr_amt")),
+                                                     won(row.get("netprps_prica")))
+                if cont != "Y" or not next_key:
+                    break
+        return out
+
     def theme_groups(self) -> list[Theme]:
         """ka90001 (qry_tp=0): 전체 테마 목록과 당일 등락률/상승 종목 수.
 

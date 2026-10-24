@@ -128,17 +128,38 @@ class StopListener:
 
 INVESTOR_EVERY_MINUTES = 5          # 장중 외국인·기관 잠정치 확인 주기 (실제 갱신은 하루 5~6번)
 INVESTOR_WINDOW = (dtime(9, 10), dtime(15, 45))
+PROGRAM_EVERY_MINUTES = 10          # 종목별 프로그램 매매(ka90004) 저장 주기 — 전 종목 한 번에 약 18초라 10분
+PROGRAM_WINDOW = (dtime(9, 0), dtime(15, 45))
 
 
 class InvestorRecorder:
-    """장중 외국인·기관 순매수 잠정치(ka10063)를 5분마다 확인해서 바뀌었을 때만 저장 → 추후 수급 백테스트용."""
+    """장중 외국인·기관 순매수 잠정치(ka10063)를 5분마다 확인해서 바뀌었을 때만 저장 → 추후 수급 백테스트용.
+    종목별 프로그램 순매수(ka90004)도 10분마다 저장한다 (외인 방향 대용, 과거 날짜 조회 불가라 쌓아야 함)."""
 
     def __init__(self, on_snapshot=None) -> None:
         self.last_check: Optional[datetime] = None
+        self.last_program: Optional[datetime] = None
         self.last_sum: dict[str, int] = {}
         self.on_snapshot = on_snapshot          # (now, investor, values) — 새 잠정치가 들어오면 호출
 
     def step(self, now: datetime, market: KiwoomMarket, store: ScreenerStore) -> None:
+        try:
+            self.step_program(now, market, store)
+        except Exception:
+            logging.exception("장중 프로그램 매매 스냅샷 실패")
+        self.step_provisional(now, market, store)
+
+    def step_program(self, now: datetime, market: KiwoomMarket, store: ScreenerStore) -> None:
+        if not (PROGRAM_WINDOW[0] <= now.time() <= PROGRAM_WINDOW[1]):
+            return
+        if self.last_program and now - self.last_program < timedelta(minutes=PROGRAM_EVERY_MINUTES):
+            return
+        self.last_program = now
+        values = market.program_intraday(now.strftime("%Y%m%d"))
+        store.save_program_intraday(now.replace(tzinfo=None), values)
+        logging.info("장중 프로그램 매매 스냅샷 저장: %s종목", len(values))
+
+    def step_provisional(self, now: datetime, market: KiwoomMarket, store: ScreenerStore) -> None:
         if not (INVESTOR_WINDOW[0] <= now.time() <= INVESTOR_WINDOW[1]):
             return
         if self.last_check and now - self.last_check < timedelta(minutes=INVESTOR_EVERY_MINUTES):

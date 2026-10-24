@@ -30,7 +30,7 @@ description: Ellie trading 운영 — 일일 일봉 업데이트/리포트 스�
 
 ## 데이터
 - `data/daily_ohlcv.duckdb`: daily_ohlcv, stocks(sector, listed_shares), minute_ohlcv, investor_daily(투자자별 일별 순매수, 원), backfill_status, refetch_queue
-- `data/screener.duckdb`: rank_snapshots, theme_members, detections(first_ts), buy_signals(reject_reason), rest_leaders, watch_adds, early_alerts, theme_alerts, gate_flow_eval, investor_intraday(장중 외국인·기관 잠정치)
+- `data/screener.duckdb`: rank_snapshots, theme_members, detections(first_ts), buy_signals(reject_reason), rest_leaders, watch_adds, early_alerts, theme_alerts, gate_flow_eval, investor_intraday(장중 외국인·기관 잠정치, 5분 확인·바뀔 때만), program_intraday(장중 종목별 프로그램 매매 ka90004, 09:00~15:45 10분마다 전 종목 매수·매도·순매수 원, 2026-10-26부터 — 외인 방향 대용)
 - `data/index.duckdb`: 지수 idx_daily(일봉 2021-11~)·idx_min(1분봉 2025-10~), code 001 코스피·101 코스닥·201 코스피200 (키움 ka20006·ka20005, 2026-10-25 시장 상황 기준 분석용). 평일 20:00 일일 업데이트가 이어 받음(`ingestion/collectors/index_collector.py`, 수동: `python -m kiwoom_trading.ingestion.collectors.index_collector`). 장중 판정은 이 파일이 아니라 API 로 직접 조회
 - `data/minute_history.duckdb`: 통합(AL) 1분봉 1년 백필(날짜별 대금 상위 200 + 다음 거래일), 평일 20:45 `EllieTrading_MinuteBackfill` 가 이어 받음
 - `data/reports/`: capture_review_YYYYMMDD.csv (포착 복기)
@@ -44,6 +44,7 @@ description: Ellie trading 운영 — 일일 일봉 업데이트/리포트 스�
   - ka10066: 장 마감 후 전 종목 한 번에, 100종목/페이지
   - ka10063: 장중 잠정치 전 종목. 외국인 6, 기관계 7. '--288' 처럼 부호가 겹쳐 온다.
   - ka10064: 종목별 장중 시계열, 오늘만
+  - ka90004: 종목별 프로그램 매매, 시장(P00101 코스피·P10102 코스닥)별 전 종목, 백만원 단위. dt 를 넣어도 마지막 거래일만 → 장중 스캐너가 program_intraday 로 쌓는다(전 종목 약 74쪽·18초)
   - 백필: `investor_flow --codes ... --since` (`DAILY_DB_PATH` 로 별도 파일에 받은 뒤 병합하면 본 DB 잠금을 피한다)
 - 오래 도는 수집·백필에는 `prevent_sleep_until_exit()` 를 건다. 2026-10-14 새벽 절전으로 수집이 멈춘 적이 있다.
 - 종목코드 접미사: `_AL` 통합, `_NX` NXT, 없으면 KRX. 호출 간격 0.25초.
