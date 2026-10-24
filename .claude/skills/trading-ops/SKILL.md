@@ -9,7 +9,7 @@ description: Ellie trading 운영 — 일일 일봉 업데이트/리포트 스�
 | 작업 | 시각 | 내용 |
 |---|---|---|
 | `EllieTrading_ScreenerIntraday` | 07:50 시작, 08:00~20:00 (제한 13시간) | 1분마다 스캔·조기 트리거·매수 신호. 08:50 🌅 프리마켓 주목 |
-| `EllieTrading_DailyUpdate` | 20:00 | 일봉 업데이트 → 투자자 수급(ka10066) → 65기법 리포트 → 🔭 다음 거래일 관심 종목 + 😴 쉬는 주도주 → 감시 종목 1분봉 저장(🎯 신호·모의투자 종목 포함) → 📋 포착 복기표 → 📈 모의투자 타점 차트 HTML(`data/reports/paper_chart_YYYYMMDD.html`, 텔레그램 파일 전송) |
+| `EllieTrading_DailyUpdate` | 20:00 | 일봉 업데이트 → 투자자 수급(ka10066) → 지수 일봉·1분봉(data/index.duckdb) → 65기법 리포트 → 🔭 다음 거래일 관심 종목 + 😴 쉬는 주도주 → 감시 종목 1분봉 저장(🎯 신호·모의투자 종목 포함) → 📋 포착 복기표 → 📈 모의투자 타점 차트 HTML(`data/reports/paper_chart_YYYYMMDD.html`, 텔레그램 파일 전송) |
 
 - 등록 스크립트: `scripts/register_daily_update_task.ps1`, `scripts/register_screener_task.ps1` (UTF-8 BOM)
 - 로그: `data/logs/daily_update_YYYYMMDD.log`, `data/logs/screener_YYYYMMDD.log`
@@ -31,7 +31,7 @@ description: Ellie trading 운영 — 일일 일봉 업데이트/리포트 스�
 ## 데이터
 - `data/daily_ohlcv.duckdb`: daily_ohlcv, stocks(sector, listed_shares), minute_ohlcv, investor_daily(투자자별 일별 순매수, 원), backfill_status, refetch_queue
 - `data/screener.duckdb`: rank_snapshots, theme_members, detections(first_ts), buy_signals(reject_reason), rest_leaders, watch_adds, early_alerts, theme_alerts, gate_flow_eval, investor_intraday(장중 외국인·기관 잠정치)
-- `data/index.duckdb`: 지수 idx_daily(일봉 2021-11~)·idx_min(1분봉 2025-10~), code 001 코스피·101 코스닥·201 코스피200 (키움 ka20006·ka20005, 2026-10-25 시장 상황 기준 분석용). 자동 갱신 안 됨 — 장중 판정은 API 로 직접 조회
+- `data/index.duckdb`: 지수 idx_daily(일봉 2021-11~)·idx_min(1분봉 2025-10~), code 001 코스피·101 코스닥·201 코스피200 (키움 ka20006·ka20005, 2026-10-25 시장 상황 기준 분석용). 평일 20:00 일일 업데이트가 이어 받음(`ingestion/collectors/index_collector.py`, 수동: `python -m kiwoom_trading.ingestion.collectors.index_collector`). 장중 판정은 이 파일이 아니라 API 로 직접 조회
 - `data/minute_history.duckdb`: 통합(AL) 1분봉 1년 백필(날짜별 대금 상위 200 + 다음 거래일), 평일 20:45 `EllieTrading_MinuteBackfill` 가 이어 받음
 - `data/reports/`: capture_review_YYYYMMDD.csv (포착 복기)
 - DuckDB 는 프로세스 간 잠금이 걸린다. DuckDB UI·DBeaver 를 열어 두면 업데이트가 5분 간격으로 최대 6회 재시도한다.
