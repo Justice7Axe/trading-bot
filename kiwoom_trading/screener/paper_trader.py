@@ -338,6 +338,10 @@ class PaperTrader:
             bought = sum(1 for x in self.trades if x.date == self.today and x.kind == BIGCAP_KIND and x.buy_ts)
             if bought >= BIGCAP_MAX_WHEN_DOWN:
                 return f"강한 하락장 — 대형주 수급은 {BIGCAP_MAX_WHEN_DOWN}종목까지 (보수적 매매)"
+        r = self.regime
+        if (r is not None and r.trend_weak and not r.strong_up and not t.virtual and t.kind != INVERSE_KIND
+                and not self._before_regime(tm)):
+            return f"보통 날 + {r.trend_text()} — 새 매수 쉼 (조정·약세장은 강한 상승장에만 삼)"
         if t.kind == PULLBACK_KIND:
             return "눌림 돌파는 알림만 — 1년 어떤 조건에서도 손실 (2026-10-24)"
         if t.kind in UP_ONLY_KINDS and not t.virtual and not (self.regime is not None and self.regime.strong_up):

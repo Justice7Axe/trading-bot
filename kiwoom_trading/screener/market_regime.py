@@ -21,8 +21,23 @@
 근거: 모의매매 5거래일(10-16~22) 이 셋 85건 −0.8% 안팎으로 손실 대부분. 1년: 09:10 중앙 ≥ +2% 22일에
       주도주 모양 +0.25% vs 다른 날 −0.52% (스크래치 regime_up.py).
 ⚠️ 10-19 처럼 약하게 출발해 크게 오른 날은 못 잡는다 (09:10 −1.49%). 10-21 은 +2.7% 출발 뒤 밀린 예외.
+
+📐 기준 다시 정함 (2026-10-25 사용자: 외부 자료로 상승장·하락장 기준을 다시 정하라):
+      외부 관례 = 고점 −10% 조정 / −20% 약세장, 200일선, ADR(시장 폭), 사이드카·서킷브레이커.
+      2026 은 코스피 일간 변동성이 2.4% → 3.7% 로 커져 고정 % 기준은 시기마다 뜻이 달라진다.
+      → 그날 분위기에 '코스피 09:10 전일 대비 ÷ 최근 20거래일 일간 등락 표준편차(σ)' 를 더한다.
+  강한 상승장 = 코스피 ≥ +1σ 또는 중앙값 ≥ +2% / 강한 하락장 = 코스피 ≤ −1σ 또는 중앙값 ≤ −1.5%
+  큰 흐름(전날 종가): 코스피 52주 고점 대비 −10% 안 = 상승 추세, −10~−20% = 조정, −20% 이하 = 약세장.
+      조정·약세장이면 보통 날(강한 상승장 아님) 새 매수를 쉰다 (paper_trader).
+근거 (스크래치 regime_cmp.py / regime_combo.py, 1년 249일, 새 기본 매도 = 익절/즉시 손절/둘 다 아니면 다음날 시가):
+- 코스피 ≥ +1σ 또는 중앙 ≥ +2% 42일: 09:10 대금 상위 10 +0.75%, 아무 종목 +0.50%, 막힌 고점 +0.67% (앞·뒤 모두 +).
+  지금 기준(중앙 ≥ +2%) 23일은 +0.63 / +0.98 / +0.93%. 코스피 σ 만 30일은 09:10 대금 상위 10 +1.24% (0.8σ +0.84, 1.2σ +1.98, 단조).
+- 코스피 ≤ −1σ 또는 중앙 ≤ −1.5% 48일: 막힌 고점 −0.92% (지금 41일 −0.79%) → 손실 날을 더 잘 거름.
+- 보통 날 & 고점 −10% 안 103일: 막힌 고점 +0.44% / 보통 날 & 조정·약세장 69일: 세 전략 모두 −0.5~−0.7%.
+- 200일선은 1년 내내 위라 구분 못 함, 오른 종목 비율(시장 폭)은 가장 약했다.
 """
 import logging
+from dataclasses import dataclass
 from datetime import date, datetime, time
 from typing import Callable, Iterable, Optional
 
@@ -32,22 +47,76 @@ CHECKS = (time(9, 10), time(9, 20))   # 각 시각부터 5분 안 첫 스냅샷�
 WINDOW_MIN = 5
 STRONG_DOWN = -0.015
 STRONG_UP = 0.02
+INDEX_CODE = "001"                    # 코스피 종합
+SIGMA_UP, SIGMA_DOWN = 1.0, -1.0      # 코스피 09:10 등락 ÷ 20일 변동성
+SD_DAYS = 20
+HIGH_DAYS = 250                       # 52주
+CORRECTION, BEAR = -0.10, -0.20       # 52주 고점 대비
 UP_ONLY_KINDS = ("지지 반등", "돌파 후 눌림", "주도주 모양")   # 강한 상승장에만 실제 주문
 CONSERVATIVE_LOSS_LIMIT = 0.015
 BIGCAP_MAX_WHEN_DOWN = 1
 
 
+@dataclass
+class IndexContext:
+    """전날 종가까지의 코스피: 20일 일간 변동성(σ), 52주 고점 대비 → 큰 흐름."""
+    prev_close: float
+    sd20: float
+    dd52: float          # 전날 종가 ÷ 52주 고가 − 1
+
+    @property
+    def trend(self) -> str:
+        return "상승 추세" if self.dd52 > CORRECTION else "조정" if self.dd52 > BEAR else "약세장"
+
+
+def _num(x) -> float:
+    return abs(float(str(x).replace(",", "") or 0)) / 100      # 지수는 100배 정수, 부호 붙어 옴
+
+
+def load_index_context(client, today: date) -> Optional[IndexContext]:
+    """ka20006 업종일봉 — 오늘 봉은 빼고 전날까지로 계산."""
+    payload, _, _ = client._post("/api/dostk/chart", "ka20006", {"inds_cd": INDEX_CODE, "base_dt": f"{today:%Y%m%d}"})
+    rows = [r for r in payload.get("inds_dt_pole_qry") or [] if r.get("dt", "") < f"{today:%Y%m%d}"]   # 최신 먼저
+    closes = [_num(r["cur_prc"]) for r in rows]
+    if len(closes) < SD_DAYS + 1:
+        return None
+    rets = [closes[i] / closes[i + 1] - 1 for i in range(SD_DAYS)]
+    mean = sum(rets) / len(rets)
+    sd = (sum((x - mean) ** 2 for x in rets) / len(rets)) ** 0.5
+    hi = max(_num(r["high_pric"]) for r in rows[:HIGH_DAYS])
+    return IndexContext(prev_close=closes[0], sd20=sd, dd52=closes[0] / hi - 1)
+
+
+def fetch_index_now(client, today: date) -> Optional[float]:
+    """ka20005 업종분봉 1분 — 가장 최근 봉 현재가 (오늘 것만)."""
+    payload, _, _ = client._post("/api/dostk/chart", "ka20005", {"inds_cd": INDEX_CODE, "tic_scope": "1"})
+    rows = payload.get("inds_min_pole_qry") or []
+    if not rows or not str(rows[0].get("cntr_tm", "")).startswith(f"{today:%Y%m%d}"):
+        return None
+    return _num(rows[0]["cur_prc"])
+
+
 class MarketRegime:
     def __init__(self, stock_codes: Iterable[str], notify: Optional[Callable[[str], None]] = None,
-                 store=None, today: Optional[date] = None) -> None:
+                 store=None, today: Optional[date] = None, client=None) -> None:
         self.stocks = set(stock_codes)
         self.notify = notify or (lambda text: None)
-        self.store, self.today = store, today
+        self.store, self.today, self.client = store, today, client
         self.strong_down = False
         self.strong_up = False
         self.last_median: Optional[float] = None
+        self.last_z: Optional[float] = None
         self.decided_at: Optional[datetime] = None
         self.done: set[time] = set()
+        self.index: Optional[IndexContext] = None
+        if client is not None and today is not None:
+            try:
+                self.index = load_index_context(client, today)
+            except Exception:
+                logging.exception("코스피 일봉 조회 실패 — 오늘은 대금 상위 중앙값만으로 판정")
+        if self.index:
+            logging.info("코스피 큰 흐름: %s (전날 %.2f, 52주 고점 대비 %+.1f%%, 20일 변동성 %.2f%%)", self.index.trend,
+                         self.index.prev_close, self.index.dd52 * 100, self.index.sd20 * 100)
         if store is not None and today is not None:     # 장중에 다시 켜도 그날 판정 유지
             row = store.conn.execute("SELECT regime, decided_at, median FROM market_regime WHERE date = ?", [today]).fetchone()
             if row:
@@ -55,10 +124,34 @@ class MarketRegime:
                 self.decided_at, self.last_median = row[1], row[2]
                 logging.info("시장 분위기 판정 불러옴: %s (%s, 중앙 %+.2f%%)", row[0], f"{row[1]:%H:%M}", row[2] * 100)
 
-    def _save(self, regime: str, now: datetime, med: float) -> None:
+    @property
+    def trend_weak(self) -> bool:
+        """코스피가 52주 고점 대비 −10% 밖(조정·약세장) — 보통 날 새 매수를 쉰다."""
+        return self.index is not None and self.index.dd52 <= CORRECTION
+
+    def trend_text(self) -> str:
+        if not self.index:
+            return "큰 흐름 모름(코스피 일봉 없음)"
+        return f"코스피 {self.index.trend} (52주 고점 대비 {self.index.dd52:+.1%})"
+
+    def _save(self, regime: str, now: datetime, med: float, kospi: Optional[float], z: Optional[float]) -> None:
         if self.store is not None and self.today is not None:
-            self.store.conn.execute("INSERT OR REPLACE INTO market_regime VALUES (?, ?, ?, ?)",
-                                    [self.today, regime, now.replace(tzinfo=None), med])
+            self.store.conn.execute(
+                "INSERT OR REPLACE INTO market_regime (date, regime, decided_at, median, kospi_chg, kospi_z, trend) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [self.today, regime, now.replace(tzinfo=None), med, kospi, z, self.index.trend if self.index else None])
+
+    def _kospi(self, now: datetime) -> tuple[Optional[float], Optional[float]]:
+        if self.client is None or not self.index or self.index.sd20 <= 0:
+            return None, None
+        try:
+            px = fetch_index_now(self.client, now.date())
+        except Exception:
+            logging.exception("코스피 분봉 조회 실패 — 중앙값만으로 판정")
+            return None, None
+        if px is None:
+            return None, None
+        chg = px / self.index.prev_close - 1
+        return chg, chg / self.index.sd20
 
     def update(self, now: datetime, value_top: list[RankItem]) -> None:
         if self.strong_down or self.strong_up:
@@ -73,18 +166,27 @@ class MarketRegime:
         self.done.update(due)
         n = len(xs)
         med = xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2
-        self.last_median = med
-        logging.info("시장 분위기 판정 %s: 대금 상위 주식 %s종목 중앙 %+.2f%% → %s", f"{now:%H:%M}", n, med * 100,
-                     "강한 하락장" if med <= STRONG_DOWN else "강한 상승장" if med >= STRONG_UP else "보통")
-        if med >= STRONG_UP:
+        kospi, z = self._kospi(now)
+        self.last_median, self.last_z = med, z
+        down = med <= STRONG_DOWN or (z is not None and z <= SIGMA_DOWN)
+        up = not down and (med >= STRONG_UP or (z is not None and z >= SIGMA_UP))
+        why = (f"대금 상위 주식 {n}종목 중앙 {med:+.1%}"
+               + (f", 코스피 {kospi:+.1%} = 20일 변동성의 {z:+.2f}배" if z is not None else ", 코스피 값 없음"))
+        logging.info("시장 분위기 판정 %s: %s → %s (%s)", f"{now:%H:%M}", why,
+                     "강한 하락장" if down else "강한 상승장" if up else "보통", self.trend_text())
+        if up:
             self.strong_up, self.decided_at = True, now
-            self._save("강한 상승장", now, med)
-            self.notify(f"📈 강한 상승장 판정 {now:%H:%M} — 대금 상위 주식 {n}종목 중앙 {med:+.1%} (기준 {STRONG_UP:+.1%})\n"
+            self._save("강한 상승장", now, med, kospi, z)
+            self.notify(f"📈 강한 상승장 판정 {now:%H:%M} — {why}\n"
+                        f"(기준: 코스피 ≥ +{SIGMA_UP:.0f}σ 또는 중앙 ≥ {STRONG_UP:+.1%}) · {self.trend_text()}\n"
                         f"오늘은 차트 신호({'·'.join(UP_ONLY_KINDS)})도 모의 매수합니다. 강한 상승장이 아닌 날은 알림·기록만.")
-        if med <= STRONG_DOWN:
+        elif down:
             self.strong_down, self.decided_at = True, now
-            self._save("강한 하락장", now, med)
-            self.notify(f"🧯 강한 하락장 판정 {now:%H:%M} — 대금 상위 주식 {n}종목 중앙 {med:+.1%} (기준 {STRONG_DOWN:+.1%})\n"
+            self._save("강한 하락장", now, med, kospi, z)
+            self.notify(f"🧯 강한 하락장 판정 {now:%H:%M} — {why}\n"
+                        f"(기준: 코스피 ≤ {SIGMA_DOWN:.0f}σ 또는 중앙 ≤ {STRONG_DOWN:+.1%}) · {self.trend_text()}\n"
                         f"오늘은 보수적으로: 차트 신호(주도주 모양·눌림 돌파·장 초 공통점·지지 반등·돌파 후 눌림)는 새로 사지 않고 알림만, "
-                        f"대형주 수급은 {BIGCAP_MAX_WHEN_DOWN}종목까지, 하루 손실 한도 −{CONSERVATIVE_LOSS_LIMIT:.1%}. 보유 종목은 원래 매도 규칙대로.\n"
-                        f"(1년: 이렇게 판정된 날 74% 가 강한 하락장, 차트 신호 −0.72% vs 다른 날 −0.36%)")
+                        f"대형주 수급은 {BIGCAP_MAX_WHEN_DOWN}종목까지, 하루 손실 한도 −{CONSERVATIVE_LOSS_LIMIT:.1%}. 보유 종목은 원래 매도 규칙대로.")
+        elif CHECKS[-1] in self.done and self.trend_weak:
+            self.notify(f"🌫️ 보통 날 + {self.trend_text()} — 오늘은 새 모의 매수를 쉽니다 (인버스 갭·가상 매매 제외).\n"
+                        f"마지막 판정 {now:%H:%M}: {why}. (1년: 조정·약세장의 보통 날은 모든 전략 −0.5~−0.7%)")

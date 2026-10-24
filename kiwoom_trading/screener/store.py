@@ -143,6 +143,9 @@ CREATE TABLE IF NOT EXISTS market_regime (    -- 09:10·09:20 시장 분위기 �
     decided_at  TIMESTAMP,
     median      DOUBLE
 );
+ALTER TABLE market_regime ADD COLUMN IF NOT EXISTS kospi_chg DOUBLE;   -- 판정 때 코스피 전일 대비 (2026-10-25)
+ALTER TABLE market_regime ADD COLUMN IF NOT EXISTS kospi_z DOUBLE;     -- 코스피 등락 ÷ 20일 변동성
+ALTER TABLE market_regime ADD COLUMN IF NOT EXISTS trend VARCHAR;      -- 큰 흐름: 상승 추세 / 조정 / 약세장
 CREATE TABLE IF NOT EXISTS watch_adds (       -- ②③④ 장중 조기 감시 추가 (재시작해도 유지)
     date        DATE,
     code        VARCHAR,
