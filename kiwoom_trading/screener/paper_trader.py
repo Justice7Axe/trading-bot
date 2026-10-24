@@ -48,7 +48,7 @@ from kiwoom_trading.ingestion.collectors.minute_collector import fetch_minute_ba
 from kiwoom_trading.screener.bigcap_flow import KIND as BIGCAP_KIND, TARGET as BIGCAP_TARGET
 from kiwoom_trading.screener.early_nine import KIND as NINE_KIND
 from kiwoom_trading.screener.hamburger_watch import KIND as BURGER_KIND
-from kiwoom_trading.screener.inverse_gap import KIND as INVERSE_KIND
+from kiwoom_trading.screener.inverse_gap import KIND as INVERSE_KIND, WEAK_KIND, WEAK_TP
 from kiwoom_trading.screener.contra_close import KIND as CONTRA_KIND
 from kiwoom_trading.screener.resistance_retest import RETEST_KIND, RETEST_TP
 from kiwoom_trading.screener.regime_plays import BLOCK_KIND, UP_BUDGET, UP_KIND, UP_TOP_N
@@ -62,7 +62,8 @@ from kiwoom_trading.screener.store import ScreenerStore
 MOCK_BASE_URL = "https://mockapi.kiwoom.com"
 BUDGET_PER_STOCK = 1_000_000
 MAX_POSITIONS = 10            # 키움 제한이 아니라 우리 규칙. 모의 계좌 약 1천만 원 ÷ 종목당 100만 원 (2026-10-20, 10-19 복기: 5종목 한도로 신호 85건 건너뜀)
-NEXT_DAY_KINDS = (RETEST_KIND, UP_KIND, BLOCK_KIND, CONTRA_KIND)   # '다음날' 매도: +7% 익절 / 손절가 / 다음 날 09:00 (2026-10-25 시장 상황별 매매표)
+NEXT_DAY_KINDS = (RETEST_KIND, UP_KIND, BLOCK_KIND, CONTRA_KIND, WEAK_KIND)   # '다음날' 매도: 익절가 / 손절가 / 다음 날 09:00 (2026-10-25 시장 상황별 매매표)
+NEXT_DAY_TP = {UP_KIND: None, WEAK_KIND: WEAK_TP}   # '다음날' 익절가 — 기본 +7%. 📈 상승장 장 초는 익절 없음, 약세장 인버스 +5% (2026-10-25)
 KIND_BUDGET = {UP_KIND: UP_BUDGET}   # 📈 상승장 장 초: 종목당 25만 원, 보유 한도(10종목) 예외로 40종목까지 (2026-10-25 사용자)
 KIND_LIMIT = {PULLBACK_KIND: 2}  # 눌림 돌파는 장 초부터 자주 나와 자리를 차지 → 동시 2종목까지 (1년 −0.34%, 10-19 유일한 마이너스 −0.08%)
 DAILY_LOSS_LIMIT = 0.03
@@ -186,6 +187,11 @@ def load_prev_flow(day: date, db_path: str = DEFAULT_DB_PATH) -> dict[str, tuple
         return {}
 
 
+def _next_day_how(tp: Optional[float], stop: Optional[float]) -> str:
+    tp_txt = f"+{tp:.0%} 익절" if tp is not None else "익절 없음"
+    return f"{tp_txt} / 손절 {stop:,.0f}원, 못 닿으면 다음 날 09:00 매도" if stop else f"{tp_txt}, 손절 없이 다음 날 09:00 매도"
+
+
 def _flow_txt(x: Optional[int]) -> str:
     return "자료 없음" if x is None else f"{x / 1e8:+,.0f}억"
 
@@ -196,16 +202,17 @@ def order_qty(price: float, budget: int = BUDGET_PER_STOCK) -> int:
     return max(1, int(budget // price))
 
 
-def exit_check(mode: str, buy_price: float, stop: float, peak: float, price: float) -> tuple[float, float, Optional[str]]:
+def exit_check(mode: str, buy_price: float, stop: float, peak: float, price: float,
+               tp: Optional[float] = RETEST_TP) -> tuple[float, float, Optional[str]]:
     """현재가로 (새 손절가, 새 고점, 매도 사유|None). 추적 방식은 +5% 도달 뒤 손절가를 고점 -3% 로 따라 올린다.
-    목표 방식(🎯 대형주 수급)은 +2% 에 전부 판다."""
+    목표 방식(🎯 대형주 수급)은 +2% 에 전부 판다. '다음날' 방식의 익절가는 tp (None 이면 익절 없음)."""
     peak = max(peak, price)
     if mode == "추적" and peak >= buy_price * (1 + TRAIL_START):
         stop = max(stop, peak * (1 - TRAIL_GAP))
     if mode == "목표" and price >= buy_price * (1 + BIGCAP_TARGET):
         return stop, peak, f"목표 +{BIGCAP_TARGET:.0%}"
-    if mode == "다음날" and price >= buy_price * (1 + RETEST_TP):     # 🧱 저항 돌파: +7% 익절, 못 닿으면 다음 날 09:00
-        return stop, peak, f"익절 +{RETEST_TP:.0%}"
+    if mode == "다음날" and tp is not None and price >= buy_price * (1 + tp):     # 익절, 못 닿으면 다음 날 09:00
+        return stop, peak, f"익절 +{tp:.0%}"
     if price <= stop:
         trailing = mode == "추적" and stop > buy_price * (1 - STRONG_STOP) + 1e-9
         return stop, peak, ("고점 대비 -3%" if trailing else "손절")
@@ -337,7 +344,7 @@ class PaperTrader:
             return "매수 시간 아님 (정규장 09:00~15:19, 가상 08:00~08:45·15:30~19:45)"
         if self.halted:
             return f"하루 손실 한도 -{self._loss_limit():.1%} 도달"
-        if not t.virtual and t.kind not in (BIGCAP_KIND, INVERSE_KIND) and self._before_regime(tm):
+        if not t.virtual and t.kind not in (BIGCAP_KIND, INVERSE_KIND, WEAK_KIND) and self._before_regime(tm):
             return f"시장 분위기 판정({REGIME_FIRST:%H:%M}) 전 — 차트 신호는 사지 않음"
         if self.regime is not None and self.regime.strong_down and not t.virtual and t.kind not in (RETEST_KIND, CONTRA_KIND):   # 저항 돌파는 모든 날, 역행 강세 종가는 강한 하락장 날 산다
             if t.kind not in (BIGCAP_KIND, INVERSE_KIND):
@@ -346,7 +353,7 @@ class PaperTrader:
             if bought >= BIGCAP_MAX_WHEN_DOWN:
                 return f"강한 하락장 — 대형주 수급은 {BIGCAP_MAX_WHEN_DOWN}종목까지 (보수적 매매)"
         r = self.regime
-        if (r is not None and r.trend_weak and not r.strong_up and not t.virtual and t.kind not in (INVERSE_KIND, RETEST_KIND, CONTRA_KIND)
+        if (r is not None and r.trend_weak and not r.strong_up and not t.virtual and t.kind not in (INVERSE_KIND, RETEST_KIND, CONTRA_KIND, WEAK_KIND)
                 and not self._before_regime(tm)):
             return f"보통 날 + {r.trend_text()} — 새 매수 쉼 (조정·약세장은 강한 상승장에만 삼)"
         if t.kind == PULLBACK_KIND:
@@ -358,6 +365,11 @@ class PaperTrader:
             if not (f and f > 0 and i and i > 0):
                 return ("전날 외인·기관 둘 다 순매수 아님 — 주도주 모양은 둘 다 순매수 종목만 삼 "
                         f"(외인 {_flow_txt(f)}, 기관 {_flow_txt(i)})")
+        if t.kind == UP_KIND and not t.virtual:
+            f, i = self.prev_flow.get(t.code, (None, None))
+            if f is not None and i is not None and f < 0 and i < 0:
+                return (f"전날 외인·기관 둘 다 순매도 — {UP_KIND}에서 뺌 (외인 {_flow_txt(f)}, 기관 {_flow_txt(i)}; "
+                        "1년 강한 상승장 이런 종목 −0.04%, 나머지 +0.86%)")
         if any(x.code == t.code for x in self.active()):
             return "이미 보유 중"
         if t.kind == UP_KIND:
@@ -420,7 +432,7 @@ class PaperTrader:
         t.status, t.buy_ts, t.peak = "ordered", now.replace(tzinfo=None), float(price)
         self.last_price[t.code] = price
         how = (f"손절 -{STRONG_STOP:.0%}, +{TRAIL_START:.0%} 뒤 고점 -{TRAIL_GAP:.0%} (평소 {t.flow_mult:.1f}배)"
-               if t.mode == "추적" else (f"+{RETEST_TP:.0%} 익절 / 손절 {s.stop:,.0f}원, 못 닿으면 다음 날 09:00 매도" if s.stop else f"+{RETEST_TP:.0%} 익절, 손절 없이 다음 날 09:00 매도") if t.mode == "다음날" else "손절 없음, 15:19 정리" if not s.stop else f"손절 {s.stop:,.0f}원 ({s.stop / price - 1:+.1%})")
+               if t.mode == "추적" else _next_day_how(NEXT_DAY_TP.get(t.kind, RETEST_TP), s.stop) if t.mode == "다음날" else "손절 없음, 15:19 정리" if not s.stop else f"손절 {s.stop:,.0f}원 ({s.stop / price - 1:+.1%})")
         logging.info("모의 매수 주문 %s %s주 (주문 %s)", t.name, t.qty, t.buy_order_no)
         self.notify(f"🟢 모의 매수 {t.name}({t.code}) {t.qty}주 × 약 {price:,}원 = {t.qty * price / 1e4:,.0f}만 원\n"
                     f"  [{t.kind} {s.ts:%H:%M}] {how} — {t.source}"
@@ -463,7 +475,7 @@ class PaperTrader:
         if not q:
             return
         self.last_price[t.code] = q.price
-        stop, peak, reason = exit_check(t.mode, t.buy_price, t.stop, t.peak or t.buy_price, q.price)
+        stop, peak, reason = exit_check(t.mode, t.buy_price, t.stop, t.peak or t.buy_price, q.price, NEXT_DAY_TP.get(t.kind, RETEST_TP))
         if (stop, peak) != (t.stop, t.peak):
             t.stop, t.peak = stop, peak
             save_trade(self.store, t)

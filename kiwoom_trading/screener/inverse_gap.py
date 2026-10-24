@@ -50,3 +50,44 @@ class InverseGapWatcher:
                   f"손절 없이 15:19 정리 (1년 42일 +0.71%, 승률 52% · 가설 검증 중)")
         ts = now.replace(second=0, microsecond=0, tzinfo=None)
         return [(CODE, NAME, KIND, Signal(ts, KIND, float(q.price), float(q.open), 0.0, reason))]
+
+
+# ---------------------------------------------------------------- ⑤ 약세장 인버스 (2026-10-25 사용자 '가 나 다 모두 적용')
+WEAK_KIND = "약세장 인버스"
+WEAK_TP, WEAK_STOP = 0.05, 0.03
+WEAK_START, WEAK_END = time(9, 11), time(9, 16)
+
+
+class WeakInverseWatcher:
+    """보통·조정/약세장 날(09:10 판정이 강한 상승장·하락장이 아니고 코스피가 52주 고점 대비 −10% 밖) 09:11 에 TIGER 인버스 매수.
+    매도는 paper_trader '다음날' 방식: +5% 익절 / −3% 손절 / 둘 다 아니면 다음 날 09:00.
+    근거 (스크래치 nm_ideas_a.py / nm_ideas_b.py, 인버스 1분봉, 조정·약세장 보통 날 56일, 비용 0.05%):
+      +5/−3 56건 +0.92% (앞 +1.05 / 뒤 +0.79), 최고일 빼도 +43만(100만/건), 최대 낙폭 11만, 7개월 중 5개월 +.
+      매수 09:01~10:01·익절/손절 5조합 모두 +. 다른 날 구분에선 모두 − (보통·상승 추세 −0.47, 강한 상승장 −0.63, 강한 하락장 −0.45).
+      09:10 코스피가 약한 날로 좁히면 오히려 나빠짐 → 거르지 않는다."""
+
+    def __init__(self, market: KiwoomMarket, regime=None, done: bool = False) -> None:
+        self.market = market
+        self.regime = regime
+        self.checked = done
+
+    def check(self, now: datetime, value_top: list[RankItem]) -> list[tuple[str, str, str, Signal]]:
+        r = self.regime
+        if self.checked or r is None or not (WEAK_START <= now.time() <= WEAK_END):
+            return []
+        from kiwoom_trading.screener.market_regime import CHECKS
+        if r.strong_up or r.strong_down or CHECKS[0] not in r.done:
+            self.checked = r.strong_up or r.strong_down
+            return []
+        self.checked = True
+        if not r.trend_weak:
+            return []
+        q = self.market.quote(CODE, integrated=False)
+        if not q:
+            logging.warning("약세장 인버스: %s 시세 조회 실패", NAME)
+            return []
+        reason = (f"보통 날 + {r.trend_text()} — 09:11 인버스, +{WEAK_TP:.0%} 익절 / −{WEAK_STOP:.0%} 손절, 못 닿으면 다음 날 09:00 "
+                  f"(1년 조정·약세장 보통 날 56건 +0.92%)")
+        logging.info("약세장 인버스: %s", reason)
+        ts = now.replace(second=0, microsecond=0, tzinfo=None)
+        return [(CODE, NAME, WEAK_KIND, Signal(ts, WEAK_KIND, float(q.price), float(q.open), float(q.price) * (1 - WEAK_STOP), reason))]
