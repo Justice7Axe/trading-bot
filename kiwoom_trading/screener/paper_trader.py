@@ -355,7 +355,7 @@ class PaperTrader:
         r = self.regime
         if (r is not None and r.trend_weak and not r.strong_up and not t.virtual and t.kind not in (INVERSE_KIND, RETEST_KIND, CONTRA_KIND, WEAK_KIND)
                 and not self._before_regime(tm)):
-            return f"보통 날 + {r.trend_text()} — 새 매수 쉼 (조정·약세장은 강한 상승장에만 삼)"
+            return f"하락 흐름 보통 날 ({r.trend_text()}) — 이 신호는 쉼 (저항 돌파·약세장 인버스만 삼)"
         if t.kind == PULLBACK_KIND:
             return "눌림 돌파는 알림만 — 1년 어떤 조건에서도 손실 (2026-10-24)"
         if t.kind in UP_ONLY_KINDS and not t.virtual and not (self.regime is not None and self.regime.strong_up):

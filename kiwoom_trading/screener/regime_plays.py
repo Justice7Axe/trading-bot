@@ -3,8 +3,8 @@
 | 시장 상황 (09:10 판정) | 매매 |
 |---|---|
 | 강한 상승장 | ① 📈 상승장 장 초 (이 모듈 UpOpenWatcher) + ② 🎯 저항 돌파 |
-| 보통·상승 추세 | ③ 🎯 막힌 고점 돌파 (이 모듈 BlockedHighWatcher) + ② |
-| 보통·조정/약세장 | ② + ⑤ 🎯 약세장 인버스 (inverse_gap.WeakInverseWatcher) |
+| 상승 흐름 보통 날 | ③ 🎯 막힌 고점 돌파 (이 모듈 BlockedHighWatcher) + ② |
+| 하락 흐름 보통 날 | ② + ⑤ 🎯 약세장 인버스 (inverse_gap.WeakInverseWatcher) |
 | 강한 하락장 | ② + ④ 🌙 역행 강세 종가 |
 매도는 모두 paper_trader '다음날' 방식: 익절가 / 손절가 즉시 / 둘 다 아니면 15:19 에 팔지 않고 다음 날 09:00.
 익절가는 +7% 가 기본이고, ① 은 익절 없음, ⑤ 는 +5% (paper_trader.NEXT_DAY_TP).
@@ -20,10 +20,10 @@
    09:20 에야 강한 상승장으로 판정된 날은 사지 않는다 (09:20 매수는 약함).
 
 ③ 🎯 막힌 고점 돌파 — 전날까지 5거래일 고가 최고 R 을 09:30 전에 1분봉 종가로 넘고, 그때 09:00 부터 누적 대금 ≥ 20일 평균 하루 대금의 10%,
-   시가 ≤ R (갭으로 넘은 종목 제외), 매수가 ≤ R × 1.03. 보통·상승 추세 날(강한 하락장·조정/약세장 아님)과 강한 상승장 날.
+   시가 ≤ R (갭으로 넘은 종목 제외), 매수가 ≤ R × 1.03. 상승 흐름 보통 날(코스피 52주 고점 대비 −10% 안)과 강한 상승장 날.
    09:10 판정 전에 난 돌파는 판정 뒤 조건이 맞으면 산다. 손절 −3%, 강한 상승장 날은 −5%
    (2026-10-25, 스크래치 u_res_cb.py: 강한 상승장 42일 461건 +7/−3 +0.67% → +7/−5 +0.92%, 앞·뒤 +).
-   근거 (스크래치 resbo2.py / open_plan.py, 1분봉 1년 보통·상승 추세 103일): 바로 매수 1,298건 +7/−3 +0.44% (+0.14R, 앞 +0.60 / 뒤 +0.04).
+   근거 (스크래치 resbo2.py / open_plan.py, 1분봉 1년 상승 흐름 보통 날 103일): 바로 매수 1,298건 +7/−3 +0.44% (+0.14R, 앞 +0.60 / 뒤 +0.04).
 """
 import logging
 from dataclasses import dataclass
@@ -172,7 +172,7 @@ class BlockedHighWatcher:
             stop = BLOCK_STOP_UP if up else BLOCK_STOP
             reason = (f"5일 고점 {c.R:,.0f} 을 {bo_ts:%H:%M} 돌파, 누적 대금 {cum / 1e8:,.0f}억 = 20일 평균의 {cum / c.base:.0%} "
                       f"— +7% 익절 / −{stop:.0%} 손절, 못 닿으면 다음 날 09:00 "
-                      + ("(1년 강한 상승장 날 +7/−5 +0.92%)" if up else "(1년 보통·상승 추세 날 +0.44%)"))
+                      + ("(1년 강한 상승장 날 +7/−5 +0.92%)" if up else "(1년 상승 흐름 보통 날 +0.44%)"))
             name = next((i.name for i in value_top if i.code == code), code)
             out.append((code, name, BLOCK_KIND, Signal(ts, BLOCK_KIND, float(price), float(c.R), float(price) * (1 - stop), reason)))
         return out

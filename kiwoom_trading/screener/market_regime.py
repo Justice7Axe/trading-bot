@@ -188,5 +188,5 @@ class MarketRegime:
                         f"오늘은 보수적으로: 차트 신호(주도주 모양·눌림 돌파·장 초 공통점·지지 반등·돌파 후 눌림)는 새로 사지 않고 알림만, "
                         f"대형주 수급은 {BIGCAP_MAX_WHEN_DOWN}종목까지, 하루 손실 한도 −{CONSERVATIVE_LOSS_LIMIT:.1%}. 보유 종목은 원래 매도 규칙대로.")
         elif CHECKS[-1] in self.done and self.trend_weak:
-            self.notify(f"🌫️ 보통 날 + {self.trend_text()} — 오늘은 새 모의 매수를 쉽니다 (인버스 갭·가상 매매 제외).\n"
-                        f"마지막 판정 {now:%H:%M}: {why}. (1년: 조정·약세장의 보통 날은 모든 전략 −0.5~−0.7%)")
+            self.notify(f"🌫️ 하락 흐름 보통 날 — {self.trend_text()}. 오늘은 🎯 저항 돌파·🎯 약세장 인버스만 모의 매수합니다 (인버스 갭·가상 매매 포함).\n"
+                        f"마지막 판정 {now:%H:%M}: {why}. (1년: 하락 흐름 보통 날은 다른 롱 전략 모두 −0.5~−0.7%)")
