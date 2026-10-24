@@ -32,6 +32,7 @@ from kiwoom_trading.common.daily_store import DEFAULT_DB_PATH
 from kiwoom_trading.screener.contra_close import KIND as CONTRA_KIND
 from kiwoom_trading.screener.resistance_retest import RETEST_KIND
 from kiwoom_trading.screener.regime_plays import BLOCK_KIND, UP_KIND
+from kiwoom_trading.screener.inverse_gap import WEAK_KIND
 from kiwoom_trading.screener.hamburger_watch import KIND as BURGER_KIND
 from kiwoom_trading.screener.leader_shape import big_red_exit
 from kiwoom_trading.screener.paper_trader import COST, KIND_LIMIT, MAX_CHASE, MAX_POSITIONS, STRONG_STOP, TRAIL_GAP, TRAIL_START
@@ -119,7 +120,7 @@ def review(store: ScreenerStore, day: date, daily_path: str = DEFAULT_DB_PATH) -
     rows = []
     try:
         for tid, code, name, kind, mode, status, note, sig_ts, sig_price, stop, virtual, bp, sp in trades:
-            if sig_ts is None or kind in (CONTRA_KIND, RETEST_KIND, UP_KIND, BLOCK_KIND):   # 다음 날 09:00 에 파는 신호('다음날' 매도)는 당일 가상 매매에서 뺀다
+            if sig_ts is None or kind in (CONTRA_KIND, RETEST_KIND, UP_KIND, BLOCK_KIND, WEAK_KIND):   # 다음 날 09:00 에 파는 신호('다음날' 매도)는 당일 가상 매매에서 뺀다
                 continue
             ext = virtual or not (time(9, 0) <= sig_ts.time() < time(15, 30))
             ex = "AL" if ext else "KRX"

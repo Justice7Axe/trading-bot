@@ -43,7 +43,7 @@ from kiwoom_trading.screener.paper_trader import PaperTrader, build_mock_client,
 from kiwoom_trading.screener.intraday_signals import QualityConfig
 from kiwoom_trading.screener.bigcap_flow import KIND as BIGCAP_KIND, BigcapFlowWatcher
 from kiwoom_trading.screener.early_nine import KIND as NINE_KIND, EarlyNineWatcher
-from kiwoom_trading.screener.inverse_gap import KIND as INVERSE_KIND, InverseGapWatcher
+from kiwoom_trading.screener.inverse_gap import KIND as INVERSE_KIND, WEAK_KIND, InverseGapWatcher, WeakInverseWatcher
 from kiwoom_trading.screener.contra_close import KIND as CONTRA_KIND, ContraCloseWatcher
 from kiwoom_trading.screener.resistance_retest import RETEST_KIND, RetestWatcher, find_retest
 from kiwoom_trading.screener.regime_plays import BLOCK_KIND, UP_KIND, BlockedHighWatcher, UpOpenWatcher, load_block_candidates
@@ -304,7 +304,8 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
              regime: Optional[MarketRegime] = None, inverse: Optional[InverseGapWatcher] = None,
              contra: Optional[ContraCloseWatcher] = None, retest: Optional[RetestWatcher] = None,
              up: Optional[UpOpenWatcher] = None, block: Optional[BlockedHighWatcher] = None,
-             surges: Optional[SurgeGroups] = None, burger: Optional[HamburgerWatcher] = None) -> int:
+             surges: Optional[SurgeGroups] = None, burger: Optional[HamburgerWatcher] = None,
+             weak_inv: Optional[WeakInverseWatcher] = None) -> int:
     now = datetime.now(KST)
     if trader is not None:
         try:
@@ -364,7 +365,7 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
             watcher.add(e.candidate.code, e.candidate.name)
         signals = watcher.check(now)
     shared_bars: dict = {}   # 같은 분에 받은 KRX 1분봉을 두 판정이 함께 쓴다
-    for label, w in (("인버스 갭", inverse), ("장 초 공통점", nine), ("대형주 수급", bigcap), ("주도주 모양", leader), ("눌림 돌파", pullback), ("햄버거", burger), ("역행 강세 종가", contra), ("저항 돌파", retest), ("상승장 장 초", up), ("막힌 고점 돌파", block)):
+    for label, w in (("인버스 갭", inverse), ("장 초 공통점", nine), ("대형주 수급", bigcap), ("주도주 모양", leader), ("눌림 돌파", pullback), ("햄버거", burger), ("역행 강세 종가", contra), ("저항 돌파", retest), ("상승장 장 초", up), ("막힌 고점 돌파", block), ("약세장 인버스", weak_inv)):
         if w is not None and hasattr(w, "cache"):
             w.cache = shared_bars
         if w is None:
@@ -377,7 +378,7 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
         for code, name, source, s in found:
             store.save_signal(screener.today, code, name, s, source, True)
         signals += found
-    if watcher is not None or leader is not None or pullback is not None or nine is not None or bigcap is not None or inverse is not None or burger is not None or contra is not None or retest is not None or up is not None or block is not None:
+    if watcher is not None or leader is not None or pullback is not None or nine is not None or bigcap is not None or inverse is not None or burger is not None or contra is not None or retest is not None or up is not None or block is not None or weak_inv is not None:
         if signals:
             logging.info("매수 신호 %s건: %s", len(signals), ", ".join(f"{n} {s.kind} {s.ts:%H:%M}" for _, n, _, s in signals))
             flow = watcher.flow if watcher is not None else {}
@@ -465,6 +466,7 @@ def main() -> int:
     block: Optional[BlockedHighWatcher] = None
     keys = store.signal_keys(now.date())
     up = UpOpenWatcher(market, screener.hist.keys(), regime=regime, done=any(k == UP_KIND for _, _, k in keys))
+    weak_inv = WeakInverseWatcher(market, regime=regime, done=any(k == WEAK_KIND for _, _, k in keys))
     try:   # 🧱 전 거래일 장 마감 저항 재시험 후보 → 강한 상승장 날 돌파 시 모의 매수
         dconn = duckdb.connect(DEFAULT_DB_PATH, read_only=True)
         try:
@@ -511,7 +513,7 @@ def main() -> int:
                         logging.info("오늘 데이터가 없음(휴장일로 판단, 기준일 %s) → 종료", probe[0].as_of)
                         break
                 run_once(screener, market, store, telegram=not args.no_telegram, watcher=watcher, early=early, investors=investors,
-                         themes=themes, board=board, trader=trader, leader=leader, pullback=pullback, nine=nine, bigcap=bigcap, regime=regime, inverse=inverse, contra=contra, retest=retest, up=up, block=block, surges=surges, burger=burger)
+                         themes=themes, board=board, trader=trader, leader=leader, pullback=pullback, nine=nine, bigcap=bigcap, regime=regime, inverse=inverse, contra=contra, retest=retest, up=up, block=block, surges=surges, burger=burger, weak_inv=weak_inv)
             except Exception:
                 logging.exception("스캔 실패 (다음 주기에 재시도)")
             if args.once:
