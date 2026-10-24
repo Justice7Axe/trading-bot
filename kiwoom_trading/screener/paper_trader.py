@@ -49,6 +49,7 @@ from kiwoom_trading.screener.bigcap_flow import KIND as BIGCAP_KIND, TARGET as B
 from kiwoom_trading.screener.early_nine import KIND as NINE_KIND
 from kiwoom_trading.screener.hamburger_watch import KIND as BURGER_KIND
 from kiwoom_trading.screener.inverse_gap import KIND as INVERSE_KIND
+from kiwoom_trading.screener.contra_close import KIND as CONTRA_KIND
 from kiwoom_trading.screener.market_regime import BIGCAP_MAX_WHEN_DOWN, CHECKS, CONSERVATIVE_LOSS_LIMIT, UP_ONLY_KINDS, WINDOW_MIN
 from kiwoom_trading.screener.leader_shape import KIND as LEADER_KIND, big_red_exit
 from kiwoom_trading.screener.pullback_breakout import KIND as PULLBACK_KIND, exit_reason as pullback_exit
@@ -328,6 +329,8 @@ class PaperTrader:
         tm = now.time()
         if not (SESSION_OPEN <= tm < LIQUIDATE_AT or PRE[0] <= tm < PRE[1] or AFTER[0] <= tm < AFTER[1]):
             return "매수 시간 아님 (정규장 09:00~15:19, 가상 08:00~08:45·15:30~19:45)"
+        if t.kind == CONTRA_KIND:
+            return "역행 강세 종가 — 종가 매수·다음 날 시초가 매도(하룻밤 보유)는 아직 모의투자 미지원, 알림·기록만"
         if self.halted:
             return f"하루 손실 한도 -{self._loss_limit():.1%} 도달"
         if not t.virtual and t.kind not in (BIGCAP_KIND, INVERSE_KIND) and self._before_regime(tm):
