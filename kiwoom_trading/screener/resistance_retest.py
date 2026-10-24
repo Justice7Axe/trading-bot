@@ -39,6 +39,7 @@ class RetestCandidate:
     big_bulls: int
     dip: float             # 최근 15일 저가 ÷ H − 1
     base_value: float = 0.0   # 평소 하루 대금 = 최근 3일 뺀 20일 평균 (원)
+    mcap: float = 0.0         # 시가총액 ≈ 현재 상장주식수 × 종가 (원)
 
 
 def find_retest(conn, today: date) -> list[RetestCandidate]:
@@ -51,6 +52,7 @@ def find_retest(conn, today: date) -> list[RetestCandidate]:
     if not codes:
         return []
     names = dict(conn.execute("SELECT code, name FROM stocks").fetchall())
+    shares = dict(conn.execute("SELECT code, listed_shares FROM stocks").fetchall())
     hist: dict[str, dict] = {c: {} for c in codes}
     ph = ",".join("?" * len(codes))
     for c, d, o, h, l, cl, v in conn.execute(f"""SELECT code, date, open, high, low, close, value FROM daily_ohlcv
@@ -70,7 +72,7 @@ def find_retest(conn, today: date) -> list[RetestCandidate]:
         test = max(x[1] for x in xs[k - 3:k]) / H - 1
         if bulls >= 1 and v20 and v3 / v20 >= VALUE_MULT and POS_LOW <= pos <= POS_HIGH and test >= -TEST_GAP:
             out.append(RetestCandidate(c, names.get(c, c), xs[-1][3], max(H, max(x[1] for x in xs[k - 3:k])), pos, v3 / v20, bulls,
-                                       min(x[2] for x in xs[k - 15:k]) / H - 1, v20))
+                                       min(x[2] for x in xs[k - 15:k]) / H - 1, v20, (shares.get(c) or 0) * xs[-1][3]))
     return sorted(out, key=lambda x: -x.value_mult)
 
 
@@ -78,10 +80,10 @@ def format_retest(cands: list[RetestCandidate], limit: int = 15) -> str:
     if not cands:
         return "🧱 저항 재시험 후보(지투지바이오형): 없음"
     lines = [f"🧱 저항 재시험 후보(지투지바이오형) {len(cands)}종목 — 다음 날 '돌파선' 넘으면 🎯 저항 돌파 모의 매수",
-             "(평소 대금 50억↑ · 09:10 뒤 돌파 · 돌파 때 그날 누적 대금 ≥ 평소 하루 대금일 때만. 1분봉 1년 132건 +1.0%, 강한 상승장 아닌 날 +0.8%)"]
+             "(시총 2천억↑ · 09:10 뒤 돌파 · 돌파 때 그날 누적 대금 ≥ 평소 하루 대금일 때만. 일봉 2년 220건 +1.2%, 1분봉 1년 75건 −5% 손절 +1.9%)"]
     for x in cands[:limit]:
         lines.append(f"- {x.name}({x.code}) 종가 {x.close:,.0f} · 돌파선 {x.resistance:,.0f} ({x.resistance / x.close - 1:+.1%}) · "
-                     f"대금 {x.value_mult:.1f}배 · 평소 대금 {x.base_value / 1e8:,.0f}억{'' if x.base_value >= MIN_BASE_VALUE else '(50억 미만, 매수 안 함)'} · "
+                     f"대금 {x.value_mult:.1f}배 · 시총 {x.mcap / 1e8:,.0f}억{'' if x.mcap >= MIN_MCAP else '(2천억 미만, 매수 안 함)'} · 평소 대금 {x.base_value / 1e8:,.0f}억 · "
                      f"장대양봉 {x.big_bulls}개 · 고점 대비 저점 {x.dip:+.0%}")
     if len(cands) > limit:
         lines.append(f"… 외 {len(cands) - limit}종목")
@@ -93,21 +95,24 @@ RETEST_KIND = "저항 돌파"
 WATCH_START, WATCH_END = time(9, 10), time(15, 15)
 RETEST_TP = 0.07       # 익절 +7%
 RETEST_STOP = 0.05     # 손절 −5% (즉시)
-MIN_BASE_VALUE = 5e9   # ① 평소 하루 대금(최근 3일 뺀 20일 평균) 50억↑
+MIN_MCAP = 2e11        # 시가총액 2천억↑ (2026-10-25: 평소 대금 50억↑ 대신. 2천억↓ 후보는 어느 대금 구간도 손실)
 CUM_MULT = 1.0         # ④ 돌파 때 그날 누적 대금 ≥ 평소 하루 대금 × 1
 
 
 class RetestWatcher:
-    """전 거래일 장 마감 후보(find_retest) 중 평소 대금 50억↑ 종목이 09:10~15:15 돌파선 R 을 넘으면 🎯 신호 — 모든 날(약세장·강한 하락장 포함).
+    """전 거래일 장 마감 후보(find_retest) 중 시가총액 2천억↑ 종목이 09:10~15:15 돌파선 R 을 넘으면 🎯 신호 — 모든 날(약세장·강한 하락장 포함).
     돌파를 처음 본 순간 그날 09:00 부터 누적 대금(통합 1분봉) ≥ 평소 하루 대금일 때만 산다(아니면 그날은 버림).
     시가가 이미 R 위면 사지 않는다. 매도는 paper_trader '다음날': +7% 익절 / −5% 즉시 손절 / 둘 다 아니면 다음 날 09:00.
     근거 (2026-10-25 사용자 '바꿔줘', 스크래치 g2g_filter*.py):
       일봉 2년 ① 평소 대금 ≥50억 +0.29% · ≥100억 +0.75% (단조) / 1분봉 1년 ④ 돌파 때 누적 ≥ 평소 & 09:10 뒤 132건 −5% 손절 +1.00%
-      (앞 +1.54 / 뒤 +0.93), 강한 상승장 아닌 날 105건 +0.80%, 09:10 전 순간 돌파 −0.58%."""
+      (앞 +1.54 / 뒤 +0.93), 강한 상승장 아닌 날 105건 +0.80%, 09:10 전 순간 돌파 −0.58%.
+    2026-10-25 '제안대로 해줘': 평소 대금 50억↑ → 시총 2천억↑ (스크래치 mcap_turn*.py). 지투지형 돌파 일봉 2년: 시총 2천억↓ 254건 −1.65%,
+      2천억↑ 220건 +1.22% (2천~5천억 +1.07 · 5천억~1조 +1.38 · 1~3조 +2.46), 1분봉 시총 2천억↑ & 누적 대금 조건 75건 −5% 손절 +1.92%
+      (앞 +1.73 / 뒤 +2.15) vs 평소 대금 50억↑ 68건 +1.13%. 2천억↑ 안에서는 평소 대금 크기 무관."""
 
     def __init__(self, market, candidates: list[RetestCandidate], regime=None, done: Optional[set[str]] = None) -> None:
         self.market = market
-        self.cands = {c.code: c for c in candidates if c.base_value >= MIN_BASE_VALUE}
+        self.cands = {c.code: c for c in candidates if c.mcap >= MIN_MCAP}
         self.regime = regime
         self.done: set[str] = set(done or ())
         self.skip: set[str] = set()          # 시가가 이미 돌파선 위 → 오늘은 안 봄
