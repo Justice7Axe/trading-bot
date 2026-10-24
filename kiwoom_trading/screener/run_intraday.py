@@ -204,12 +204,24 @@ class ThemeRunner:
         for c in clusters:
             logging.info("🧩 테마 형성 [%s]: %s", c.label, c.describe())
         if telegram and hits:
-            send_telegram_message(format_features(now, hits))
+            send_telegram_message(_tag(format_features(now, hits)))
         if telegram and clusters:
-            send_telegram_message(format_clusters(now, clusters))
+            send_telegram_message(_tag(format_clusters(now, clusters)))
 
 
 THEME_WINDOW = (dtime(8, 0), dtime(15, 30))
+_REGIME: Optional[MarketRegime] = None   # main 이 넣음 — 포착·신호 알림 끝에 오늘 시장 상황 표시
+
+
+def _tag(text: str) -> str:
+    """포착·신호 알림 끝에 '📍 오늘 시장: …' 한 줄 (2026-10-25 사용자). 판정을 못 읽으면 그대로."""
+    if _REGIME is None:
+        return text
+    try:
+        return f"{text}\n\n{_REGIME.day_label()}"
+    except Exception:
+        logging.exception("시장 상황 표시 실패")
+        return text
 
 
 class EarlyRunner:
@@ -240,7 +252,7 @@ class EarlyRunner:
             for h in focus:
                 self._add(h, now)
             if telegram:
-                send_telegram_message(format_premarket(now, focus))
+                send_telegram_message(_tag(format_premarket(now, focus)))
         self.telegram = telegram
         urgent: dict[str, list[EarlyHit]] = {}
         for h in hits:
@@ -261,12 +273,12 @@ class EarlyRunner:
                 self.pending.append(h)
         if telegram:   # 조기 주도주·대금 가속은 하루 10건 안팎 → 즉시 알림 (매수 신호 아님)
             for source, items in urgent.items():
-                send_telegram_message(URGENT_HEADERS[source].format(now=now) + "\n"
+                send_telegram_message(_tag(URGENT_HEADERS[source].format(now=now) + "\n"
                                       + "\n".join(f"· {h.name}({h.code}) {h.reason}" for h in items)
-                                      + "\n(진입 신호 아님: 포착 즉시 매수는 백테스트상 손실)")
+                                      + "\n(진입 신호 아님: 포착 즉시 매수는 백테스트상 손실)"))
         if self.pending and now - self.last_summary >= timedelta(minutes=ADD_SUMMARY_MINUTES):
             if telegram:
-                send_telegram_message(format_watch_adds(now, self.pending))
+                send_telegram_message(_tag(format_watch_adds(now, self.pending)))
             self.pending, self.last_summary = [], now
 
     def on_investor_snapshot(self, now: datetime, investor: str, values: dict[str, int]) -> None:
@@ -287,7 +299,7 @@ class EarlyRunner:
             if sell:
                 lines.append("순매도/없음: " + ", ".join(sell))
             lines.append("(관문+당일 외국인·기관 순매수: 장 마감 확정치 기준 정밀도 38%→51%, 잠정치로는 검증 중)")
-            send_telegram_message("\n".join(lines))
+            send_telegram_message(_tag("\n".join(lines)))
 
     def _add(self, h: EarlyHit, now: datetime) -> bool:
         added = self.watcher.add(h.code, h.name, h.source, h.reason, now.replace(tzinfo=None))
@@ -356,7 +368,7 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
                  ", ".join(f"{e.candidate.name}{'*' if e in new else ''}" for e in passed))
     if new and telegram:
         body = "\n\n".join(format_evaluation(e) for e in new)
-        send_telegram_message(f"⚡ 장중 포착 {now:%H:%M} ({len(new)}종목)\n\n{body}")
+        send_telegram_message(_tag(f"⚡ 장중 포착 {now:%H:%M} ({len(new)}종목)\n\n{body}"))
 
     # 매수 신호: 전일 관심 + 장중 포착 종목의 1분봉 패턴 + 🎯 주도주 모양(09:30~10:30, 대금 100위 안)
     signals = []
@@ -383,7 +395,7 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
             logging.info("매수 신호 %s건: %s", len(signals), ", ".join(f"{n} {s.kind} {s.ts:%H:%M}" for _, n, _, s in signals))
             flow = watcher.flow if watcher is not None else {}
             if telegram:
-                send_telegram_message(format_signals(now, signals, flow))
+                send_telegram_message(_tag(format_signals(now, signals, flow)))
             if trader is not None:
                 trader.on_signals(now, signals, flow)
     return len(new)
@@ -454,9 +466,11 @@ def main() -> int:
                 send_telegram_message("⚠️ 모의투자 준비 실패 — 오늘은 🎯 알림만 보냅니다 (로그 확인)")
     regime = MarketRegime(screener.hist.keys(), notify=None if args.no_telegram else send_telegram_message,
                           store=store, today=now.date(), client=client)
+    global _REGIME
+    _REGIME = regime
     try:
         surges: Optional[SurgeGroups] = SurgeGroups(store, now.date(), screener.names,
-                                                    notify=None if args.no_telegram else send_telegram_message)
+                                                    notify=None if args.no_telegram else (lambda text: send_telegram_message(_tag(text))))
     except Exception:
         logging.exception("급등 묶음 준비 실패")
         surges = None
