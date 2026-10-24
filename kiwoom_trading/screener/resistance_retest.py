@@ -38,6 +38,7 @@ class RetestCandidate:
     value_mult: float
     big_bulls: int
     dip: float             # 최근 15일 저가 ÷ H − 1
+    base_value: float = 0.0   # 평소 하루 대금 = 최근 3일 뺀 20일 평균 (원)
 
 
 def find_retest(conn, today: date) -> list[RetestCandidate]:
@@ -69,18 +70,19 @@ def find_retest(conn, today: date) -> list[RetestCandidate]:
         test = max(x[1] for x in xs[k - 3:k]) / H - 1
         if bulls >= 1 and v20 and v3 / v20 >= VALUE_MULT and POS_LOW <= pos <= POS_HIGH and test >= -TEST_GAP:
             out.append(RetestCandidate(c, names.get(c, c), xs[-1][3], max(H, max(x[1] for x in xs[k - 3:k])), pos, v3 / v20, bulls,
-                                       min(x[2] for x in xs[k - 15:k]) / H - 1))
+                                       min(x[2] for x in xs[k - 15:k]) / H - 1, v20))
     return sorted(out, key=lambda x: -x.value_mult)
 
 
 def format_retest(cands: list[RetestCandidate], limit: int = 15) -> str:
     if not cands:
         return "🧱 저항 재시험 후보(지투지바이오형): 없음"
-    lines = [f"🧱 저항 재시험 후보(지투지바이오형) {len(cands)}종목 — 다음 날 '돌파선' 넘는지 관찰",
-             "(장대양봉 뒤 큰 대금으로 예전 고점 바로 아래에서 버팀. 2년: 다음 날 돌파 14%, 돌파 매수 −0.3% · 강한 상승장 날만 +1.4% → 알림용)"]
+    lines = [f"🧱 저항 재시험 후보(지투지바이오형) {len(cands)}종목 — 다음 날 '돌파선' 넘으면 🎯 저항 돌파 모의 매수",
+             "(평소 대금 50억↑ · 09:10 뒤 돌파 · 돌파 때 그날 누적 대금 ≥ 평소 하루 대금일 때만. 1분봉 1년 132건 +1.0%, 강한 상승장 아닌 날 +0.8%)"]
     for x in cands[:limit]:
         lines.append(f"- {x.name}({x.code}) 종가 {x.close:,.0f} · 돌파선 {x.resistance:,.0f} ({x.resistance / x.close - 1:+.1%}) · "
-                     f"대금 {x.value_mult:.1f}배 · 장대양봉 {x.big_bulls}개 · 고점 대비 저점 {x.dip:+.0%}")
+                     f"대금 {x.value_mult:.1f}배 · 평소 대금 {x.base_value / 1e8:,.0f}억{'' if x.base_value >= MIN_BASE_VALUE else '(50억 미만, 매수 안 함)'} · "
+                     f"장대양봉 {x.big_bulls}개 · 고점 대비 저점 {x.dip:+.0%}")
     if len(cands) > limit:
         lines.append(f"… 외 {len(cands) - limit}종목")
     return "\n".join(lines)
@@ -88,29 +90,41 @@ def format_retest(cands: list[RetestCandidate], limit: int = 15) -> str:
 
 # ---------------------------------------------------------------- 장중: 강한 상승장 날 돌파선 돌파 → 모의 매수 (2026-10-25 사용자 "원해 해줘")
 RETEST_KIND = "저항 돌파"
-WATCH_START, WATCH_END = time(9, 0), time(15, 15)
+WATCH_START, WATCH_END = time(9, 10), time(15, 15)
 RETEST_TP = 0.07       # 익절 +7%
 RETEST_STOP = 0.05     # 손절 −5% (즉시)
+MIN_BASE_VALUE = 5e9   # ① 평소 하루 대금(최근 3일 뺀 20일 평균) 50억↑
+CUM_MULT = 1.0         # ④ 돌파 때 그날 누적 대금 ≥ 평소 하루 대금 × 1
 
 
 class RetestWatcher:
-    """전 거래일 장 마감 후보(find_retest)의 돌파선 R 을 강한 상승장 날 장중에 넘으면 🎯 신호.
-    시가가 이미 R 위면 사지 않는다(2년 −0.97%). 매도는 paper_trader '다음날' 방식: +7% 익절 / −5% 즉시 손절 /
-    둘 다 아니면 15:19 에 팔지 않고 다음 날 첫 정규장(09:00)에 판다.
-    근거: 2년 일봉, 강한 상승장 날 후보 돌파 61건 +7% 익절·다음 날 시가 +1.47% (다른 날은 −0.05 ~ −2.05%)."""
+    """전 거래일 장 마감 후보(find_retest) 중 평소 대금 50억↑ 종목이 09:10~15:15 돌파선 R 을 넘으면 🎯 신호 — 모든 날(약세장·강한 하락장 포함).
+    돌파를 처음 본 순간 그날 09:00 부터 누적 대금(통합 1분봉) ≥ 평소 하루 대금일 때만 산다(아니면 그날은 버림).
+    시가가 이미 R 위면 사지 않는다. 매도는 paper_trader '다음날': +7% 익절 / −5% 즉시 손절 / 둘 다 아니면 다음 날 09:00.
+    근거 (2026-10-25 사용자 '바꿔줘', 스크래치 g2g_filter*.py):
+      일봉 2년 ① 평소 대금 ≥50억 +0.29% · ≥100억 +0.75% (단조) / 1분봉 1년 ④ 돌파 때 누적 ≥ 평소 & 09:10 뒤 132건 −5% 손절 +1.00%
+      (앞 +1.54 / 뒤 +0.93), 강한 상승장 아닌 날 105건 +0.80%, 09:10 전 순간 돌파 −0.58%."""
 
     def __init__(self, market, candidates: list[RetestCandidate], regime=None, done: Optional[set[str]] = None) -> None:
         self.market = market
-        self.cands = {c.code: c for c in candidates}
+        self.cands = {c.code: c for c in candidates if c.base_value >= MIN_BASE_VALUE}
         self.regime = regime
         self.done: set[str] = set(done or ())
         self.skip: set[str] = set()          # 시가가 이미 돌파선 위 → 오늘은 안 봄
 
+    def _cum_value(self, code: str, day: date) -> Optional[float]:
+        from kiwoom_trading.ingestion.collectors.minute_collector import fetch_minute_bars
+        try:
+            bars = fetch_minute_bars(self.market.client, code, day, "AL")
+        except Exception:
+            logging.warning("저항 돌파: %s 1분봉 조회 실패", code)
+            return None
+        return sum(b["volume"] * ((b["high"] or 0) + (b["low"] or 0) + (b["close"] or 0)) / 3
+                   for b in bars if b["ts"].time() >= time(9, 0))
+
     def check(self, now: datetime, value_top=None) -> list:
         from kiwoom_trading.screener.intraday_signals import Signal
         if not self.cands or not (WATCH_START <= now.time() <= WATCH_END):
-            return []
-        if self.regime is None or not self.regime.strong_up:
             return []
         out = []
         for code, c in self.cands.items():
@@ -129,11 +143,16 @@ class RetestWatcher:
                 continue
             if q.price <= c.resistance:
                 continue
-            self.done.add(code)
+            self.done.add(code)      # 돌파를 처음 본 순간 한 번만 판정
+            cum = self._cum_value(code, now.date())
+            if cum is None or cum < c.base_value * CUM_MULT:
+                logging.info("저항 돌파: %s 돌파했지만 그날 누적 대금 %s억 < 평소 %s억 → 안 삼", c.name,
+                             "?" if cum is None else f"{cum / 1e8:,.0f}", f"{c.base_value / 1e8:,.0f}")
+                continue
             ts = now.replace(second=0, microsecond=0, tzinfo=None)
-            reason = (f"🧱 저항 재시험 후보가 강한 상승장 날 돌파선 {c.resistance:,.0f} 돌파 (전날 대금 {c.value_mult:.1f}배, "
-                      f"장대양봉 {c.big_bulls}개) — +{RETEST_TP:.0%} 익절 / −{RETEST_STOP:.0%} 손절, 못 닿으면 다음 날 09:00 매도 "
-                      f"(2년 강한 상승장 61건 +1.47%)")
+            reason = (f"🧱 저항 재시험 후보 돌파선 {c.resistance:,.0f} 돌파, 그날 누적 대금 {cum / 1e8:,.0f}억 = 평소 {c.base_value / 1e8:,.0f}억의 "
+                      f"{cum / c.base_value:.1f}배 — +{RETEST_TP:.0%} 익절 / −{RETEST_STOP:.0%} 손절, 못 닿으면 다음 날 09:00 매도 "
+                      f"(1분봉 1년 132건 +1.0%)")
             out.append((code, c.name, RETEST_KIND, Signal(ts, RETEST_KIND, float(q.price), float(c.resistance),
                                                           float(q.price) * (1 - RETEST_STOP), reason)))
         return out
