@@ -129,6 +129,23 @@ class MarketRegime:
         """코스피가 52주 고점 대비 −10% 밖(조정·약세장) — 보통 날 새 매수를 쉰다."""
         return self.index is not None and self.index.dd52 <= CORRECTION
 
+    def day_label(self, now: Optional[datetime] = None) -> str:
+        """알림 끝에 붙이는 오늘 시장 상황 (2026-10-25 사용자 '알림에 표시 붙이기').
+        강한 상승장 / 상승 흐름 보통 날 / 하락 흐름 보통 날 / 강한 하락장, 09:10 전엔 '판정 전'."""
+        flow = ("하락 흐름" if self.trend_weak else "상승 흐름") if self.index else None
+        where = f"코스피 52주 고점 대비 {self.index.dd52:+.0%}" if self.index else "큰 흐름 모름"
+        if self.strong_up:
+            day = "강한 상승장"
+        elif self.strong_down:
+            day = "강한 하락장"
+        elif CHECKS[0] in self.done:
+            day = f"{flow} 보통 날" if flow else "보통 날"
+            if CHECKS[-1] not in self.done:
+                day += f" ({CHECKS[-1]:%H:%M} 재판정 전)"
+        else:
+            day = f"판정 전 ({CHECKS[0]:%H:%M}) · {flow}" if flow else f"판정 전 ({CHECKS[0]:%H:%M})"
+        return f"📍 오늘 시장: {day} · {where}"
+
     def trend_text(self) -> str:
         if not self.index:
             return "큰 흐름 모름(코스피 일봉 없음)"
