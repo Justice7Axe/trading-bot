@@ -5,6 +5,8 @@
 - 금액: 종목당 100만 원 안에서 살 수 있는 만큼. 1주 가격이 100만 원을 넘으면 1주 (상한 없음).
 - 동시 보유 최대 10종목(눌림 돌파는 2종목), 이미 보유한 종목은 추가 매수 안 함.
 - 하루 손실 한도: 실현 + 평가 손익이 그날 시작 자산의 -3% 에 닿으면 새로 사지 않는다.
+- 09:10 시장 분위기 판정 전(정규장 09:00~09:10, 판정 스냅샷이 늦으면 늦어도 09:15)에는 차트 신호를 사지 않는다.
+  대형주 수급·인버스 갭과 NXT 가상 체결은 예외 (2026-10-24 사용자).
 - Nada 손실 관리 (2026-10-24 사용자, nada-trading-kr 스킬 1절 3항): 매수 신호·매도 규칙은 그대로 두고 금액만 줄인다.
     · 그날 손익 -2% 이하 또는 이번 주(월요일~) 손익 -3% 이하 → 이후 매수 금액 절반
     · 오늘 손실로 끝난 종목을 다시 사면 → 금액 절반 (복수 매매 방지). 두 조건이 겹치면 1/4
@@ -44,7 +46,7 @@ from kiwoom_trading.screener.bigcap_flow import KIND as BIGCAP_KIND, TARGET as B
 from kiwoom_trading.screener.early_nine import KIND as NINE_KIND
 from kiwoom_trading.screener.hamburger_watch import KIND as BURGER_KIND
 from kiwoom_trading.screener.inverse_gap import KIND as INVERSE_KIND
-from kiwoom_trading.screener.market_regime import BIGCAP_MAX_WHEN_DOWN, CONSERVATIVE_LOSS_LIMIT, UP_ONLY_KINDS
+from kiwoom_trading.screener.market_regime import BIGCAP_MAX_WHEN_DOWN, CHECKS, CONSERVATIVE_LOSS_LIMIT, UP_ONLY_KINDS, WINDOW_MIN
 from kiwoom_trading.screener.leader_shape import KIND as LEADER_KIND, big_red_exit
 from kiwoom_trading.screener.pullback_breakout import KIND as PULLBACK_KIND, exit_reason as pullback_exit
 from kiwoom_trading.screener.market_data import KiwoomMarket, _code
@@ -67,6 +69,8 @@ COST = 0.0025                 # 추정 왕복 비용 (수수료+세금, 백테�
 HALF_TP = 0.02                # '반반'(🎯 주도주 모양): +2% 에서 절반 매도, 나머지는 손절 또는 15:19 (2026-10-17 사용자)
 
 SESSION_OPEN = time(9, 0)
+REGIME_FIRST = CHECKS[0]      # 09:10 강한 하락장 첫 판정 — 그 전에는 차트 신호를 사지 않는다 (2026-10-24 사용자, 10-23 09:07·09:08 매수 −2% 손절)
+REGIME_WAIT_END = time(REGIME_FIRST.hour, REGIME_FIRST.minute + WINDOW_MIN)
 LIQUIDATE_AT = time(15, 19)   # 15:20 부터 장 마감 동시호가
 SESSION_CLOSE = time(15, 30)
 PRE = (time(8, 0), time(8, 45), time(8, 49))        # NXT 프리장 가상 체결: 시작, 매수 마감, 정리
@@ -302,6 +306,8 @@ class PaperTrader:
             return "매수 시간 아님 (정규장 09:00~15:19, 가상 08:00~08:45·15:30~19:45)"
         if self.halted:
             return f"하루 손실 한도 -{self._loss_limit():.1%} 도달"
+        if not t.virtual and t.kind not in (BIGCAP_KIND, INVERSE_KIND) and self._before_regime(tm):
+            return f"시장 분위기 판정({REGIME_FIRST:%H:%M}) 전 — 차트 신호는 사지 않음"
         if self.regime is not None and self.regime.strong_down and not t.virtual:
             if t.kind not in (BIGCAP_KIND, INVERSE_KIND):
                 return "강한 하락장 — 차트 신호는 새로 사지 않음 (보수적 매매)"
@@ -318,6 +324,16 @@ class PaperTrader:
         if cap is not None and sum(1 for x in self.active() if x.kind == t.kind) >= cap:
             return f"{t.kind} 동시 {cap}종목 보유 중"
         return None
+
+    def _before_regime(self, tm: time) -> bool:
+        """정규장인데 아직 09:10 강한 하락장 판정을 못 봤는가. 09:10 판정은 09:10~09:15 첫 스냅샷에서 하므로
+        그 판정이 끝나기 전(늦어도 09:15)까지는 기다린다."""
+        if not SESSION_OPEN <= tm < REGIME_WAIT_END:
+            return False
+        if tm < REGIME_FIRST:
+            return True
+        r = self.regime
+        return r is not None and not (r.strong_down or r.strong_up) and REGIME_FIRST not in r.done
 
     def _buy(self, now: datetime, t: Trade, s: Signal) -> None:
         t.virtual = session(now.time()) != "real"   # _skip_reason 이 가상 여부를 보므로 먼저
