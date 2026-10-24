@@ -5,6 +5,10 @@
 - 금액: 종목당 100만 원 안에서 살 수 있는 만큼. 1주 가격이 100만 원을 넘으면 1주 (상한 없음).
 - 동시 보유 최대 10종목(눌림 돌파는 2종목), 이미 보유한 종목은 추가 매수 안 함.
 - 하루 손실 한도: 실현 + 평가 손익이 그날 시작 자산의 -3% 에 닿으면 새로 사지 않는다.
+- Nada 손실 관리 (2026-10-24 사용자, nada-trading-kr 스킬 1절 3항): 매수 신호·매도 규칙은 그대로 두고 금액만 줄인다.
+    · 그날 손익 -2% 이하 또는 이번 주(월요일~) 손익 -3% 이하 → 이후 매수 금액 절반
+    · 오늘 손실로 끝난 종목을 다시 사면 → 금액 절반 (복수 매매 방지). 두 조건이 겹치면 1/4
+    · 1주 가격이 줄인 금액보다 크면 1주
 - 매도:
     · 돈이 평소 5배↑ 붙은 신호('추적'): 처음 손절 -5%, +5% 도달 뒤 고점 대비 -3% 에 청산
     · 그 밖('기본'): 신호 손절가
@@ -28,7 +32,7 @@ import os
 import sys
 import time as _time
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from typing import Any, Callable, Optional
 
 from kiwoom_trading.common.daily_store import load_env
@@ -52,6 +56,8 @@ BUDGET_PER_STOCK = 1_000_000
 MAX_POSITIONS = 10            # 키움 제한이 아니라 우리 규칙. 모의 계좌 약 1천만 원 ÷ 종목당 100만 원 (2026-10-20, 10-19 복기: 5종목 한도로 신호 85건 건너뜀)
 KIND_LIMIT = {PULLBACK_KIND: 2}  # 눌림 돌파는 장 초부터 자주 나와 자리를 차지 → 동시 2종목까지 (1년 −0.34%, 10-19 유일한 마이너스 −0.08%)
 DAILY_LOSS_LIMIT = 0.03
+NADA_DAY_DD = 0.02            # Nada: 그날 손익 -2% 부터 매수 금액 절반
+NADA_WEEK_DD = 0.03           # Nada: 이번 주 손익 -3% 부터 매수 금액 절반
 MAX_CHASE = 0.01              # 신호가 대비 +1% 넘게 오르면 추격 안 함
 STRONG_FLOW = 5.0             # 평소 5배↑ → '추적' 방식
 STRONG_STOP = 0.05            # 추적: 처음 손절 -5%
@@ -256,6 +262,8 @@ class PaperTrader:
         self.asset_start = row[0] if row else asset
         self.reported = bool(row[1]) if row else False          # 19:55 최종
         self.reported_close = bool(row[2]) if row else False    # 15:40 정규장 마감
+        monday = today - timedelta(days=today.weekday())   # 이번 주 앞선 날들의 실현 손익 (Nada 주간 드로다운)
+        self.week_prior = sum(net_pnl(t) or 0 for t in load_trades(store, "date >= ? AND date < ? AND status = 'closed'", [monday, today]))
         tracked = {t.code for t in self.active()}
         for code, (qty, avg, _, name) in holdings.items():       # 기록 없이 남아 있는 보유분 → 첫 정규장에 정리
             if code not in tracked:
@@ -323,7 +331,11 @@ class PaperTrader:
             elif price > s.price * (1 + MAX_CHASE):
                 reason = f"현재가 {price:,}원이 신호가보다 {price / s.price - 1:+.1%} — 추격 안 함"
         if reason is None:
-            t.qty = order_qty(price)
+            factor, why = self._nada_factor(t)
+            t.qty = order_qty(price, int(BUDGET_PER_STOCK * factor))
+            if why:
+                t.note = f"Nada 금액 {factor:g}배: {why}"
+                logging.info("모의 매수 금액 축소 %s: %s", t.name, t.note)
             cash = self.mock.cash() if not t.virtual else t.qty * price
             if cash < t.qty * price:
                 reason = f"주문 가능 금액 부족 ({cash:,}원 < {t.qty * price:,}원)"
@@ -340,7 +352,8 @@ class PaperTrader:
             logging.info("가상 매수 %s %s주 × %s", t.name, t.qty, price)
             self.notify(f"🟣 가상 매수 {t.name}({t.code}) {t.qty}주 × {price:,}원 = {t.qty * price / 1e4:,.0f}만 원 "
                         f"(NXT {'프리장' if now.time() < SESSION_OPEN else '애프터장'}, 주문 없이 기록만)\n"
-                        f"  [{t.kind} {s.ts:%H:%M}] 손절 {t.stop:,.0f}원 ({t.stop / price - 1:+.1%}) — {t.source}")
+                        f"  [{t.kind} {s.ts:%H:%M}] 손절 {t.stop:,.0f}원 ({t.stop / price - 1:+.1%}) — {t.source}"
+                        + (f"\n  📏 {t.note}" if t.note else ""))
             return
         t.buy_order_no = self.mock.market_order("buy", t.code, t.qty)
         t.status, t.buy_ts, t.peak = "ordered", now.replace(tzinfo=None), float(price)
@@ -349,7 +362,8 @@ class PaperTrader:
                if t.mode == "추적" else "손절 없음, 15:19 정리" if not s.stop else f"손절 {s.stop:,.0f}원 ({s.stop / price - 1:+.1%})")
         logging.info("모의 매수 주문 %s %s주 (주문 %s)", t.name, t.qty, t.buy_order_no)
         self.notify(f"🟢 모의 매수 {t.name}({t.code}) {t.qty}주 × 약 {price:,}원 = {t.qty * price / 1e4:,.0f}만 원\n"
-                    f"  [{t.kind} {s.ts:%H:%M}] {how} — {t.source}")
+                    f"  [{t.kind} {s.ts:%H:%M}] {how} — {t.source}"
+                    + (f"\n  📏 {t.note}" if t.note else ""))
 
     # ------------------------------------------------------------ 보유·매도
     def tick(self, now: datetime, force: bool = False) -> None:
@@ -528,11 +542,32 @@ class PaperTrader:
     def _loss_limit(self) -> float:
         return CONSERVATIVE_LOSS_LIMIT if self.regime is not None and self.regime.strong_down else DAILY_LOSS_LIMIT
 
+    def _day_pnl(self) -> float:
+        """오늘 실현 + 평가 손익 (추정 비용 0.25% 차감)."""
+        today = [t for t in self.trades if t.date == self.today and t.buy_price]
+        return sum((net_pnl(t) or 0) if t.status == "closed" else (net_pnl(t, self.last_price.get(t.code)) or 0) for t in today)
+
+    def _nada_factor(self, t: Trade) -> tuple[float, str]:
+        """Nada 손실 관리 → (매수 금액 배수, 이유). 드로다운 절반 × 오늘 손실 종목 재매수 절반."""
+        factor, why = 1.0, []
+        if self.asset_start:
+            day = self._day_pnl()
+            week = self.week_prior + day
+            if day <= -self.asset_start * NADA_DAY_DD:
+                why.append(f"오늘 손익 {day / self.asset_start:+.1%} (−{NADA_DAY_DD:.0%} 부터 절반)")
+            elif week <= -self.asset_start * NADA_WEEK_DD:
+                why.append(f"이번 주 손익 {week / self.asset_start:+.1%} (−{NADA_WEEK_DD:.0%} 부터 절반)")
+            if why:
+                factor /= 2
+        if any(x.code == t.code and x.date == self.today and x.status == "closed" and (net_pnl(x) or 0) < 0 for x in self.trades):
+            factor /= 2
+            why.append("오늘 손실로 끝난 종목 다시 매수")
+        return factor, " · ".join(why)
+
     def _check_halt(self) -> None:
         if self.halted or not self.asset_start:
             return
-        today = [t for t in self.trades if t.date == self.today and t.buy_price]
-        pnl = sum((net_pnl(t) or 0) if t.status == "closed" else (net_pnl(t, self.last_price.get(t.code)) or 0) for t in today)
+        pnl = self._day_pnl()
         if pnl <= -self.asset_start * self._loss_limit():
             self.halted = True
             self.notify(f"⛔ 모의투자 하루 손실 한도 도달 ({pnl:+,.0f}원) — 오늘은 새로 사지 않습니다 (보유 종목 매도 규칙은 계속)")
