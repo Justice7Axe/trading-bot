@@ -338,14 +338,14 @@ class PaperTrader:
             return f"하루 손실 한도 -{self._loss_limit():.1%} 도달"
         if not t.virtual and t.kind not in (BIGCAP_KIND, INVERSE_KIND) and self._before_regime(tm):
             return f"시장 분위기 판정({REGIME_FIRST:%H:%M}) 전 — 차트 신호는 사지 않음"
-        if self.regime is not None and self.regime.strong_down and not t.virtual:
+        if self.regime is not None and self.regime.strong_down and not t.virtual and t.kind != RETEST_KIND:   # 저항 돌파는 모든 날 산다
             if t.kind not in (BIGCAP_KIND, INVERSE_KIND):
                 return "강한 하락장 — 차트 신호는 새로 사지 않음 (보수적 매매)"
             bought = sum(1 for x in self.trades if x.date == self.today and x.kind == BIGCAP_KIND and x.buy_ts)
             if bought >= BIGCAP_MAX_WHEN_DOWN:
                 return f"강한 하락장 — 대형주 수급은 {BIGCAP_MAX_WHEN_DOWN}종목까지 (보수적 매매)"
         r = self.regime
-        if (r is not None and r.trend_weak and not r.strong_up and not t.virtual and t.kind != INVERSE_KIND
+        if (r is not None and r.trend_weak and not r.strong_up and not t.virtual and t.kind not in (INVERSE_KIND, RETEST_KIND)
                 and not self._before_regime(tm)):
             return f"보통 날 + {r.trend_text()} — 새 매수 쉼 (조정·약세장은 강한 상승장에만 삼)"
         if t.kind == PULLBACK_KIND:
