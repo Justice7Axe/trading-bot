@@ -102,6 +102,14 @@ CREATE TABLE IF NOT EXISTS investor_intraday (  -- 장중 외국인·기관 순�
     code        VARCHAR,
     net_amount  BIGINT        -- 원, 장 시작부터 누적
 );
+CREATE TABLE IF NOT EXISTS program_intraday (   -- 장중 종목별 프로그램 매매 스냅샷 (ka90004, 10분마다, 외인 방향 대용, 과거분은 API 로 못 받음)
+    ts          TIMESTAMP,
+    date        DATE,
+    code        VARCHAR,
+    buy_amount  BIGINT,       -- 원, 장 시작부터 누적
+    sell_amount BIGINT,
+    net_amount  BIGINT
+);
 CREATE TABLE IF NOT EXISTS paper_trades (     -- 🎯 매수 신호 모의투자 (키움 모의 서버, KRX 정규장만) — paper_trader.py
     id            VARCHAR PRIMARY KEY,   -- 'YYYYMMDD-코드-HHMM-종류'
     date          DATE,
@@ -231,6 +239,11 @@ class ScreenerStore:
         if values:
             self.conn.executemany("INSERT INTO investor_intraday VALUES (?, ?, ?, ?, ?)",
                                   [(ts, ts.date(), investor, code, amount) for code, amount in values.items() if amount])
+
+    def save_program_intraday(self, ts: datetime, values: dict[str, tuple[int, int, int]]) -> None:
+        rows = [(ts, ts.date(), code, buy, sell, net) for code, (buy, sell, net) in values.items() if buy or sell]
+        if rows:
+            self.conn.executemany("INSERT INTO program_intraday VALUES (?, ?, ?, ?, ?, ?)", rows)
 
     def save_theme_alert(self, day: date, ts: datetime, label: str, leader: str, members: list) -> None:
         """members: RankItem 목록 (🧩 알림 시점 묶음 구성)."""
