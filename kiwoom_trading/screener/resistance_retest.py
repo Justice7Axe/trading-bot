@@ -16,8 +16,9 @@
    −0.32% (앞 −0.65 / 뒤 −0.09) → 모양만으로는 우위 없음. 장대양봉 2개↑·대금 4배↑ 로 더 닮게 하면 −0.9~−1.6% 로 더 나쁘다.
    강한 상승장 날 돌파만 +1.3~1.5% (61건). → 알림(관찰)용. 모의 매수는 기존 규칙대로 강한 상승장 날 신호만.
 """
+import logging
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, time
 from typing import Optional
 
 BIG_BULL = 0.15
@@ -83,3 +84,56 @@ def format_retest(cands: list[RetestCandidate], limit: int = 15) -> str:
     if len(cands) > limit:
         lines.append(f"… 외 {len(cands) - limit}종목")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------- 장중: 강한 상승장 날 돌파선 돌파 → 모의 매수 (2026-10-25 사용자 "원해 해줘")
+RETEST_KIND = "저항 돌파"
+WATCH_START, WATCH_END = time(9, 0), time(15, 15)
+RETEST_TP = 0.07       # 익절 +7%
+RETEST_STOP = 0.05     # 손절 −5% (즉시)
+
+
+class RetestWatcher:
+    """전 거래일 장 마감 후보(find_retest)의 돌파선 R 을 강한 상승장 날 장중에 넘으면 🎯 신호.
+    시가가 이미 R 위면 사지 않는다(2년 −0.97%). 매도는 paper_trader '다음날' 방식: +7% 익절 / −5% 즉시 손절 /
+    둘 다 아니면 15:19 에 팔지 않고 다음 날 첫 정규장(09:00)에 판다.
+    근거: 2년 일봉, 강한 상승장 날 후보 돌파 61건 +7% 익절·다음 날 시가 +1.47% (다른 날은 −0.05 ~ −2.05%)."""
+
+    def __init__(self, market, candidates: list[RetestCandidate], regime=None, done: Optional[set[str]] = None) -> None:
+        self.market = market
+        self.cands = {c.code: c for c in candidates}
+        self.regime = regime
+        self.done: set[str] = set(done or ())
+        self.skip: set[str] = set()          # 시가가 이미 돌파선 위 → 오늘은 안 봄
+
+    def check(self, now: datetime, value_top=None) -> list:
+        from kiwoom_trading.screener.intraday_signals import Signal
+        if not self.cands or not (WATCH_START <= now.time() <= WATCH_END):
+            return []
+        if self.regime is None or not self.regime.strong_up:
+            return []
+        out = []
+        for code, c in self.cands.items():
+            if code in self.done or code in self.skip:
+                continue
+            try:
+                q = self.market.quote(code, integrated=False)
+            except Exception:
+                logging.warning("저항 돌파: %s 시세 조회 실패", code)
+                continue
+            if not q:
+                continue
+            if q.open > c.resistance:
+                self.skip.add(code)
+                logging.info("저항 돌파: %s 시가 %s 가 이미 돌파선 %s 위 → 안 삼", c.name, q.open, c.resistance)
+                continue
+            if q.price <= c.resistance:
+                continue
+            self.done.add(code)
+            ts = now.replace(second=0, microsecond=0, tzinfo=None)
+            reason = (f"🧱 저항 재시험 후보가 강한 상승장 날 돌파선 {c.resistance:,.0f} 돌파 (전날 대금 {c.value_mult:.1f}배, "
+                      f"장대양봉 {c.big_bulls}개) — +{RETEST_TP:.0%} 익절 / −{RETEST_STOP:.0%} 손절, 못 닿으면 다음 날 09:00 매도 "
+                      f"(2년 강한 상승장 61건 +1.47%)")
+            out.append((code, c.name, RETEST_KIND, Signal(ts, RETEST_KIND, float(q.price), float(c.resistance),
+                                                          float(q.price) * (1 - RETEST_STOP), reason)))
+        return out

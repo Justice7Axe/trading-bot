@@ -50,6 +50,7 @@ from kiwoom_trading.screener.early_nine import KIND as NINE_KIND
 from kiwoom_trading.screener.hamburger_watch import KIND as BURGER_KIND
 from kiwoom_trading.screener.inverse_gap import KIND as INVERSE_KIND
 from kiwoom_trading.screener.contra_close import KIND as CONTRA_KIND
+from kiwoom_trading.screener.resistance_retest import RETEST_KIND, RETEST_TP
 from kiwoom_trading.screener.market_regime import BIGCAP_MAX_WHEN_DOWN, CHECKS, CONSERVATIVE_LOSS_LIMIT, UP_ONLY_KINDS, WINDOW_MIN
 from kiwoom_trading.screener.leader_shape import KIND as LEADER_KIND, big_red_exit
 from kiwoom_trading.screener.pullback_breakout import KIND as PULLBACK_KIND, exit_reason as pullback_exit
@@ -200,6 +201,8 @@ def exit_check(mode: str, buy_price: float, stop: float, peak: float, price: flo
         stop = max(stop, peak * (1 - TRAIL_GAP))
     if mode == "목표" and price >= buy_price * (1 + BIGCAP_TARGET):
         return stop, peak, f"목표 +{BIGCAP_TARGET:.0%}"
+    if mode == "다음날" and price >= buy_price * (1 + RETEST_TP):     # 🧱 저항 돌파: +7% 익절, 못 닿으면 다음 날 09:00
+        return stop, peak, f"익절 +{RETEST_TP:.0%}"
     if price <= stop:
         trailing = mode == "추적" and stop > buy_price * (1 - STRONG_STOP) + 1e-9
         return stop, peak, ("고점 대비 -3%" if trailing else "손절")
@@ -311,7 +314,7 @@ class PaperTrader:
                    flow: dict[tuple[str, datetime], tuple[float, Optional[float]]]) -> None:
         for code, name, source, s in items:
             mult = (flow.get((code, s.ts)) or (None, None))[1]
-            mode = "보유" if s.kind == INVERSE_KIND else "목표" if s.kind in (BIGCAP_KIND, BURGER_KIND) else "차트" if s.kind in (LEADER_KIND, NINE_KIND) else "눌림" if s.kind == PULLBACK_KIND else "추적" if mult is not None and mult >= STRONG_FLOW else "기본"
+            mode = "다음날" if s.kind == RETEST_KIND else "보유" if s.kind == INVERSE_KIND else "목표" if s.kind in (BIGCAP_KIND, BURGER_KIND) else "차트" if s.kind in (LEADER_KIND, NINE_KIND) else "눌림" if s.kind == PULLBACK_KIND else "추적" if mult is not None and mult >= STRONG_FLOW else "기본"
             t = Trade(f"{s.ts:%Y%m%d}-{code}-{s.ts:%H%M}-{s.kind}", self.today, code, name, s.kind, source, s.ts, s.price,
                       mult, mode, "skipped", stop=s.stop)
             if any(x.id == t.id for x in self.trades):
@@ -413,7 +416,7 @@ class PaperTrader:
         t.status, t.buy_ts, t.peak = "ordered", now.replace(tzinfo=None), float(price)
         self.last_price[t.code] = price
         how = (f"손절 -{STRONG_STOP:.0%}, +{TRAIL_START:.0%} 뒤 고점 -{TRAIL_GAP:.0%} (평소 {t.flow_mult:.1f}배)"
-               if t.mode == "추적" else "손절 없음, 15:19 정리" if not s.stop else f"손절 {s.stop:,.0f}원 ({s.stop / price - 1:+.1%})")
+               if t.mode == "추적" else f"+{RETEST_TP:.0%} 익절 / 손절 {s.stop:,.0f}원, 못 닿으면 다음 날 09:00 매도" if t.mode == "다음날" else "손절 없음, 15:19 정리" if not s.stop else f"손절 {s.stop:,.0f}원 ({s.stop / price - 1:+.1%})")
         logging.info("모의 매수 주문 %s %s주 (주문 %s)", t.name, t.qty, t.buy_order_no)
         self.notify(f"🟢 모의 매수 {t.name}({t.code}) {t.qty}주 × 약 {price:,}원 = {t.qty * price / 1e4:,.0f}만 원\n"
                     f"  [{t.kind} {s.ts:%H:%M}] {how} — {t.source}"
@@ -443,13 +446,15 @@ class PaperTrader:
     def _watch(self, now: datetime, t: Trade, sess: str) -> None:
         tm = now.time()
         if t.date < self.today or t.mode == "이월":
-            return self._sell(now, t, "전날 남은 물량 정리")
+            return self._sell(now, t, "다음 날 시초 매도" if t.mode == "다음날" else "전날 남은 물량 정리")
         if t.virtual:
             bought = session(t.buy_ts.time())
             if bought != sess or tm >= {"pre": PRE[2], "after": AFTER[2]}[sess]:
                 return self._sell(now, t, "가상 시간 끝 정리")
-        elif tm >= LIQUIDATE_AT:
+        elif tm >= LIQUIDATE_AT and t.mode != "다음날":     # '다음날' 은 15:19 에 팔지 않고 들고 넘어간다
             return self._sell(now, t, "장 마감 정리")
+        elif tm >= LIQUIDATE_AT:
+            return
         q = self.market.quote(t.code, integrated=t.virtual)
         if not q:
             return
