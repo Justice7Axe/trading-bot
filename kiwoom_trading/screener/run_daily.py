@@ -28,6 +28,7 @@ from kiwoom_trading.screener.engine import Screener
 from kiwoom_trading.screener.bigcap_flow import evaluate as evaluate_bigcap_flow, summary as bigcap_flow_summary
 from kiwoom_trading.screener.gate_flow import evaluate as evaluate_gate_flow, summary as gate_flow_summary
 from kiwoom_trading.screener.market_data import KiwoomMarket
+from kiwoom_trading.screener.resistance_retest import find_retest, format_retest
 from kiwoom_trading.screener.store import ScreenerStore
 
 
@@ -40,6 +41,11 @@ def build_daily_report(save: bool = True, as_of: Optional[date] = None) -> str:
     try:
         today = as_of or conn.execute("SELECT max(date) FROM daily_ohlcv").fetchone()[0]
         rest_leaders = find_rest_leaders(conn, today)     # ① 쉬어 가는 주도주 (+3% 미만이라 아래 판정에서 빠지는 종목)
+        try:
+            retest = find_retest(conn, today)              # 🧱 저항 재시험(지투지바이오형) — 알림용
+        except Exception:
+            logging.exception("저항 재시험 후보 찾기 실패")
+            retest = []
     finally:
         conn.close()
 
@@ -96,6 +102,7 @@ def build_daily_report(save: bool = True, as_of: Optional[date] = None) -> str:
         if near:
             lines += ["", "── 아깝게 탈락 ──", "\n\n".join(format_evaluation(e) for e in near)]
     lines += ["", format_rest_leaders(rest_leaders)]
+    lines += ["", format_retest(retest)]
     if carried:
         lines.append("계속 감시 (이전 쉬는 주도주): " + ", ".join(f"{name}(D+{k})" for _, (name, k) in carried.items()))
     if gate_summary:
