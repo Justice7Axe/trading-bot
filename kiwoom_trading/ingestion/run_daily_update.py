@@ -6,6 +6,7 @@
 - 마지막 저장일 다음 날부터 오늘까지 채운다 (PC가 꺼져 있어 며칠 밀려도 자동 보충).
 - 종목 마스터(신규 상장/상장폐지/상장주식수)도 함께 갱신된다.
 - 외국인·기관 등 투자자별 순매수(그날 확정치, ka10066)를 investor_daily 에 저장.
+- 코스피·코스닥·코스피200 지수 일봉·1분봉을 data/index.duckdb 에 저장 (index_collector).
 - DuckDB가 다른 프로그램(DuckDB UI, DBeaver 등)에 잠겨 있으면 5분 간격으로 재시도.
 - 완료 후 65기법 일일 리포트(오늘 포착/매수 대기/보유 중/오늘 청산)와 주도주 스크리너 다음날 관심 종목을
   텔레그램으로 전송, 실패 시 실패 알림 전송.
@@ -87,6 +88,15 @@ def main() -> int:
         update_today()
     except Exception:
         logging.exception("투자자 수급 저장 실패")
+
+    # 코스피·코스닥·코스피200 지수 일봉·1분봉 → data/index.duckdb (분석·검증용, 1분봉은 키움이 1년치만 줘서 매일 이어 받음)
+    try:
+        from kiwoom_trading.ingestion.collectors.daily_backfill import build_client
+        from kiwoom_trading.ingestion.collectors.index_collector import update_index
+
+        update_index(build_client())
+    except Exception:
+        logging.exception("지수 저장 실패")
 
     if not args.no_telegram:
         try:
