@@ -51,6 +51,7 @@ from kiwoom_trading.screener.resistance_retest import RETEST_KIND, RetestWatcher
 from kiwoom_trading.screener.regime_plays import (BLOCK_KIND, NEWHIGH_KIND, UP_KIND, BlockedHighWatcher, NewHighWatcher, UpOpenWatcher,
                                                   load_block_candidates, load_newhigh_candidates)
 from kiwoom_trading.screener.trend_hold import KIND as TREND_KIND, TrendHoldWatcher, load_trend_picks, ma_breaks
+from kiwoom_trading.screener.small_account import SmallAccount
 from kiwoom_trading.screener.market_regime import MarketRegime
 from kiwoom_trading.screener.surge_groups import SurgeGroups
 from kiwoom_trading.screener.leader_shape import KIND as LEADER_KIND, LeaderShapeWatcher
@@ -343,8 +344,13 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
              up: Optional[UpOpenWatcher] = None, block: Optional[BlockedHighWatcher] = None, newhigh: Optional[NewHighWatcher] = None, trend: Optional[TrendHoldWatcher] = None,
              surges: Optional[SurgeGroups] = None, burger: Optional[HamburgerWatcher] = None,
              weak_inv: Optional[WeakInverseWatcher] = None, rebreak: Optional[ClosingRebreakWatcher] = None,
-             danswer: Optional[DanswerCloseWatcher] = None) -> int:
+             danswer: Optional[DanswerCloseWatcher] = None, small: Optional[SmallAccount] = None) -> int:
     now = datetime.now(KST)
+    if small is not None:
+        try:
+            small.tick(now)            # 💰 10만 원 가상 계좌: 손절·익절·다음 날 09:00 매도, 15:40 마감 요약
+        except Exception:
+            logging.exception("10만 원 계좌 확인 실패")
     if trader is not None:
         try:
             trader.tick(now, force=True)
@@ -436,6 +442,11 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
                     send_telegram_message(_tag(format_signals(now, rest, flow)))
             if trader is not None:
                 trader.on_signals(now, signals, flow)
+            if small is not None:
+                try:
+                    small.on_signals(now, signals)
+                except Exception:
+                    logging.exception("10만 원 계좌 매수 실패")
     return len(new)
 
 
@@ -555,6 +566,13 @@ def main() -> int:
         logging.exception("저항 재시험 후보 준비 실패")
     if trader is not None:
         trader.regime = regime
+    small: Optional[SmallAccount] = None
+    if not args.once:
+        try:   # 💰 10만 원 가상 계좌 (⑥·②·⑤ 먼저 온 신호에 전액, 주문 없음)
+            small = SmallAccount(store, market, now.date(), notify=None if args.no_telegram else send_telegram_message)
+            logging.info("10만 원 계좌: 잔고 %s원, 보유 %s", f"{small.cash():,.0f}", small.open_trade()[3] if small.open_trade() else "없음")
+        except Exception:
+            logging.exception("10만 원 계좌 준비 실패")
 
     def send_summary() -> None:
         messages = build_summary(store, now.date(), board, market)
@@ -584,7 +602,7 @@ def main() -> int:
                         logging.info("오늘 데이터가 없음(휴장일로 판단, 기준일 %s) → 종료", probe[0].as_of)
                         break
                 run_once(screener, market, store, telegram=not args.no_telegram, watcher=watcher, early=early, investors=investors,
-                         themes=themes, board=board, trader=trader, leader=leader, pullback=pullback, nine=nine, bigcap=bigcap, regime=regime, inverse=inverse, contra=contra, retest=retest, up=up, block=block, newhigh=newhigh, trend=trend, surges=surges, burger=burger, weak_inv=weak_inv, rebreak=rebreak, danswer=danswer)
+                         themes=themes, board=board, trader=trader, leader=leader, pullback=pullback, nine=nine, bigcap=bigcap, regime=regime, inverse=inverse, contra=contra, retest=retest, up=up, block=block, newhigh=newhigh, trend=trend, surges=surges, burger=burger, weak_inv=weak_inv, rebreak=rebreak, danswer=danswer, small=small)
             except Exception:
                 logging.exception("스캔 실패 (다음 주기에 재시도)")
             if args.once:
