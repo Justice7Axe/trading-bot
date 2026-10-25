@@ -365,7 +365,7 @@ class PaperTrader:
             return "눌림 돌파는 알림만 — 1년 어떤 조건에서도 손실 (2026-10-24)"
         if t.kind == DANSWER_KIND:
             return ("[디앤서] 종가 체크리스트는 알림만 — 1년 계좌 백테스트에서 넣으면 손해 "
-                    "(①~⑥+🌙 5,048만 → +🧭 4,779만, 🌙 자리까지 막음; 보완 뒤 다시 켬, 2026-10-25)")
+                    "(1️⃣~6️⃣+🌙 5,048만 → +🧭 4,779만, 🌙 자리까지 막음; 보완 뒤 다시 켬, 2026-10-25)")
         if t.kind in UP_ONLY_KINDS and not t.virtual and not (self.regime is not None and self.regime.strong_up):
             return "강한 상승장 아님 — 이 차트 신호는 강한 상승장에만 삼"
         if t.kind == LEADER_KIND and not t.virtual:
@@ -423,9 +423,9 @@ class PaperTrader:
             cash = self.mock.cash() if not t.virtual else t.qty * price
             used = self._trend_used()
             if t.kind == TREND_KIND and used + t.qty * price > TREND_POOL:
-                reason = f"⑦ 몫 {TREND_POOL / 1e4:,.0f}만 원 중 {used / 1e4:,.0f}만 원 사용 중 — {t.qty * price / 1e4:,.0f}만 원 더 못 삼"
+                reason = f"7️⃣ 몫 {TREND_POOL / 1e4:,.0f}만 원 중 {used / 1e4:,.0f}만 원 사용 중 — {t.qty * price / 1e4:,.0f}만 원 더 못 삼"
             elif t.kind != TREND_KIND and not t.virtual and cash - max(0, TREND_POOL - used) < t.qty * price:
-                reason = (f"주문 가능 금액 부족 ({cash:,}원 중 ⑦ 몫 {max(0, TREND_POOL - used):,.0f}원은 남겨 둠 < {t.qty * price:,}원)")
+                reason = (f"주문 가능 금액 부족 ({cash:,}원 중 7️⃣ 몫 {max(0, TREND_POOL - used):,.0f}원은 남겨 둠 < {t.qty * price:,}원)")
             elif cash < t.qty * price:
                 reason = f"주문 가능 금액 부족 ({cash:,}원 < {t.qty * price:,}원)"
         if reason:

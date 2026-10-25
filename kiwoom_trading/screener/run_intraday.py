@@ -53,6 +53,7 @@ from kiwoom_trading.screener.regime_plays import (BLOCK_KIND, NEWHIGH_KIND, UP_K
 from kiwoom_trading.screener.trend_hold import KIND as TREND_KIND, TrendHoldWatcher, load_trend_picks, ma_breaks
 from kiwoom_trading.screener.small_account import SmallAccount
 from kiwoom_trading.screener import real_inverse
+from kiwoom_trading.screener.playbook_card import build_card
 from kiwoom_trading.screener.jeonhwang_account import JeonhwangAccount, load_jh_context
 from kiwoom_trading.screener.market_regime import MarketRegime
 from kiwoom_trading.screener.surge_groups import SurgeGroups
@@ -352,11 +353,11 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
              up: Optional[UpOpenWatcher] = None, block: Optional[BlockedHighWatcher] = None, newhigh: Optional[NewHighWatcher] = None, trend: Optional[TrendHoldWatcher] = None,
              surges: Optional[SurgeGroups] = None, burger: Optional[HamburgerWatcher] = None,
              weak_inv: Optional[WeakInverseWatcher] = None, rebreak: Optional[ClosingRebreakWatcher] = None,
-             danswer: Optional[DanswerCloseWatcher] = None, small: Optional[SmallAccount] = None, real: Optional["real_inverse.RealInverseTrader"] = None,
+             danswer: Optional[DanswerCloseWatcher] = None, small: Optional[SmallAccount] = None, real: Optional["real_inverse.RealTrader"] = None,
              jh: Optional[JeonhwangAccount] = None) -> int:
     now = datetime.now(KST)
     if real is not None:
-        real.tick(now)                 # 🔴 실전 ⑤ 인버스: 체결 확인·익절/손절·다음 날 09:00 매도 (자체 예외 처리)
+        real.tick(now)                 # 🔴 실전 매매(6️⃣2️⃣5️⃣): 체결 확인·익절/손절·다음 날 09:00 매도 (자체 예외 처리)
     if small is not None:
         try:
             small.tick(now)            # 💰 10만 원 가상 계좌: 손절·익절·다음 날 09:00 매도, 15:40 마감 요약
@@ -588,16 +589,25 @@ def main() -> int:
         logging.exception("저항 재시험 후보 준비 실패")
     if trader is not None:
         trader.regime = regime
-    real: Optional[real_inverse.RealInverseTrader] = None
-    if not args.once and real_inverse.enabled():
-        try:   # 🔴 실전 ⑤ 약세장 인버스 (.env.local KIWOOM_REAL_TRADING=inverse 일 때만)
-            real = real_inverse.RealInverseTrader(real_inverse.build_real_client(), market, store, now.date(),
-                                                  notify=None if args.no_telegram else send_telegram_message)
-            logging.info("실전 ⑤ 인버스 켜짐: 시드+손익 %s원, 진행 중 %s", f"{real_inverse.SEED + real.realized():,.0f}", real.active())
-            if not args.no_telegram:
-                send_telegram_message("🔴 실전 ⑤ 약세장 인버스 켜짐 — 하락 흐름 보통 날 09:11 TIGER 인버스 실계좌 매수 (시드 10만 원, '멈춰'로 스캐너를 끄면 매도 감시도 멈춤)")
+    real: Optional[real_inverse.RealTrader] = None
+    real_mode = real_inverse.mode()
+    if not args.once and real_mode:
+        try:   # 🔴 실전 매매 (.env.local KIWOOM_REAL_TRADING=combo → 6️⃣2️⃣5️⃣, inverse → 5️⃣ 만)
+            kinds = None if real_mode == "combo" else (real_inverse.WEAK_KIND,)
+            real = real_inverse.RealTrader(real_inverse.build_real_client(), market, store, now.date(),
+                                           notify=None if args.no_telegram else send_telegram_message, kinds=kinds)
+            logging.info("실전 매매 켜짐(%s): 시드+손익 %s원, 진행 중 %s", real_mode, f"{real_inverse.SEED + real.realized():,.0f}", real.active())
         except Exception:
-            logging.exception("실전 ⑤ 인버스 준비 실패")
+            logging.exception("실전 매매 준비 실패")
+            real_mode = ""
+    if not args.once and not args.no_telegram:
+        try:   # 📋 매일 아침 오늘의 매매표 (2026-10-25 사용자, 하루 한 번)
+            store.conn.execute("CREATE TABLE IF NOT EXISTS playbook_sent (date DATE PRIMARY KEY)")
+            if not store.conn.execute("SELECT count(*) FROM playbook_sent WHERE date = ?", [now.date()]).fetchone()[0]:
+                send_telegram_message(build_card(now.date(), regime.trend_text(), real_mode if real is not None else ""))
+                store.conn.execute("INSERT INTO playbook_sent VALUES (?)", [now.date()])
+        except Exception:
+            logging.exception("매매표 전송 실패")
     small: Optional[SmallAccount] = None
     if not args.once:
         try:   # 💰 10만 원 가상 계좌 (⑥·②·⑤ 먼저 온 신호에 전액, 주문 없음)

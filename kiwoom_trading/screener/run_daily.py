@@ -64,7 +64,7 @@ def build_daily_report(save: bool = True, as_of: Optional[date] = None) -> str:
                 logging.exception("대형주 수급 평가 실패")
             finally:
                 store.close()
-        lines = [f"🧱 매매표 ② 저항 돌파 — 다음 거래일 대상 (기준 {today})", "", format_retest(retest)]
+        lines = [f"🧱 매매표 2️⃣ 저항 돌파 — 다음 거래일 대상 (기준 {today})", "", format_retest(retest)]
         if bigcap_summary:
             lines += ["", bigcap_summary]
         return "\n".join(lines)
