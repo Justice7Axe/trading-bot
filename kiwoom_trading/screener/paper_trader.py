@@ -364,8 +364,8 @@ class PaperTrader:
         if t.kind == PULLBACK_KIND:
             return "눌림 돌파는 알림만 — 1년 어떤 조건에서도 손실 (2026-10-24)"
         if t.kind == DANSWER_KIND:
-            return ("[디앤서] 종가 체크리스트는 알림만 — 1년 계좌 백테스트에서 넣으면 손해 "
-                    "(1️⃣~6️⃣+🌙 5,048만 → +🧭 4,779만, 🌙 자리까지 막음; 보완 뒤 다시 켬, 2026-10-25)")
+            return ("[디앤서] 14:30 주도주 종가는 알림만 — 단독 1년 +0.96%/건이지만 6️⃣ 주도주 신고가와 같은 종목이 많아 "
+                    "계좌 보탬이 작음(+55만, 낙폭 +1.2%p) → 알림으로 쌓아 보고 결정 (2026-10-25)")
         if t.kind in UP_ONLY_KINDS and not t.virtual and not (self.regime is not None and self.regime.strong_up):
             return "강한 상승장 아님 — 이 차트 신호는 강한 상승장에만 삼"
         if t.kind == LEADER_KIND and not t.virtual:

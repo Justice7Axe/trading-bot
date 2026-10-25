@@ -117,6 +117,12 @@ def main() -> None:
                              f"{idx:,}", f"{len(remaining):,}", day, code, len(bars), rate, (len(remaining) - idx) / rate / 3600)
     finally:
         store.close()
+    # 2026-09-14 NXT 확대 뒤 일봉이 통합(애프터 포함) 값이라, 받은 1분봉으로 정규장 일봉을 따로 만든다 (data/daily_regular.duckdb)
+    try:
+        from kiwoom_trading.ingestion.collectors.daily_regular import build as build_regular
+        logging.info("정규장 일봉 %s건 새로 저장", build_regular())
+    except Exception:
+        logging.exception("정규장 일봉 만들기 실패 (다음 실행 때 다시)")
 
 
 if __name__ == "__main__":
