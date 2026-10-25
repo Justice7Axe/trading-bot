@@ -129,7 +129,9 @@ def main() -> int:
         logging.exception("감시 종목 1분봉 저장 실패")
 
     # 오늘 포착 종목 복기표 (포착 시점 이후 차트상 수익 여부) — 1분봉 저장 뒤에 실행
-    if not args.no_telegram:
+    # 장중 종목 찾기를 끈 동안(run_intraday.DISCOVERY = False, 2026-10-25)은 포착이 없으므로 보내지 않는다
+    from kiwoom_trading.screener.run_intraday import DISCOVERY
+    if not args.no_telegram and DISCOVERY:
         try:
             from kiwoom_trading.screener.capture_review import build_capture_review
 

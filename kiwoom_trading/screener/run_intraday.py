@@ -334,6 +334,12 @@ class EarlyRunner:
         return added
 
 
+# 종목 찾기 (⚡ 장중 포착·조기 발굴 🏁🚀🌅·🔥 특징주·🧩 테마 형성 → 감시 목록 → 🎯 지지 반등·돌파 후 눌림) 끔
+# (2026-10-25 사용자: "종목 찾기는 매매표의 각 매매 알고리즘과 무관하니 중단"). 매매표는 매매마다 종목을 따로 고르고,
+# 거래대금 상위 200 1분 수집·시장 분위기 판정·수급 기록은 그대로 돈다. 다시 켜려면 True.
+DISCOVERY = False
+
+
 def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, telegram: bool,
              watcher: Optional[SignalWatcher] = None, early: Optional[EarlyRunner] = None,
              investors: Optional[InvestorRecorder] = None, themes: Optional[ThemeRunner] = None,
@@ -397,14 +403,16 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
         except Exception:
             logging.exception("장중 수급 스냅샷 실패")
 
-    evaluations = screener.scan_intraday(search_1m, search_day, value_top)
-    passed = sorted((e for e in evaluations if e.passed(screener.config)), key=lambda e: -e.score)
-    already = store.detected_codes(screener.today, "intraday")
-    new = [e for e in passed if e.candidate.code not in already]
-    for e in passed:
-        store.save_detection(screener.today, "intraday", now, e)
-    logging.info("후보 %s → 통과 %s (신규 %s): %s", len(evaluations), len(passed), len(new),
-                 ", ".join(f"{e.candidate.name}{'*' if e in new else ''}" for e in passed))
+    passed, new = [], []
+    if DISCOVERY:
+        evaluations = screener.scan_intraday(search_1m, search_day, value_top)
+        passed = sorted((e for e in evaluations if e.passed(screener.config)), key=lambda e: -e.score)
+        already = store.detected_codes(screener.today, "intraday")
+        new = [e for e in passed if e.candidate.code not in already]
+        for e in passed:
+            store.save_detection(screener.today, "intraday", now, e)
+        logging.info("후보 %s → 통과 %s (신규 %s): %s", len(evaluations), len(passed), len(new),
+                     ", ".join(f"{e.candidate.name}{'*' if e in new else ''}" for e in passed))
     if new and telegram:
         body = "\n\n".join(format_evaluation(e) for e in new)
         send_telegram_message(_tag(f"⚡ 장중 포착 {now:%H:%M} ({len(new)}종목)\n\n{body}"))
@@ -477,10 +485,10 @@ def main() -> int:
     market = KiwoomMarket(client)
     screener = Screener(market, now.date())
     store = ScreenerStore()
-    watcher = SignalWatcher(client, store, now.date(), prev_close={c: h.last_close for c, h in screener.hist.items()},
+    watcher: Optional[SignalWatcher] = None if not DISCOVERY else SignalWatcher(client, store, now.date(), prev_close={c: h.last_close for c, h in screener.hist.items()},
                             avg_value={c: h.avg_value_20 for c, h in screener.hist.items() if h.avg_value_20},
                             quality=QualityConfig(allow_after=True))   # 애프터마켓 신호 → 모의투자 가상 체결
-    early = EarlyRunner(screener, watcher, store, now)
+    early: Optional[EarlyRunner] = EarlyRunner(screener, watcher, store, now) if DISCOVERY else None
     leader = LeaderShapeWatcher(client, now.date(), prev_close={c: h.last_close for c, h in screener.hist.items()},
                                 done={c for c, _, k in store.signal_keys(now.date()) if k == LEADER_KIND})
     pullback = PullbackWatcher(client, now.date(), prev_close={c: h.last_close for c, h in screener.hist.items()},
@@ -504,9 +512,9 @@ def main() -> int:
         logging.exception("햄버거 준비 실패 (나머지 신호만 실행)")
         burger = None
     board = PriceBoard()
-    investors = InvestorRecorder(on_snapshot=early.on_investor_snapshot)
+    investors = InvestorRecorder(on_snapshot=early.on_investor_snapshot if early is not None else None)
     try:
-        themes: Optional[ThemeRunner] = ThemeRunner(screener, watcher, store, now, board)
+        themes: Optional[ThemeRunner] = ThemeRunner(screener, watcher, store, now, board) if DISCOVERY else None
     except Exception:
         logging.exception("테마 특징주 트랙 준비 실패 (대형 주도주 트랙만 실행)")
         themes = None
