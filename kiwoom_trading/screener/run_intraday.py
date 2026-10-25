@@ -583,7 +583,7 @@ def main() -> int:
             trader.trend_exit = texit
         logging.info("주도주 추세: 매수 대상 %s종목 (%s 마감 기준) %s · 보유 %s종목 중 20일선 이탈 %s", len(tpicks), tday,
                      ", ".join(f"{p.name} {p.rank}위" for p in tpicks), len(held), ", ".join(texit) or "없음")
-        danswer = DanswerCloseWatcher(market, client, dctx, screener.hist.keys(), done=any(k == DANSWER_KIND for _, _, k in keys), notify=close_notify)   # 🧭 15:15 책 체크리스트 → 다음 날 09:00
+        danswer = DanswerCloseWatcher(market, client, dctx, screener.hist.keys(), done=any(k == DANSWER_KIND for _, _, k in keys), notify=close_notify)   # 🧭 14:30 주도주 종가 (알림만)
         logging.info("디앤서 종가 준비: 전날 대금 30위 %s종목, 250일 고가 %s종목", len(dctx.prev_top), len(dctx.hi250))
     except Exception:
         logging.exception("저항 재시험 후보 준비 실패")
