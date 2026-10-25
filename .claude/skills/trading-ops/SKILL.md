@@ -57,9 +57,10 @@ description: Ellie trading 운영 — 일일 일봉 업데이트/리포트 스�
 - 매도(체결가 기준, 1분마다): 6️⃣ 익절 없음 −4% / 2️⃣ +7% −5% / 5️⃣ +5% −3%, 못 닿으면 다음 날 09:00. 그날 신호로 받은 종목만 주문(`RealClient.allowed`), 팔 때는 이 매매로 산 수량만. `real_trades`, 🔴 텔레그램.
 - ⚠️ '멈춰'로 스캐너를 끄면 실전 손절·익절 감시도 멈춘다. 들고 넘어간 종목은 다음 날 스캐너가 09:00 에 판다(스캐너가 안 켜지면 안 팔림).
 
-## 📋 오늘의 매매표 (매일 아침)
-- 스캐너가 켜질 때 하루 한 번 시장 상황별 매매표 + 큰 흐름 + 계좌(실전·모의·💰) 를 텔레그램으로 먼저 보낸다 (`screener/playbook_card.py`, `playbook_sent` 표). 지금 한 번 보내기: `python -m kiwoom_trading.screener.playbook_card --send`.
-- 번호는 원 숫자(①②…) 대신 크게 보이는 1️⃣~7️⃣ (2026-10-25 사용자).
+## 📋 오늘의 트레이딩 전략 (매일 아침, 옛 이름 '매매표')
+- 스캐너가 켜질 때 하루 한 번 시장 상황별 트레이딩 전략 + 큰 흐름 + 계좌(실전·모의·💰) 를 텔레그램으로 먼저 보낸다 (`screener/playbook_card.py`, `playbook_sent` 표). 지금 한 번 보내기: `python -m kiwoom_trading.screener.playbook_card --send`.
+- 번호는 원 숫자(①②…) 대신 크게 보이는 1️⃣~7️⃣, 이름은 '매매표' 대신 '트레이딩 전략' (2026-10-25 사용자).
+- 1️⃣·6️⃣ 매도 문구는 '장중 익절 없이 다음 날 시가 매도 (−4% 손절)' — 1분봉 1년 비교에서 절반 익절·트레일링·전량 익절 모두 이보다 나빴다(6️⃣ +2.18% vs +0.3~2.0%).
 
 ## 모의투자 (키움 모의 서버)
 - 키는 `.env.local` 의 `KIWOOM_MOCK_APP_KEY`, `KIWOOM_MOCK_SECRET_KEY`, `KIWOOM_MOCK_BASE_URL=https://mockapi.kiwoom.com` 이다.

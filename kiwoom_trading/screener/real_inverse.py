@@ -224,7 +224,8 @@ class RealTrader:
                 self.conn.execute("""INSERT OR REPLACE INTO real_trades (id, date, code, name, kind, qty, buy_order_no, buy_ts, buy_price, status)
                                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ordered')""",
                                   [tid, self.today, code, name, s.kind, qty, no, now.replace(tzinfo=None), price])
-                how = (f"익절 +{tp:.0%} / " if tp else "익절 없음 / ") + f"손절 −{sl:.0%}, 못 닿으면 다음 날 09:00 매도"
+                how = (f"익절 +{tp:.0%} / 손절 −{sl:.0%}, 못 닿으면 다음 날 09:00 매도" if tp
+                       else f"장중 익절 없이 다음 날 09:00 시가 매도 (−{sl:.0%} 손절)")
                 self.notify(f"🔴 실전 매수 주문 {name}({code}) {qty}주 × 약 {price:,.0f}원 = {qty * price:,.0f}원 (주문 {no})\n"
                             f"  [{label} {s.ts:%H:%M}] {how}")
                 logging.info("실전 매수 주문 %s %s %s주 (주문 %s)", label, name, qty, no)
@@ -249,7 +250,7 @@ class RealTrader:
                 if px:
                     self._set(tid, buy_price=px, status="open")
                     self.notify(f"🔴 실전 매수 체결 {name} {qty}주 × {px:,.0f}원 [{label}] — 손절 {px * (1 - sl):,.0f}원"
-                                + (f" · 익절 {px * (1 + tp):,.0f}원" if tp else " · 익절 없음"))
+                                + (f" · 익절 {px * (1 + tp):,.0f}원" if tp else " · 장중 익절 없이 다음 날 09:00 시가 매도"))
                 return
             if status == "selling":
                 px = self.client.fill_price(sell_no, code)

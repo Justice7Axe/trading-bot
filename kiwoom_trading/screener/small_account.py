@@ -99,7 +99,7 @@ class SmallAccount:
             self.conn.execute("""INSERT OR REPLACE INTO small_trades (id, date, code, name, kind, buy_ts, buy_price, qty, stop, tp, status)
                                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')""",
                               [tid, self.today, code, name, s.kind, now.replace(tzinfo=None), price, qty, stop, tp])
-            how = (f"익절 +{tp:.0%} / " if tp else "익절 없음 / ") + (f"손절 {stop:,.0f}원 ({stop / price - 1:+.0%})" if stop else "손절 없음")
+            how = (f"익절 +{tp:.0%} / " if tp else "장중 익절 없이 다음 날 시가 매도 / ") + (f"손절 {stop:,.0f}원 ({stop / price - 1:+.0%})" if stop else "손절 없음")
             self.notify(f"💰 10만 원 계좌 매수 {name}({code}) {qty}주 × {price:,.0f}원 = {qty * price:,.0f}원 (잔고 {cash:,.0f}원)\n"
                         f"  [{s.kind} {s.ts:%H:%M}] {how}, 못 닿으면 다음 날 09:00 매도 (주문 없는 가상 기록)")
             logging.info("10만 원 계좌 매수 %s %s주 × %s", name, qty, price)
