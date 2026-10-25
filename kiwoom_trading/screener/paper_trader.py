@@ -54,7 +54,7 @@ from kiwoom_trading.screener.closing_rebreak import KIND as REBREAK_KIND
 from kiwoom_trading.screener.danswer_close import KIND as DANSWER_KIND
 from kiwoom_trading.screener.resistance_retest import RETEST_KIND, RETEST_TP
 from kiwoom_trading.screener.regime_plays import BLOCK_KIND, NEWHIGH_KIND, UP_BUDGET, UP_KIND, UP_TOP_N
-from kiwoom_trading.screener.trend_hold import BUDGET as TREND_BUDGET, KIND as TREND_KIND, MAX_HOLD as TREND_MAX
+from kiwoom_trading.screener.trend_hold import BUDGET as TREND_BUDGET, KIND as TREND_KIND, MAX_HOLD as TREND_MAX, TREND_POOL
 from kiwoom_trading.screener.market_regime import BIGCAP_MAX_WHEN_DOWN, CHECKS, CONSERVATIVE_LOSS_LIMIT, UP_ONLY_KINDS, WINDOW_MIN
 from kiwoom_trading.screener.leader_shape import KIND as LEADER_KIND, big_red_exit
 from kiwoom_trading.screener.pullback_breakout import KIND as PULLBACK_KIND, exit_reason as pullback_exit
@@ -418,7 +418,12 @@ class PaperTrader:
                 t.note = f"Nada 금액 {factor:g}배: {why}"
                 logging.info("모의 매수 금액 축소 %s: %s", t.name, t.note)
             cash = self.mock.cash() if not t.virtual else t.qty * price
-            if cash < t.qty * price:
+            used = self._trend_used()
+            if t.kind == TREND_KIND and used + t.qty * price > TREND_POOL:
+                reason = f"⑦ 몫 {TREND_POOL / 1e4:,.0f}만 원 중 {used / 1e4:,.0f}만 원 사용 중 — {t.qty * price / 1e4:,.0f}만 원 더 못 삼"
+            elif t.kind != TREND_KIND and not t.virtual and cash - max(0, TREND_POOL - used) < t.qty * price:
+                reason = (f"주문 가능 금액 부족 ({cash:,}원 중 ⑦ 몫 {max(0, TREND_POOL - used):,.0f}원은 남겨 둠 < {t.qty * price:,}원)")
+            elif cash < t.qty * price:
                 reason = f"주문 가능 금액 부족 ({cash:,}원 < {t.qty * price:,}원)"
         if reason:
             t.note = reason
@@ -640,6 +645,10 @@ class PaperTrader:
         """오늘 실현 + 평가 손익 (추정 비용 0.25% 차감)."""
         today = [t for t in self.trades if t.date == self.today and t.buy_price]
         return sum((net_pnl(t) or 0) if t.status == "closed" else (net_pnl(t, self.last_price.get(t.code)) or 0) for t in today)
+
+    def _trend_used(self) -> float:
+        """⑦ 주도주 추세로 들고 있는(주문 중 포함) 원금 합계."""
+        return sum((x.buy_price or x.signal_price or 0) * x.qty for x in self.active() if x.kind == TREND_KIND)
 
     def _nada_factor(self, t: Trade) -> tuple[float, str]:
         """Nada 손실 관리 → (매수 금액 배수, 이유). 드로다운 절반 × 오늘 손실 종목 재매수 절반."""
