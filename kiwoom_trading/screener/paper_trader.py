@@ -363,6 +363,9 @@ class PaperTrader:
             return f"하락 흐름 보통 날 ({r.trend_text()}) — 이 신호는 쉼 (저항 돌파·약세장 인버스만 삼)"
         if t.kind == PULLBACK_KIND:
             return "눌림 돌파는 알림만 — 1년 어떤 조건에서도 손실 (2026-10-24)"
+        if t.kind == DANSWER_KIND:
+            return ("[디앤서] 종가 체크리스트는 알림만 — 1년 계좌 백테스트에서 넣으면 손해 "
+                    "(①~⑥+🌙 5,048만 → +🧭 4,779만, 🌙 자리까지 막음; 보완 뒤 다시 켬, 2026-10-25)")
         if t.kind in UP_ONLY_KINDS and not t.virtual and not (self.regime is not None and self.regime.strong_up):
             return "강한 상승장 아님 — 이 차트 신호는 강한 상승장에만 삼"
         if t.kind == LEADER_KIND and not t.virtual:
