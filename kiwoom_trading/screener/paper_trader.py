@@ -50,6 +50,7 @@ from kiwoom_trading.screener.early_nine import KIND as NINE_KIND
 from kiwoom_trading.screener.hamburger_watch import KIND as BURGER_KIND
 from kiwoom_trading.screener.inverse_gap import KIND as INVERSE_KIND, WEAK_KIND, WEAK_TP
 from kiwoom_trading.screener.contra_close import KIND as CONTRA_KIND
+from kiwoom_trading.screener.closing_rebreak import KIND as REBREAK_KIND
 from kiwoom_trading.screener.resistance_retest import RETEST_KIND, RETEST_TP
 from kiwoom_trading.screener.regime_plays import BLOCK_KIND, UP_BUDGET, UP_KIND, UP_TOP_N
 from kiwoom_trading.screener.market_regime import BIGCAP_MAX_WHEN_DOWN, CHECKS, CONSERVATIVE_LOSS_LIMIT, UP_ONLY_KINDS, WINDOW_MIN
@@ -62,8 +63,9 @@ from kiwoom_trading.screener.store import ScreenerStore
 MOCK_BASE_URL = "https://mockapi.kiwoom.com"
 BUDGET_PER_STOCK = 1_000_000
 MAX_POSITIONS = 10            # 키움 제한이 아니라 우리 규칙. 모의 계좌 약 1천만 원 ÷ 종목당 100만 원 (2026-10-20, 10-19 복기: 5종목 한도로 신호 85건 건너뜀)
-NEXT_DAY_KINDS = (RETEST_KIND, UP_KIND, BLOCK_KIND, CONTRA_KIND, WEAK_KIND)   # '다음날' 매도: 익절가 / 손절가 / 다음 날 09:00 (2026-10-25 시장 상황별 매매표)
-NEXT_DAY_TP = {UP_KIND: None, WEAK_KIND: WEAK_TP}   # '다음날' 익절가 — 기본 +7%. 📈 상승장 장 초는 익절 없음, 약세장 인버스 +5% (2026-10-25)
+NEXT_DAY_KINDS = (RETEST_KIND, UP_KIND, BLOCK_KIND, CONTRA_KIND, WEAK_KIND, REBREAK_KIND)   # '다음날' 매도: 익절가 / 손절가 / 다음 날 09:00 (2026-10-25 시장 상황별 매매표)
+NEXT_DAY_TP = {UP_KIND: None, WEAK_KIND: WEAK_TP, REBREAK_KIND: None}   # '다음날' 익절가 — 기본 +7%. 📈 상승장 장 초·🌙 종가 재돌파는 익절 없음, 약세장 인버스 +5% (2026-10-25)
+OVERNIGHT_VIRTUAL = (REBREAK_KIND,)   # NXT 애프터장에 가상으로 사서 밤을 넘기는 신호 (모의 서버는 애프터장 주문 불가)
 KIND_BUDGET = {UP_KIND: UP_BUDGET}   # 📈 상승장 장 초: 종목당 25만 원, 보유 한도(10종목) 예외로 40종목까지 (2026-10-25 사용자)
 KIND_LIMIT = {PULLBACK_KIND: 2}  # 눌림 돌파는 장 초부터 자주 나와 자리를 차지 → 동시 2종목까지 (1년 −0.34%, 10-19 유일한 마이너스 −0.08%)
 DAILY_LOSS_LIMIT = 0.03
@@ -425,7 +427,9 @@ class PaperTrader:
             logging.info("가상 매수 %s %s주 × %s", t.name, t.qty, price)
             self.notify(f"🟣 가상 매수 {t.name}({t.code}) {t.qty}주 × {price:,}원 = {t.qty * price / 1e4:,.0f}만 원 "
                         f"(NXT {'프리장' if now.time() < SESSION_OPEN else '애프터장'}, 주문 없이 기록만)\n"
-                        f"  [{t.kind} {s.ts:%H:%M}] 손절 {t.stop:,.0f}원 ({t.stop / price - 1:+.1%}) — {t.source}"
+                        f"  [{t.kind} {s.ts:%H:%M}] "
+                        + (_next_day_how(NEXT_DAY_TP.get(t.kind, RETEST_TP), s.stop) if t.mode == "다음날"
+                           else f"손절 {t.stop:,.0f}원 ({t.stop / price - 1:+.1%})" if t.stop else "손절 없음") + f" — {t.source}"
                         + (f"\n  📏 {t.note}" if t.note else ""))
             return
         t.buy_order_no = self.mock.market_order("buy", t.code, t.qty)
@@ -462,8 +466,12 @@ class PaperTrader:
     def _watch(self, now: datetime, t: Trade, sess: str) -> None:
         tm = now.time()
         if t.date < self.today or t.mode == "이월":
+            if t.kind in OVERNIGHT_VIRTUAL and sess != "real":   # 🌙 애프터장 가상 매수는 다음 날 09:00 정규장 시세로 판다
+                return
             return self._sell(now, t, "다음 날 시초 매도" if t.mode == "다음날" else "전날 남은 물량 정리")
-        if t.virtual:
+        if t.virtual and t.kind in OVERNIGHT_VIRTUAL:
+            pass                                               # 19:50 에 정리하지 않고 밤을 넘겨 들고 간다
+        elif t.virtual:
             bought = session(t.buy_ts.time())
             if bought != sess or tm >= {"pre": PRE[2], "after": AFTER[2]}[sess]:
                 return self._sell(now, t, "가상 시간 끝 정리")

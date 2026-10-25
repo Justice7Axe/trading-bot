@@ -103,7 +103,7 @@ def format_signals(now: datetime, items: list[tuple[str, str, str, Signal]],
         after = " · 애프터마켓(NXT) — 모의투자는 가상 체결" if s.ts.time() >= time(15, 30) else ""
         lines.append(
             f"\n{name}({code}) [{s.kind}] {s.ts:%H:%M}봉{after}\n"
-            f"  진입 {s.price:,.0f} / 손절 {s.stop:,.0f} ({s.stop / s.price - 1:+.1%}) — {source}\n"
+            f"  진입 {s.price:,.0f} / " + (f"손절 {s.stop:,.0f} ({s.stop / s.price - 1:+.1%})" if s.stop else "손절 없음") + f" — {source}\n"
             f"  {s.reason}"
         )
         v5, mult = (flow or {}).get((code, s.ts), (None, None))
