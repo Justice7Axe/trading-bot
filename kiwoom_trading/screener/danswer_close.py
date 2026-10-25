@@ -130,7 +130,7 @@ class DanswerCloseWatcher:
         return out
 
     def format(self, now: datetime, found) -> str:
-        lines = [f"[디앤서] 🧭 종가 체크리스트 {now:%H:%M} ({len(found)}건) — 종가 무렵 모의 매수, 손절 없이 다음 날 09:00 매도 (1년 357건 +0.60%)"]
+        lines = [f"[디앤서] 🧭 종가 체크리스트 {now:%H:%M} ({len(found)}건) — 알림만 (모의 매수 멈춤: 계좌 백테스트에서 손해, 보완 중)"]
         for code, name, _, s in found:
             lines.append(f"\n{name}({code}) {self.info.get(code, '')}\n  진입 {s.price:,.0f} / 손절 없음")
         if self.why:
