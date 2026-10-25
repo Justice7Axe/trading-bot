@@ -16,13 +16,13 @@
 import logging
 from dataclasses import dataclass
 from datetime import date, datetime, time
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Optional
 
 from kiwoom_trading.ingestion.collectors.daily_backfill import _to_int
 from kiwoom_trading.screener.intraday_signals import Signal
 from kiwoom_trading.screener.market_data import RankItem
 
-KIND = "디앤서 종가"
+KIND = "[디앤서] 종가 체크리스트"   # [디앤서] 접두사로 매매 기법을 바로 알 수 있게 (2026-10-25 사용자)
 START, END = time(15, 15), time(15, 18)
 TOP_N = 10
 PREV_TOP = 30
@@ -60,10 +60,14 @@ def ma15(client, code: str) -> Optional[float]:
 
 
 class DanswerCloseWatcher:
-    def __init__(self, market, client, ctx: Optional[DanswerContext], stock_codes: Iterable[str], done: bool = False) -> None:
+    def __init__(self, market, client, ctx: Optional[DanswerContext], stock_codes: Iterable[str], done: bool = False,
+                 notify: Optional[Callable[[str], object]] = None) -> None:
         self.market, self.client, self.ctx = market, client, ctx
         self.stocks = set(stock_codes)
         self.checked = done or ctx is None
+        self.notify = notify
+        self.info: dict[str, str] = {}      # 텔레그램 한 줄 요약
+        self.why: list[str] = []            # 빠진 종목과 이유
 
     def check(self, now: datetime, value_top: list[RankItem]) -> list[tuple[str, str, str, Signal]]:
         if self.checked or not (START <= now.time() <= END):
@@ -109,10 +113,26 @@ class DanswerCloseWatcher:
                 why.append(f"{i.name}({', '.join(miss)})")
                 continue
             both = f is not None and n is not None and f > 0 and n > 0
+            self.info[i.code] = (f"{'★양매수 · ' if both else ''}대금 {i.rank}위 {i.change_rate:+.1%} · 같은 업종 {', '.join(mates[:2])} · "
+                                 f"250일 고가 {i.price / hi:.0%} · 15분봉 120선 위")
             flow = "자료 없음" if f is None or n is None else f"외인 {f / 1e8:+,.0f}억 · 기관 {n / 1e8:+,.0f}억"
             reason = (f"{'★양매수 ' if both else ''}대금 {i.rank}위 {i.change_rate:+.1%}, 전날도 대금 30위, 같은 업종 {', '.join(mates[:3])}, "
                       f"250일 고가의 {i.price / hi:.0%}, 15분봉 120선 {ma:,.0f} 위, 장중 잠정 {flow}. "
                       f"종가 무렵 매수 → 손절 없이 다음 날 09:00 매도 (1년 357건 +0.60%, 앞 +0.30 / 뒤 +1.22)")
             out.append((i.code, i.name, KIND, Signal(ts, KIND, float(i.price), float(i.price), 0.0, reason)))
         logging.info("디앤서 종가 %s: %s종목 %s / 빠짐: %s", f"{now:%H:%M}", len(out), ", ".join(n for _, n, _, _ in out), "; ".join(why))
+        self.why = why
+        if not out and self.notify:
+            text = f"[디앤서] 🧭 종가 체크리스트 {now:%H:%M} — 오늘 해당 없음 (대금 10위 상승 {len(why)}종목 모두 미달)"
+            for w in why[:10]:
+                text += "\n  " + w
+            self.notify(text)
         return out
+
+    def format(self, now: datetime, found) -> str:
+        lines = [f"[디앤서] 🧭 종가 체크리스트 {now:%H:%M} ({len(found)}건) — 종가 무렵 모의 매수, 손절 없이 다음 날 09:00 매도 (1년 357건 +0.60%)"]
+        for code, name, _, s in found:
+            lines.append(f"\n{name}({code}) {self.info.get(code, '')}\n  진입 {s.price:,.0f} / 손절 없음")
+        if self.why:
+            lines.append("\n빠짐: " + "; ".join(self.why[:6]))
+        return "\n".join(lines)
