@@ -70,7 +70,7 @@ description: Ellie trading 운영 — 일일 일봉 업데이트/리포트 스�
 - 모의 계좌 시작 자금은 1,000만 원이다. `MockClient` 는 주소에 `mockapi` 가 없으면 만들지 않는다(실계좌 주문 방지).
 - 장중 스캐너가 자동으로 매매한다(정규장 실주문, NXT 프리·애프터장 가상 체결, 15:40·19:55 리포트). `--once` 나 `--no-paper` 로 실행하면 주문하지 않는다. 규칙은 `buy-signals` 스킬 5장에 있다.
 - 점검: `python -m kiwoom_trading.screener.paper_trader --status`(잔고), `--report [YYYYMMDD]`(리포트 미리보기)
-- 모의 계좌와 따로 도는 **가상 계좌**(주문 없음, screener.duckdb 에 기록): 💰 10만 원 계좌 `small_account.py`(small_trades), 📘 [전황] 1천만 계좌 `jeonhwang_account.py`(jh_trades·jh_days, 11:00 매수·다음 날 09:00 매도, 코스피 1구간 날만 — 스킬 jeonhwang 0장).
+- 모의 계좌와 따로 도는 **가상 계좌**(주문 없음, screener.duckdb 에 기록): 💰 10만 원 계좌 `small_account.py`(small_trades), 📒 [디앤서] 관심종목 2-2-2·🛡️ 하락일 헤지주 `danswer_watch.py`(danswer_watch, 15:15 헤지주 알림·15:35 관심종목+전날 결과 — 스킬 danswer 10장), 📘 [전황] 1천만 계좌 `jeonhwang_account.py`(jh_trades·jh_days, 11:00 매수·다음 날 09:00 매도, 코스피 1구간 날만 — 스킬 jeonhwang 0장).
 - 키움 API 메모:
   - kt10000 매수, kt10001 매도(`trde_tp` 3 = 시장가, `dmst_stex_tp` KRX)
   - kt00018 잔고(`acnt_evlt_remn_indv_tot`), kt00001 예수금(`ord_alow_amt`), ka10076 체결(`cntr`), ka10075 미체결(`oso`)
