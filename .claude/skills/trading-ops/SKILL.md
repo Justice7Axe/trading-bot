@@ -49,6 +49,13 @@ description: Ellie trading 운영 — 일일 일봉 업데이트/리포트 스�
 - 오래 도는 수집·백필에는 `prevent_sleep_until_exit()` 를 건다. 2026-10-14 새벽 절전으로 수집이 멈춘 적이 있다.
 - 종목코드 접미사: `_AL` 통합, `_NX` NXT, 없으면 KRX. 호출 간격 0.25초.
 
+## 🔴 실전 매매 (키움 실계좌, 2026-10-26 부터) — `screener/real_inverse.py`
+- 사용자 2026-10-25: "10만 원 시드로 권장안(⑤ 약세장 인버스) 실전 매매, 내일 시초에 물려 있던 종목 모두 손절 매도하고 시작".
+- 켜기: `.env.local` `KIWOOM_REAL_TRADING=inverse` (지우거나 다른 값이면 주문 안 함). 실전 키(`KIWOOM_APP_KEY`, api.kiwoom.com)가 실계좌에 묶여 있다 (2026-10-25 조회: 주문 가능 639원, KODEX 삼성전자SK하이닉스채권혼합50 3주).
+- 한 번 전체 정리: `KIWOOM_REAL_LIQUIDATE_DATE=2026-10-26` → 그날 09:00 첫 확인 때 계좌 보유 종목을 모두 시장가 매도(`real_liquidations` 기록). 끝나면 이 줄은 지워도 된다.
+- 매매: ⑤ 신호(하락 흐름 보통 날 09:11~09:16)에 TIGER 인버스(123310)만 시장가 매수, 금액 = min(10만 + 실현 손익, 주문 가능 금액, 20만 상한). +5% 익절 / −3% 손절(1분마다), 못 닿으면 다음 날 09:00. 팔 때는 이 매매로 산 수량만. `real_trades` 표, 🔴 텔레그램.
+- ⚠️ '멈춰'로 스캐너를 끄면 실전 손절·익절 감시도 멈춘다 — 보유 중이면 직접 정리하거나 다시 켤 것. 장 마감 뒤 들고 넘어간 인버스는 다음 날 스캐너가 09:00 에 판다(스캐너가 안 켜지면 안 팔림).
+
 ## 모의투자 (키움 모의 서버)
 - 키는 `.env.local` 의 `KIWOOM_MOCK_APP_KEY`, `KIWOOM_MOCK_SECRET_KEY`, `KIWOOM_MOCK_BASE_URL=https://mockapi.kiwoom.com` 이다.
   - 실전 키(`KIWOOM_APP_KEY`)와 따로 둔다. `chapter_0/1/config.py` 의 옛 모의 키는 만료됐다(8001).
