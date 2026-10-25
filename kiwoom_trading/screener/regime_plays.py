@@ -2,12 +2,12 @@
 
 | 시장 상황 (09:10 판정) | 매매 |
 |---|---|
-| 강한 상승장 | ① 📈 상승장 장 초 (이 모듈 UpOpenWatcher) + ② 🎯 저항 돌파 |
-| 상승 흐름 보통 날 | ③ 🎯 막힌 고점 돌파 (이 모듈 BlockedHighWatcher) + ② |
+| 강한 상승장 | ① 📈 상승장 장 초 (이 모듈 UpOpenWatcher) + ② 🎯 저항 돌파 + ③ + ⑥ |
+| 상승 흐름 보통 날 | ③ 🎯 막힌 고점 돌파 (이 모듈 BlockedHighWatcher) + ② + ⑥ 🏆 주도주 신고가 (이 모듈 NewHighWatcher) |
 | 하락 흐름 보통 날 | ② + ⑤ 🎯 약세장 인버스 (inverse_gap.WeakInverseWatcher) |
 | 강한 하락장 | ② + ④ 🌙 역행 강세 종가 |
 매도는 모두 paper_trader '다음날' 방식: 익절가 / 손절가 즉시 / 둘 다 아니면 15:19 에 팔지 않고 다음 날 09:00.
-익절가는 +7% 가 기본이고, ① 은 익절 없음, ⑤ 는 +5% (paper_trader.NEXT_DAY_TP).
+익절가는 +7% 가 기본이고, ①·⑥ 은 익절 없음, ⑤ 는 +5% (paper_trader.NEXT_DAY_TP).
 
 ① 📈 상승장 장 초 — 10-16 사용자 주도주 9종목 모양(강한 상승장 날 장 초 전일 고가 돌파한 대형주).
    09:10 판정에서 강한 상승장이면 그 즉시 한 번: KRX 대금 상위 주식 순서 40위 안, 현재가 > 시가 → 매수.
@@ -24,6 +24,20 @@
    09:10 판정 전에 난 돌파는 판정 뒤 조건이 맞으면 산다. 손절 −3%, 강한 상승장 날은 −5%
    (2026-10-25, 스크래치 u_res_cb.py: 강한 상승장 42일 461건 +7/−3 +0.67% → +7/−5 +0.92%, 앞·뒤 +).
    근거 (스크래치 resbo2.py / open_plan.py, 1분봉 1년 상승 흐름 보통 날 103일): 바로 매수 1,298건 +7/−3 +0.44% (+0.14R, 앞 +0.60 / 뒤 +0.04).
+
+⑥ 🏆 주도주 신고가 — 2026-10-25 사용자: "6/18 SK하이닉스처럼 시장 주도주·지수 관련주·신고가를 노리는 핫한 종목은
+   보통 상승 추세 날이라도 적극 매매해야 한다". 강한 상승장·상승 흐름 보통 날, 전 거래일 대금 상위 200 주식 중
+   그 시점 KRX 대금 상위 주식 순서 10위 안이고 현재가 > 52주 고가(전날까지 250거래일):
+     A 시가 ≤ 52주 고가 → 장중 신고가 돌파, 09:10~11:00 에 매수 (판정 전 돌파는 09:10 판정 뒤)
+     B 시가 > 52주 고가 (신고가 위 출발) → 09:10 판정 때 현재가 > 시가면 매수 (6/18 하이닉스형)
+   매도: 익절 없음 · 손절 −4% · 못 닿으면 다음 날 09:00 (사용자 선택: 당일 정리보다 다음 날 시가).
+   종목당 하루 1번, 종목당 100만 원(보유 한도 10종목 안).
+   근거 (스크래치 np_build.py / np_an*.py / compound2.py, 1분봉 1년 전날 대금 상위 200, 216 조합 중):
+     상승 흐름 보통 날 A·B 330건 +1.82% (앞 +1.63 / 뒤 +2.23), 당일 15:19 정리는 +0.56%. 강한 상승장 85건 +3.04%.
+     대금 순위 1~3 +2.24% · 4~10 +1.44 · 11~20 +0.75 · 41↑ +0.11 (단조). A 11시 뒤 매수는 0 안팎 → 11:00 까지.
+     약한 날은 손실 (하락 흐름 보통 날 −1.81%, 강한 하락장 −0.52%). 지금 ③ 과 36% 겹침, 안 겹치는 210건 +1.95%.
+     지금 매매표 복리(시작 1천만, 건당 시드 10%): 3,471만 → 4,554만, 최대 낙폭 11.4% → 10.5%.
+     SK하이닉스 6/18: B, 09:10 2,616,000 → 6/19 09:00 2,824,000 (+7.70%).
 """
 import logging
 from dataclasses import dataclass
@@ -45,6 +59,11 @@ BLOCK_STOP_UP = 0.05             # 강한 상승장 날
 BLOCK_END = time(9, 30)
 BLOCK_CHASE = 0.03
 BLOCK_VALUE = 0.10
+
+NEWHIGH_KIND = "주도주 신고가"
+NEWHIGH_TOP_N = 10
+NEWHIGH_STOP = 0.04              # 익절 없음 (paper_trader.NEXT_DAY_TP)
+NEWHIGH_END = time(11, 0)
 
 
 class UpOpenWatcher:
@@ -175,4 +194,70 @@ class BlockedHighWatcher:
                       + ("(1년 강한 상승장 날 +7/−5 +0.92%)" if up else "(1년 상승 흐름 보통 날 +0.44%)"))
             name = next((i.name for i in value_top if i.code == code), code)
             out.append((code, name, BLOCK_KIND, Signal(ts, BLOCK_KIND, float(price), float(c.R), float(price) * (1 - stop), reason)))
+        return out
+
+
+def load_newhigh_candidates(conn, today: date) -> dict[str, float]:
+    """전 거래일 대금 상위 200 주식 → 52주 고가 (전 거래일까지 250거래일 고가 최고, 수정주가)."""
+    dates = [d for (d,) in conn.execute("SELECT DISTINCT date FROM daily_ohlcv WHERE code='005930' AND date < ? ORDER BY date DESC LIMIT 250",
+                                        [today]).fetchall()]
+    if len(dates) < 120:
+        return {}
+    prev = dates[0]
+    codes = [c for (c,) in conn.execute("""SELECT d.code FROM daily_ohlcv d JOIN stocks s USING(code) WHERE d.date = ? AND d.value IS NOT NULL
+                                           QUALIFY rank() OVER (ORDER BY d.value DESC) <= 200""", [prev]).fetchall()]
+    if not codes:
+        return {}
+    ph = ",".join("?" * len(codes))
+    return {c: float(h) for c, h in conn.execute(f"""SELECT code, max(high) FROM daily_ohlcv WHERE date >= ? AND date <= ? AND code IN ({ph})
+                                                    GROUP BY code""", [dates[-1], prev, *codes]).fetchall() if h}
+
+
+class NewHighWatcher:
+    """⑥ 🏆 주도주 신고가 — 강한 상승장·상승 흐름 보통 날, 대금 상위 10위 주식이 52주 신고가 위면 매수 (A 장중 돌파 / B 신고가 위 출발)."""
+
+    def __init__(self, market, cands: dict[str, float], stock_codes, regime=None, done: Optional[set[str]] = None) -> None:
+        self.market = market
+        self.hi52 = cands
+        self.stocks = set(stock_codes)
+        self.regime = regime
+        self.done: set[str] = set(done or ())
+
+    def _day_ok(self) -> Optional[bool]:
+        r = self.regime
+        if r is None:
+            return False
+        if not (r.strong_up or r.strong_down or UP_DECIDE in r.done):
+            return None                                  # 아직 판정 전
+        return not r.strong_down and (r.strong_up or not r.trend_weak)
+
+    def check(self, now: datetime, value_top) -> list:
+        if not self.hi52 or not (UP_DECIDE <= now.time() <= NEWHIGH_END) or not self._day_ok():
+            return []
+        ranked = sorted((i for i in value_top if i.code in self.stocks), key=lambda i: i.rank)[:NEWHIGH_TOP_N]
+        ts = now.replace(second=0, microsecond=0, tzinfo=None)
+        out = []
+        for n, i in enumerate(ranked, 1):
+            hi = self.hi52.get(i.code)
+            if i.code in self.done or not hi or not i.price or i.price <= hi:
+                continue
+            try:
+                q = self.market.quote(i.code, integrated=False)
+            except Exception:
+                logging.warning("주도주 신고가: %s 시세 조회 실패", i.code)
+                continue
+            if not q or q.price <= hi:
+                continue
+            gap_over = q.open > hi
+            self.done.add(i.code)
+            if gap_over and (now.time() > UP_DEADLINE or q.price <= q.open):
+                continue                                 # 신고가 위 출발은 09:10 판정 때 시가 위인 종목만
+            how = (f"시가 {q.open:,}원부터 52주 고가 {hi:,.0f} 위 출발, 시가 대비 {q.price / q.open - 1:+.1%}" if gap_over
+                   else f"52주 고가 {hi:,.0f} 돌파 (시가 {q.open:,})")
+            reason = (f"{how}, 대금 {n}위 — 익절 없음 / −{NEWHIGH_STOP:.0%} 손절, 못 닿으면 다음 날 09:00 "
+                      f"(1년 상승 흐름 보통 날 +1.82%, 강한 상승장 +3.04%)")
+            out.append((i.code, q.name or i.name, NEWHIGH_KIND,
+                        Signal(ts, NEWHIGH_KIND, float(q.price), float(hi), float(q.price) * (1 - NEWHIGH_STOP), reason)))
+        if out:
+            logging.info("주도주 신고가: %s", ", ".join(f"{c} {s.price:,.0f}" for c, _, _, s in out))
         return out
