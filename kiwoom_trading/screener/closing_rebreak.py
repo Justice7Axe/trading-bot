@@ -18,26 +18,31 @@
 """
 import logging
 from datetime import datetime, time
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Optional
 
 from kiwoom_trading.screener.intraday_signals import Signal
 from kiwoom_trading.screener.market_data import KiwoomMarket, RankItem
 
-KIND = "종가 재돌파"
+KIND = "[디앤서] 종가 재돌파"   # 어떤 매매 기법인지 알림·기록에서 바로 보이게 [디앤서] 접두사 (2026-10-25 사용자)
 FREEZE_AT = time(15, 35)          # KRX 종가 동시호가(15:30) 뒤 대금 순위·종가가 굳는 때
 START, END = time(17, 0), time(18, 0)    # 영상: 17시 이후 진입 / 18시까지 종가를 못 되찾으면 안 산다 (보완 2026-10-25)
+SUMMARY_UNTIL = time(18, 10)              # 18시 정리 알림 (재시작으로 늦게 켜지면 안 보냄)
 PRE17 = time(16, 55)                      # 17시 직전 애프터 가격 확인 → ★
 TOP_N = 10
 LIMIT_UP = 0.295
 
 
 class ClosingRebreakWatcher:
-    def __init__(self, market: KiwoomMarket, stock_codes: Iterable[str], done: Iterable[str] = ()) -> None:
+    def __init__(self, market: KiwoomMarket, stock_codes: Iterable[str], done: Iterable[str] = (),
+                 notify: Optional[Callable[[str], object]] = None) -> None:
         self.market = market
         self.stocks = set(stock_codes)
         self.done = set(done)
         self.cands: Optional[list[RankItem]] = None
         self.pre17: dict[str, int] = {}
+        self.notify = notify
+        self.info: dict[str, str] = {}          # 텔레그램 한 줄 요약
+        self.summarized = False
 
     def check(self, now: datetime, value_top: list[RankItem]) -> list[tuple[str, str, str, Signal]]:
         tm = now.time()
@@ -55,6 +60,17 @@ class ClosingRebreakWatcher:
                             self.pre17[i.code] = q.price
                     except Exception:
                         logging.warning("종가 재돌파 17시 전 시세 조회 실패 %s", i.code)
+        if self.cands and END <= tm < SUMMARY_UNTIL and not self.summarized:
+            self.summarized = True
+            bought = [i.name for i in self.cands if i.code in self.done]
+            missed = [f"{i.name} 종가 {i.price:,}" for i in self.cands if i.code not in self.done]
+            if self.notify:
+                text = f"[디앤서] 🌙 종가 재돌파 18:00 정리 — 후보 {len(self.cands)}종목 중 {len(bought)}종목 매수"
+                if bought:
+                    text += "\n  산 종목: " + ", ".join(bought)
+                if missed:
+                    text += "\n  18시까지 종가 못 되찾음(안 삼): " + ", ".join(missed)
+                self.notify(text)
         if not self.cands or not (START <= tm < END):
             return []
         ts = now.replace(second=0, microsecond=0, tzinfo=None)
@@ -71,8 +87,16 @@ class ClosingRebreakWatcher:
                 continue
             self.done.add(i.code)
             star = self.pre17.get(i.code, 0) > i.price
+            self.info[i.code] = (f"{'★17시 전부터 종가 위 · ' if star else ''}대금 {i.rank}위 {i.change_rate:+.1%} · "
+                                 f"종가 {i.price:,} → {q.price:,} ({q.price / i.price - 1:+.1%})")
             reason = (f"{'★17시 전부터 종가 위 ' if star else ''}정규장 대금 {i.rank}위 · {i.change_rate:+.1%} 마감, 17시 이후 애프터마켓 {q.price:,}원이 정규장 종가 {i.price:,}원 위 "
                       f"({q.price / i.price - 1:+.1%}). 손절 없이 다음 날 09:00 매도 "
                       f"(1년 18시 전 진입 554건 +0.79%, 앞 +0.47 / 뒤 +1.07{', ★ 349건 +0.89%' if star else ''} · 애프터마켓이라 가상 체결)")
             out.append((i.code, i.name, KIND, Signal(ts, KIND, float(q.price), float(i.price), 0.0, reason)))
         return out
+
+    def format(self, now: datetime, found) -> str:
+        lines = [f"[디앤서] 🌙 종가 재돌파 {now:%H:%M} ({len(found)}건) — 애프터장 가상 매수, 손절 없이 다음 날 09:00 매도 (1년 554건 +0.79%)"]
+        for code, name, _, s in found:
+            lines.append(f"\n{name}({code}) {self.info.get(code, '')}")
+        return "\n".join(lines)
