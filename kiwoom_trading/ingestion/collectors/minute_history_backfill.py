@@ -1,6 +1,6 @@
 """햄버거 검증용 과거 1분봉 백필 (키움 ka10080, 통합 AL) → data/minute_history.duckdb 의 minute_ohlcv.
 
-    python -m kiwoom_trading.ingestion.collectors.minute_history_backfill                 # 최근 1년, 날짜별 대금 상위 200
+    python -m kiwoom_trading.ingestion.collectors.minute_history_backfill                 # 최근 1년, 날짜별 대금 상위 500
     python -m kiwoom_trading.ingestion.collectors.minute_history_backfill --top 50 --since 2026-09-01
     python -m kiwoom_trading.ingestion.collectors.minute_history_backfill --dry-run       # 대상 건수만
 
@@ -78,7 +78,7 @@ def wait_if_market_hours() -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="햄버거 검증용 과거 1분봉 백필 (통합 AL)")
-    parser.add_argument("--top", type=int, default=200, help="날짜별 거래대금 상위 N (기본 200)")
+    parser.add_argument("--top", type=int, default=500, help="날짜별 거래대금 상위 N (기본 500 — 2026-10-25 사용자: 1분봉은 1년치만 받을 수 있어 넓게 모아 둠, 그 전 200)")
     parser.add_argument("--since", default=None, help="YYYY-MM-DD (기본: 오늘 - 365일)")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
