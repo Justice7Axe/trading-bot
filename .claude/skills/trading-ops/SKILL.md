@@ -9,7 +9,7 @@ description: Ellie trading 운영 — 일일 일봉 업데이트/리포트 스�
 | 작업 | 시각 | 내용 |
 |---|---|---|
 | `EllieTrading_ScreenerIntraday` | 07:50 시작, 08:00~20:00 (제한 13시간) | 1분마다 거래대금 상위 200 저장(`rank_snapshots` value_krx)·시장 분위기 판정·매매표 신호·모의투자·💰 10만 원 계좌. **종목 찾기(⚡ 장중 포착·조기 발굴 🏁🚀🌅·🔥🧩 테마·감시 목록 🎯 차트 신호)는 2026-10-25 부터 끔** (`run_intraday.DISCOVERY = False`, 사용자: "수익 나는 종목·타이밍을 못 찾았으니 버리고 매매표 각 매매가 종목을 고른다"). 20:00 📋 포착 복기도 안 보냄 |
-| `EllieTrading_DailyUpdate` | 20:00 | 일봉 업데이트 → 투자자 수급(ka10066) → 지수 일봉·1분봉(data/index.duckdb) → 65기법 리포트 → 🔭 다음 거래일 관심 종목 + 😴 쉬는 주도주 → 감시 종목 1분봉 저장(🎯 신호·모의투자 종목 포함) → 📋 포착 복기표 → 📈 모의투자 타점 차트 HTML(`data/reports/paper_chart_YYYYMMDD.html`, 텔레그램 파일 전송) |
+| `EllieTrading_DailyUpdate` | 20:00 | 일봉 업데이트 → 투자자 수급(ka10066) → 지수 일봉·1분봉(data/index.duckdb) → 65기법 리포트 → 🧱 매매표 ② 저항 돌파 다음 거래일 대상 (🔭 관심 종목·😴 쉬는 주도주는 2026-10-25 종목 찾기 중단으로 뺌, `run_intraday.DISCOVERY`) → 감시 종목 1분봉 저장(🎯 신호·모의투자 종목 포함) → 📋 포착 복기표 → 📈 모의투자 타점 차트 HTML(`data/reports/paper_chart_YYYYMMDD.html`, 텔레그램 파일 전송) |
 
 - 등록 스크립트: `scripts/register_daily_update_task.ps1`, `scripts/register_screener_task.ps1` (UTF-8 BOM)
 - 로그: `data/logs/daily_update_YYYYMMDD.log`, `data/logs/screener_YYYYMMDD.log`

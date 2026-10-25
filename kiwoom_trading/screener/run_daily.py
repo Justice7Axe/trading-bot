@@ -50,6 +50,24 @@ def build_daily_report(save: bool = True, as_of: Optional[date] = None) -> str:
         conn.close()
 
     market = KiwoomMarket(build_client())
+    from kiwoom_trading.screener.run_intraday import DISCOVERY
+    if not DISCOVERY:
+        # 종목 찾기를 끈 동안(2026-10-25 사용자 '1번'): 🔭 다음 거래일 관심 종목·😴 쉬는 주도주·조기 주도주 관문×수급은 빼고
+        # 매매표에 쓰는 🧱 저항 재시험 후보(② 저항 돌파 대상)와 대형주 수급 누적 검증만 보낸다.
+        bigcap_summary = ""
+        if save:
+            store = ScreenerStore()
+            try:
+                evaluate_bigcap_flow(store, market.client, today)
+                bigcap_summary = bigcap_flow_summary(store)
+            except Exception:
+                logging.exception("대형주 수급 평가 실패")
+            finally:
+                store.close()
+        lines = [f"🧱 매매표 ② 저항 돌파 — 다음 거래일 대상 (기준 {today})", "", format_retest(retest)]
+        if bigcap_summary:
+            lines += ["", bigcap_summary]
+        return "\n".join(lines)
     search_day = market.search_rank("4")
     # 조회 순위는 '현재' 기준만 제공 → 일봉 마지막 거래일과 같은 날 데이터일 때만 사용
     if search_day and search_day[0].as_of and search_day[0].as_of != today.strftime("%Y%m%d"):
