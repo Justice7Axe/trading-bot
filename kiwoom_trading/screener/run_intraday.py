@@ -382,7 +382,7 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
             logging.exception("전황 계좌 확인 실패")
     if dwatch is not None:
         try:
-            dwatch.tick(now, value_top)    # 📒 디앤서 관심종목 2-2-2 (15:35) · 🛡️ 하락일 헤지주 (15:15) — 기록·알림만
+            dwatch.tick(now, value_top, search_day)    # 📒 디앤서 관심종목 2-2-2 (조회 누적·대금 20위, 14:30 미리 보기·15:35 기록) · 🛡️ 15:15 헤지주
         except Exception:
             logging.exception("디앤서 관심종목 실패")
     if regime is not None:
@@ -633,7 +633,8 @@ def main() -> int:
     if not args.once:
         try:   # 📒 [디앤서] 관심종목 2-2-2 · 🛡️ 하락장 헤지주 (2026-10-26 사용자, 주문 없음)
             dwatch = DanswerWatch(store, market, client, now.date(), screener.names, screener.sectors, regime=regime,
-                                  notify=None if args.no_telegram else (lambda text: send_telegram_message(_tag(text))))
+                                  notify=None if args.no_telegram else (lambda text: send_telegram_message(_tag(text))),
+                                  theme_map=screener.theme_map, theme_names=store.theme_names())
         except Exception:
             logging.exception("디앤서 관심종목 준비 실패")
 
