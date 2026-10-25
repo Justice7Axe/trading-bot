@@ -52,6 +52,7 @@ from kiwoom_trading.screener.regime_plays import (BLOCK_KIND, NEWHIGH_KIND, UP_K
                                                   load_block_candidates, load_newhigh_candidates)
 from kiwoom_trading.screener.trend_hold import KIND as TREND_KIND, TrendHoldWatcher, load_trend_picks, ma_breaks
 from kiwoom_trading.screener.small_account import SmallAccount
+from kiwoom_trading.screener.jeonhwang_account import JeonhwangAccount, load_jh_context
 from kiwoom_trading.screener.market_regime import MarketRegime
 from kiwoom_trading.screener.surge_groups import SurgeGroups
 from kiwoom_trading.screener.leader_shape import KIND as LEADER_KIND, LeaderShapeWatcher
@@ -344,7 +345,8 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
              up: Optional[UpOpenWatcher] = None, block: Optional[BlockedHighWatcher] = None, newhigh: Optional[NewHighWatcher] = None, trend: Optional[TrendHoldWatcher] = None,
              surges: Optional[SurgeGroups] = None, burger: Optional[HamburgerWatcher] = None,
              weak_inv: Optional[WeakInverseWatcher] = None, rebreak: Optional[ClosingRebreakWatcher] = None,
-             danswer: Optional[DanswerCloseWatcher] = None, small: Optional[SmallAccount] = None) -> int:
+             danswer: Optional[DanswerCloseWatcher] = None, small: Optional[SmallAccount] = None,
+             jh: Optional[JeonhwangAccount] = None) -> int:
     now = datetime.now(KST)
     if small is not None:
         try:
@@ -362,6 +364,11 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
     store.save_ranks(now, "search_1m", search_1m)
     store.save_ranks(now, "search_day", search_day)
     store.save_ranks(now, "value_krx", value_top)
+    if jh is not None:
+        try:
+            jh.tick(now, value_top)    # 📘 전황 1천만 가상 계좌: 11:00 주도주 매수, 손절·다음 날 09:00 매도, 15:40 요약
+        except Exception:
+            logging.exception("전황 계좌 확인 실패")
     if regime is not None:
         try:
             regime.update(now, value_top)    # 강한 하락장 판정 (09:10~10:00) — 판정되면 모의투자가 보수적으로 산다
@@ -530,6 +537,7 @@ def main() -> int:
     newhigh: Optional[NewHighWatcher] = None
     trend: Optional[TrendHoldWatcher] = None
     danswer: Optional[DanswerCloseWatcher] = None
+    jctx = None
     keys = store.signal_keys(now.date())
     up = UpOpenWatcher(market, screener.hist.keys(), regime=regime, done=any(k == UP_KIND for _, _, k in keys))
     weak_inv = WeakInverseWatcher(market, regime=regime, done=any(k == WEAK_KIND for _, _, k in keys))
@@ -546,6 +554,7 @@ def main() -> int:
             held = [t.code for t in trader.active() if t.kind == TREND_KIND and t.date < now.date()] if trader is not None else []
             texit = ma_breaks(dconn, held, now.date()) if held else {}
             dctx = load_danswer_context(dconn, now.date())
+            jctx = load_jh_context(dconn, now.date())
         finally:
             dconn.close()
         retest = RetestWatcher(market, cands, regime=regime,
@@ -573,6 +582,14 @@ def main() -> int:
             logging.info("10만 원 계좌: 잔고 %s원, 보유 %s", f"{small.cash():,.0f}", small.open_trade()[3] if small.open_trade() else "없음")
         except Exception:
             logging.exception("10만 원 계좌 준비 실패")
+    jh: Optional[JeonhwangAccount] = None
+    if not args.once and jctx is not None:
+        try:   # 📘 전황 11시 주도주 1천만 가상 계좌 (모의 계좌와 현금 따로, 주문 없음)
+            jh = JeonhwangAccount(store, market, now.date(), jctx, notify=None if args.no_telegram else send_telegram_message)
+            logging.info("전황 계좌: 잔고 %s원, 코스피 %s구간 (%s 마감), 대상 %s종목 %s", f"{jh.cash():,.0f}", jctx.zone, jctx.day,
+                         len(jctx.targets), ", ".join(t.name for t in jctx.targets[:15]))
+        except Exception:
+            logging.exception("전황 계좌 준비 실패")
 
     def send_summary() -> None:
         messages = build_summary(store, now.date(), board, market)
@@ -602,7 +619,7 @@ def main() -> int:
                         logging.info("오늘 데이터가 없음(휴장일로 판단, 기준일 %s) → 종료", probe[0].as_of)
                         break
                 run_once(screener, market, store, telegram=not args.no_telegram, watcher=watcher, early=early, investors=investors,
-                         themes=themes, board=board, trader=trader, leader=leader, pullback=pullback, nine=nine, bigcap=bigcap, regime=regime, inverse=inverse, contra=contra, retest=retest, up=up, block=block, newhigh=newhigh, trend=trend, surges=surges, burger=burger, weak_inv=weak_inv, rebreak=rebreak, danswer=danswer, small=small)
+                         themes=themes, board=board, trader=trader, leader=leader, pullback=pullback, nine=nine, bigcap=bigcap, regime=regime, inverse=inverse, contra=contra, retest=retest, up=up, block=block, newhigh=newhigh, trend=trend, surges=surges, burger=burger, weak_inv=weak_inv, rebreak=rebreak, danswer=danswer, small=small, jh=jh)
             except Exception:
                 logging.exception("스캔 실패 (다음 주기에 재시도)")
             if args.once:
