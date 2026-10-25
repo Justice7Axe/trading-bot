@@ -1,5 +1,5 @@
-"""📋 오늘의 매매표 — 매일 아침 스캐너가 켜질 때 텔레그램으로 먼저 보내는 시장 상황별 매매 전략표
-(2026-10-25 사용자: "매일 아침 스캔 돌 때 매매표를 우선 띄워줘", 번호는 원 숫자 대신 크게 보이는 1️⃣~7️⃣).
+"""📋 오늘의 트레이딩 전략 — 매일 아침 스캐너가 켜질 때 텔레그램으로 먼저 보내는 시장 상황별 매매 전략표
+(2026-10-25 사용자: "매일 아침 스캔 돌 때 매매표를 우선 띄워줘", 번호는 원 숫자 대신 크게 보이는 1️⃣~7️⃣, 이름은 '매매표' → '트레이딩 전략').
 
     .venv\\Scripts\\python.exe -m kiwoom_trading.screener.playbook_card --send     # 지금 한 번 보내기 (시험)
 """
@@ -12,14 +12,14 @@ from typing import Optional
 if __package__ is None or __package__ == "":
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-TABLE = """📋 오늘의 매매표 — 시장 상황별 매매 ({day:%m-%d})
+TABLE = """📋 오늘의 트레이딩 전략 — 시장 상황별 ({day:%m-%d})
 09:10 시장 판정(코스피 ±1σ · 대금 상위 중앙값) 뒤 그날 상황에 맞는 매매만 산다.
 {trend}
 
 🟢 강한 상승장
-  1️⃣ 상승장 장 초 — 09:10 대금 40위 시가 위 · 익절 없음 −4%
+  1️⃣ 상승장 장 초 — 09:10 대금 40위 시가 위 · 장중 익절 없이 다음 날 시가 매도 (−4% 손절)
   3️⃣ 막힌 고점 돌파 — 5일 고가 09:30 전 돌파 · +7% −5%
-  6️⃣ 주도주 신고가 — 대금 10위 & 52주 신고가 · 익절 없음 −4%
+  6️⃣ 주도주 신고가 — 대금 10위 & 52주 신고가 · 장중 익절 없이 다음 날 시가 매도 (−4% 손절)
   2️⃣ 저항 돌파 — 🧱 후보 돌파 · +7% −5%
 🔵 상승 흐름 보통 날
   3️⃣ 막힌 고점 돌파 (+7% −3%) · 6️⃣ 주도주 신고가 · 2️⃣ 저항 돌파
@@ -34,7 +34,7 @@ TABLE = """📋 오늘의 매매표 — 시장 상황별 매매 ({day:%m-%d})
 
 💼 계좌
   🔴 실전: {real}
-  🧪 모의(1천만): 위 매매표 그대로 · 💰 10만 원 가상: 6️⃣→2️⃣→5️⃣ 먼저 온 신호에 전액"""
+  🧪 모의(1천만): 위 트레이딩 전략 그대로 · 💰 10만 원 가상: 6️⃣→2️⃣→5️⃣ 먼저 온 신호에 전액"""
 
 
 def build_card(day: date, trend_text: Optional[str] = None, real_mode: str = "") -> str:
@@ -48,7 +48,7 @@ def main() -> None:
     from kiwoom_trading.common.config import KST
     from datetime import datetime
     from kiwoom_trading.screener import real_inverse
-    parser = argparse.ArgumentParser(description="오늘의 매매표")
+    parser = argparse.ArgumentParser(description="오늘의 트레이딩 전략")
     parser.add_argument("--send", action="store_true")
     args = parser.parse_args()
     today = datetime.now(KST).date()

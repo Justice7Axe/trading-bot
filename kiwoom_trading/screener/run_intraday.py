@@ -601,13 +601,13 @@ def main() -> int:
             logging.exception("실전 매매 준비 실패")
             real_mode = ""
     if not args.once and not args.no_telegram:
-        try:   # 📋 매일 아침 오늘의 매매표 (2026-10-25 사용자, 하루 한 번)
+        try:   # 📋 매일 아침 오늘의 트레이딩 전략 (2026-10-25 사용자, 하루 한 번)
             store.conn.execute("CREATE TABLE IF NOT EXISTS playbook_sent (date DATE PRIMARY KEY)")
             if not store.conn.execute("SELECT count(*) FROM playbook_sent WHERE date = ?", [now.date()]).fetchone()[0]:
                 send_telegram_message(build_card(now.date(), regime.trend_text(), real_mode if real is not None else ""))
                 store.conn.execute("INSERT INTO playbook_sent VALUES (?)", [now.date()])
         except Exception:
-            logging.exception("매매표 전송 실패")
+            logging.exception("트레이딩 전략 전송 실패")
     small: Optional[SmallAccount] = None
     if not args.once:
         try:   # 💰 10만 원 가상 계좌 (⑥·②·⑤ 먼저 온 신호에 전액, 주문 없음)
