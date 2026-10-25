@@ -46,6 +46,7 @@ from kiwoom_trading.screener.early_nine import KIND as NINE_KIND, EarlyNineWatch
 from kiwoom_trading.screener.inverse_gap import KIND as INVERSE_KIND, WEAK_KIND, InverseGapWatcher, WeakInverseWatcher
 from kiwoom_trading.screener.contra_close import KIND as CONTRA_KIND, ContraCloseWatcher
 from kiwoom_trading.screener.closing_rebreak import KIND as REBREAK_KIND, ClosingRebreakWatcher
+from kiwoom_trading.screener.danswer_watch import DanswerWatch
 from kiwoom_trading.screener.danswer_close import KIND as DANSWER_KIND, DanswerCloseWatcher, load_danswer_context
 from kiwoom_trading.screener.resistance_retest import RETEST_KIND, RetestWatcher, find_retest
 from kiwoom_trading.screener.regime_plays import (BLOCK_KIND, NEWHIGH_KIND, UP_KIND, BlockedHighWatcher, NewHighWatcher, UpOpenWatcher,
@@ -354,7 +355,7 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
              surges: Optional[SurgeGroups] = None, burger: Optional[HamburgerWatcher] = None,
              weak_inv: Optional[WeakInverseWatcher] = None, rebreak: Optional[ClosingRebreakWatcher] = None,
              danswer: Optional[DanswerCloseWatcher] = None, small: Optional[SmallAccount] = None, real: Optional["real_inverse.RealTrader"] = None,
-             jh: Optional[JeonhwangAccount] = None) -> int:
+             jh: Optional[JeonhwangAccount] = None, dwatch: Optional[DanswerWatch] = None) -> int:
     now = datetime.now(KST)
     if real is not None:
         real.tick(now)                 # 🔴 실전 매매(6️⃣2️⃣5️⃣): 체결 확인·익절/손절·다음 날 09:00 매도 (자체 예외 처리)
@@ -379,6 +380,11 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
             jh.tick(now, value_top)    # 📘 전황 1천만 가상 계좌: 11:00 주도주 매수, 손절·다음 날 09:00 매도, 15:40 요약
         except Exception:
             logging.exception("전황 계좌 확인 실패")
+    if dwatch is not None:
+        try:
+            dwatch.tick(now, value_top)    # 📒 디앤서 관심종목 2-2-2 (15:35) · 🛡️ 하락일 헤지주 (15:15) — 기록·알림만
+        except Exception:
+            logging.exception("디앤서 관심종목 실패")
     if regime is not None:
         try:
             regime.update(now, value_top)    # 강한 하락장 판정 (09:10~10:00) — 판정되면 모의투자가 보수적으로 산다
@@ -584,7 +590,7 @@ def main() -> int:
         logging.info("주도주 추세: 매수 대상 %s종목 (%s 마감 기준) %s · 보유 %s종목 중 20일선 이탈 %s", len(tpicks), tday,
                      ", ".join(f"{p.name} {p.rank}위" for p in tpicks), len(held), ", ".join(texit) or "없음")
         danswer = DanswerCloseWatcher(market, client, dctx, screener.hist.keys(), done=any(k == DANSWER_KIND for _, _, k in keys), notify=close_notify)   # 🧭 14:30 주도주 종가 (알림만)
-        logging.info("디앤서 종가 준비: 전날 대금 30위 %s종목, 250일 고가 %s종목", len(dctx.prev_top), len(dctx.hi250))
+        logging.info("디앤서 종가 준비: 250일 고가 %s종목", len(dctx.hi250))
     except Exception:
         logging.exception("저항 재시험 후보 준비 실패")
     if trader is not None:
@@ -623,6 +629,13 @@ def main() -> int:
                          len(jctx.targets), ", ".join(t.name for t in jctx.targets[:15]))
         except Exception:
             logging.exception("전황 계좌 준비 실패")
+    dwatch: Optional[DanswerWatch] = None
+    if not args.once:
+        try:   # 📒 [디앤서] 관심종목 2-2-2 · 🛡️ 하락장 헤지주 (2026-10-26 사용자, 주문 없음)
+            dwatch = DanswerWatch(store, market, client, now.date(), screener.names, screener.sectors, regime=regime,
+                                  notify=None if args.no_telegram else (lambda text: send_telegram_message(_tag(text))))
+        except Exception:
+            logging.exception("디앤서 관심종목 준비 실패")
 
     def send_summary() -> None:
         messages = build_summary(store, now.date(), board, market)
@@ -652,7 +665,7 @@ def main() -> int:
                         logging.info("오늘 데이터가 없음(휴장일로 판단, 기준일 %s) → 종료", probe[0].as_of)
                         break
                 run_once(screener, market, store, telegram=not args.no_telegram, watcher=watcher, early=early, investors=investors,
-                         themes=themes, board=board, trader=trader, leader=leader, pullback=pullback, nine=nine, bigcap=bigcap, regime=regime, inverse=inverse, contra=contra, retest=retest, up=up, block=block, newhigh=newhigh, trend=trend, surges=surges, burger=burger, weak_inv=weak_inv, rebreak=rebreak, danswer=danswer, small=small, real=real, jh=jh)
+                         themes=themes, board=board, trader=trader, leader=leader, pullback=pullback, nine=nine, bigcap=bigcap, regime=regime, inverse=inverse, contra=contra, retest=retest, up=up, block=block, newhigh=newhigh, trend=trend, surges=surges, burger=burger, weak_inv=weak_inv, rebreak=rebreak, danswer=danswer, small=small, real=real, jh=jh, dwatch=dwatch)
             except Exception:
                 logging.exception("스캔 실패 (다음 주기에 재시도)")
             if args.once:
