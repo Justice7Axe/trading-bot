@@ -25,7 +25,7 @@ from datetime import datetime, time
 from typing import Any, Callable, Optional
 
 from kiwoom_trading.ingestion.collectors.daily_backfill import KiwoomDailyClient, _to_int
-from kiwoom_trading.screener.hong_account import HONG_KIND
+from kiwoom_trading.strategies.hong_limitup.live import HONG_KIND
 from kiwoom_trading.screener.inverse_gap import CODE as INVERSE_CODE, WEAK_KIND, WEAK_STOP, WEAK_TP
 from kiwoom_trading.screener.regime_plays import NEWHIGH_KIND, NEWHIGH_STOP
 from kiwoom_trading.screener.resistance_retest import RETEST_KIND, RETEST_STOP, RETEST_TP
