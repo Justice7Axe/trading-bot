@@ -42,17 +42,17 @@ from kiwoom_trading.screener.market_data import KiwoomMarket
 from kiwoom_trading.execution.paper import PaperTrader, build_mock_client, mock_configured
 from dataclasses import replace
 from kiwoom_trading.screener.intraday_signals import QualityConfig, Signal
-from kiwoom_trading.screener.bigcap_flow import KIND as BIGCAP_KIND, BigcapFlowWatcher
-from kiwoom_trading.screener.early_nine import KIND as NINE_KIND, EarlyNineWatcher
-from kiwoom_trading.screener.inverse_gap import KIND as INVERSE_KIND, WEAK_KIND, InverseGapWatcher, WeakInverseWatcher
-from kiwoom_trading.screener.contra_close import KIND as CONTRA_KIND, ContraCloseWatcher
-from kiwoom_trading.screener.closing_rebreak import KIND as REBREAK_KIND, ClosingRebreakWatcher
-from kiwoom_trading.screener.danswer_watch import DanswerWatch
-from kiwoom_trading.screener.danswer_close import KIND as DANSWER_KIND, DanswerCloseWatcher, load_danswer_context
-from kiwoom_trading.screener.resistance_retest import RETEST_KIND, RetestWatcher, find_retest
-from kiwoom_trading.screener.regime_plays import (BLOCK_KIND, NEWHIGH_KIND, UP_KIND, BlockedHighWatcher, NewHighWatcher, UpOpenWatcher,
+from kiwoom_trading.strategies.bigcap_flow.live import KIND as BIGCAP_KIND, BigcapFlowWatcher
+from kiwoom_trading.strategies.early_nine.live import KIND as NINE_KIND, EarlyNineWatcher
+from kiwoom_trading.strategies.inverse.live import KIND as INVERSE_KIND, WEAK_KIND, InverseGapWatcher, WeakInverseWatcher
+from kiwoom_trading.strategies.contra_close.live import KIND as CONTRA_KIND, ContraCloseWatcher
+from kiwoom_trading.strategies.danswer.rebreak import KIND as REBREAK_KIND, ClosingRebreakWatcher
+from kiwoom_trading.strategies.danswer.watch import DanswerWatch
+from kiwoom_trading.strategies.danswer.close import KIND as DANSWER_KIND, DanswerCloseWatcher, load_danswer_context
+from kiwoom_trading.strategies.resistance_retest.live import RETEST_KIND, RetestWatcher, find_retest
+from kiwoom_trading.strategies.regime_plays.live import (BLOCK_KIND, NEWHIGH_KIND, UP_KIND, BlockedHighWatcher, NewHighWatcher, UpOpenWatcher,
                                                   load_block_candidates, load_newhigh_candidates)
-from kiwoom_trading.screener.trend_hold import KIND as TREND_KIND, TrendHoldWatcher, load_trend_picks, ma_breaks
+from kiwoom_trading.strategies.trend_hold.live import KIND as TREND_KIND, TrendHoldWatcher, load_trend_picks, ma_breaks
 from kiwoom_trading.execution.small import SmallAccount
 from kiwoom_trading.execution import real as real_inverse
 from kiwoom_trading.screener.playbook_card import build_card
@@ -62,9 +62,9 @@ from kiwoom_trading.strategies.cafe_leader.live import CafeLeaderWatcher, load_c
 from kiwoom_trading.strategies.hong_styles.live import HongStylesAccount, load_hs_context
 from kiwoom_trading.screener.market_regime import MarketRegime
 from kiwoom_trading.screener.surge_groups import SurgeGroups
-from kiwoom_trading.screener.leader_shape import KIND as LEADER_KIND, LeaderShapeWatcher
-from kiwoom_trading.screener.pullback_breakout import KIND as PULLBACK_KIND, PullbackWatcher
-from kiwoom_trading.screener.hamburger_watch import KIND as BURGER_KIND, HamburgerWatcher
+from kiwoom_trading.strategies.leader_shape.live import KIND as LEADER_KIND, LeaderShapeWatcher
+from kiwoom_trading.strategies.pullback_breakout.live import KIND as PULLBACK_KIND, PullbackWatcher
+from kiwoom_trading.strategies.hamburger.live import KIND as BURGER_KIND, HamburgerWatcher
 from kiwoom_trading.screener.signal_watch import SignalWatcher, format_signals
 from kiwoom_trading.screener.store import ScreenerStore
 from kiwoom_trading.screener.strong_list import StrongListWatcher

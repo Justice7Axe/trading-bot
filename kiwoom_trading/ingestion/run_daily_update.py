@@ -100,7 +100,7 @@ def main() -> int:
 
     if not args.no_telegram:
         try:
-            from kiwoom_trading.analysis.sixty_five_report import build_report
+            from kiwoom_trading.strategies.sixty_five.report import build_report
 
             send_telegram_message(build_report() + f"\n\n(일봉 업데이트 {elapsed:.0f}분 소요)")
         except Exception:

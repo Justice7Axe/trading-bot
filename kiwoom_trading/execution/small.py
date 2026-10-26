@@ -13,9 +13,9 @@ import logging
 from datetime import datetime, time
 from typing import Callable, Optional
 
-from kiwoom_trading.screener.inverse_gap import WEAK_KIND, WEAK_TP
-from kiwoom_trading.screener.regime_plays import NEWHIGH_KIND
-from kiwoom_trading.screener.resistance_retest import RETEST_KIND, RETEST_TP
+from kiwoom_trading.strategies.inverse.live import WEAK_KIND, WEAK_TP
+from kiwoom_trading.strategies.regime_plays.live import NEWHIGH_KIND
+from kiwoom_trading.strategies.resistance_retest.live import RETEST_KIND, RETEST_TP
 
 START_CASH = 100_000
 KINDS = (NEWHIGH_KIND, RETEST_KIND, WEAK_KIND)
