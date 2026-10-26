@@ -29,6 +29,12 @@ description: Ellie trading 운영 — 일일 일봉 업데이트/리포트 스�
   - 일시적 네트워크 오류는 3회 재시도한다(2026-10-15 08:28 🔥 알림이 한 번 실패해 빠졌다).
   - 예외 메시지 URL 에 봇 토큰이 들어가므로 로그에는 `***` 로 가린다.
 
+## 코드 구조 (2026-10-27 정리, docs/architecture.md)
+- `common/` 자료·판단 공용(krx 호가·상한가, leader 👑 테마 대장, market 지수 20일선) · `backtest/` 공통 엔진·매매표 계좌(`python -m kiwoom_trading.backtest.playbook.full_bt`)
+- `execution/` 실전(real)·모의(paper)·10만 원(small)·**공용 가상 장부(ledger — 표 `ledger_trades`·`ledger_days`, book 칸으로 장부 구분)**
+- `strategies/<이름>/` 매매법마다 rules·live·backtest (hong_limitup, hong_styles, cafe_leader, jeonhwang). 실행기 `screener/run_intraday.py` 는 가상 장부 매매법을 `books` 목록으로 돌림.
+- 옛 경로(screener/real_inverse·paper_trader·hong_account …, analysis/run_*_backtest)는 같은 모듈을 가리키는 연결 파일 — 예전 명령 그대로 동작. 백테스트 공통 원칙은 스킬 backtest-rules.
+
 ## 데이터
 - `data/daily_ohlcv.duckdb`: daily_ohlcv, stocks(sector, listed_shares), minute_ohlcv, investor_daily(투자자별 일별 순매수, 원), backfill_status, refetch_queue
 - `data/screener.duckdb`: rank_snapshots, theme_members, detections(first_ts), buy_signals(reject_reason), rest_leaders, watch_adds, early_alerts, theme_alerts, gate_flow_eval, investor_intraday(장중 외국인·기관 잠정치, 5분 확인·바뀔 때만), program_intraday(장중 종목별 프로그램 매매 ka90004, 09:00~15:45 10분마다 전 종목 매수·매도·순매수 원, 2026-10-26부터 — 외인 방향 대용)
@@ -51,7 +57,7 @@ description: Ellie trading 운영 — 일일 일봉 업데이트/리포트 스�
 - 오래 도는 수집·백필에는 `prevent_sleep_until_exit()` 를 건다. 2026-10-14 새벽 절전으로 수집이 멈춘 적이 있다.
 - 종목코드 접미사: `_AL` 통합, `_NX` NXT, 없으면 KRX. 호출 간격 0.25초.
 
-## 🔴 실전 매매 (키움 실계좌, 2026-10-26 부터) — `screener/real_inverse.py` `RealTrader`
+## 🔴 실전 매매 (키움 실계좌, 2026-10-26 부터) — `execution/real.py` `RealTrader`
 - 사용자 2026-10-25: "10만 원 시드로 실전 매매, 내일 시초에 물려 있던 종목 모두 손절 매도하고 시작" → 처음 5️⃣ 만, 같은 날 "인버스 타이밍이 아니면 다른 기법도 → 6️⃣2️⃣5️⃣ 로".
 - 켜기: `.env.local` `KIWOOM_REAL_TRADING=combo` (6️⃣ 주도주 신고가 · 2️⃣ 저항 돌파 · 5️⃣ 약세장 인버스) / `inverse` (5️⃣ 만) / 지우거나 다른 값 = 주문 안 함. 실전 키(`KIWOOM_APP_KEY`, api.kiwoom.com)가 실계좌에 묶여 있다 (2026-10-25 조회: 주문 가능 639원, KODEX 삼성전자SK하이닉스채권혼합50 3주).
 - 한 번 전체 정리: `KIWOOM_REAL_LIQUIDATE_DATE=2026-10-26` → 그날 09:00 첫 확인 때 계좌 보유 종목 전체 시장가 매도(`real_liquidations`). 끝나면 지워도 된다.
@@ -59,7 +65,7 @@ description: Ellie trading 운영 — 일일 일봉 업데이트/리포트 스�
   - 주문 가능 금액 = kt00001 `100stk_ord_alow_amt`(증거금 100% 종목, 정산 전 매도 대금 포함·빌리는 돈 없음). `ord_alow_amt` 는 예수금만이라 그날 판 돈이 안 잡힘 (2026-10-26 09:06 639원 vs 83,897원).
   - 시장가 매수는 상한가 기준 증거금이라 '[2000] 매수증거금이 부족합니다. N주 매수가능' 이 나올 수 있다 → 그 N주로 한 번 다시 주문 (10-26 TIGER 인버스 61주 거절 → 46주 가능).
   - 사용자가 직접 산 종목을 규칙대로 팔게 하려면 스캐너를 잠깐 멈추고 `real_trades` 에 status='open' 으로 넣는다 (10-26 TIGER 인버스 10주 1,376원 → 5️⃣).
-- 📕 홍인기 상한가 풀림 (2026-10-27 사용자 "바로 실전, 6️⃣2️⃣5️⃣ 와 하나로"): `hong_account.py` 수급 없이 장부가 사는 순간 실전 신호로 넘김(`on_real`) — 지금가가 상한가면 안 삼 (스킬 hong 5장).
+- 📕 홍인기 상한가 풀림 (2026-10-27 사용자 "바로 실전, 6️⃣2️⃣5️⃣ 와 하나로"): `strategies/hong_limitup/live.py` 수급 없이 장부가 사는 순간 실전 신호로 넘김(`on_real`) — 지금가가 상한가면 안 삼 (스킬 hong 5장).
 - 매도(체결가 기준, 1분마다): 6️⃣ 익절 없음 −4% / 2️⃣ +7% −5% / 5️⃣ +5% −3% / 📕 익절·손절 없음, 못 닿으면 다음 날 09:00. 그날 신호로 받은 종목만 주문(`RealClient.allowed`), 팔 때는 이 매매로 산 수량만. `real_trades`, 🔴 텔레그램.
 - ⚠️ '멈춰'로 스캐너를 끄면 실전 손절·익절 감시도 멈춘다. 들고 넘어간 종목은 다음 날 스캐너가 09:00 에 판다(스캐너가 안 켜지면 안 팔림).
 
@@ -75,7 +81,7 @@ description: Ellie trading 운영 — 일일 일봉 업데이트/리포트 스�
 - 모의 계좌 시작 자금은 1,000만 원이다. `MockClient` 는 주소에 `mockapi` 가 없으면 만들지 않는다(실계좌 주문 방지).
 - 장중 스캐너가 자동으로 매매한다(정규장 실주문, NXT 프리·애프터장 가상 체결, 15:40·19:55 리포트). `--once` 나 `--no-paper` 로 실행하면 주문하지 않는다. 규칙은 `buy-signals` 스킬 5장에 있다.
 - 점검: `python -m kiwoom_trading.screener.paper_trader --status`(잔고), `--report [YYYYMMDD]`(리포트 미리보기)
-- 모의 계좌와 따로 도는 **가상 계좌**(주문 없음, screener.duckdb 에 기록): 💰 10만 원 계좌 `small_account.py`(small_trades), 📒 [디앤서] 관심종목 2-2-2·🛡️ 하락일 헤지주 `danswer_watch.py`(danswer_watch, 12:00 네이버 업종·테마 받기 → data/naver_groups.duckdb, 14:30 미리 보기·15:15 헤지주 알림·15:35 관심종목+전날 결과 — 스킬 danswer 10장), 📘 [전황] 1천만 계좌 `jeonhwang_account.py`(jh_trades·jh_days, 11:00 매수·다음 날 09:00 매도, 코스피 1구간 날만 — 스킬 jeonhwang 0장), 📕 [홍인기] 상한가 풀림 두 장부(수급 확인·수급 없이) `hong_account.py`(hg_trades·hg_events·hg_days, 5분↑ 잠김 뒤 풀리면 매수·다시 상한가 절반·다음 날 09:00 — 스킬 hong 4장), ☕ [카페] 테마 대장 체크리스트·가상 장부 `cafe_leader.py`(cafe_checks·cafe_trades, 09:00~10:30 — 스킬 cafe-leader 3장), 📕 [홍인기·상따 밖] 돌파·대장/돌파/강한 쪽/애프터 급락 `hong_styles.py`(hs_trades·hs_days, 19:58 요약 — 스킬 hong 7장).
+- 모의 계좌와 따로 도는 **가상 계좌**(주문 없음, screener.duckdb 에 기록): 💰 10만 원 계좌 `execution/small.py`(small_trades), 📒 [디앤서] 관심종목 2-2-2·🛡️ 하락일 헤지주 `danswer_watch.py`(danswer_watch, 12:00 네이버 업종·테마 받기 → data/naver_groups.duckdb, 14:30 미리 보기·15:15 헤지주 알림·15:35 관심종목+전날 결과 — 스킬 danswer 10장), 📘 [전황] 1천만 계좌 `strategies/jeonhwang/live.py`(ledger_trades(book '전황 11시')·jh_days, 11:00 매수·다음 날 09:00 매도, 코스피 1구간 날만 — 스킬 jeonhwang 0장), 📕 [홍인기] 상한가 풀림 두 장부(수급 확인·수급 없이) `strategies/hong_limitup/live.py`(ledger_trades(book)·hg_events, 5분↑ 잠김 뒤 풀리면 매수·다시 상한가 절반·다음 날 09:00 — 스킬 hong 4장), ☕ [카페] 테마 대장 체크리스트·가상 장부 `strategies/cafe_leader/live.py`(cafe_checks·ledger_trades(book '카페 대장'), 09:00~10:30 — 스킬 cafe-leader 3장), 📕 [홍인기·상따 밖] 돌파·대장/돌파/강한 쪽/애프터 급락 `strategies/hong_styles/live.py`(ledger_trades(book), 19:58 요약 — 스킬 hong 7장).
 - 키움 API 메모:
   - kt10000 매수, kt10001 매도(`trde_tp` 3 = 시장가, `dmst_stex_tp` KRX)
   - kt00018 잔고(`acnt_evlt_remn_indv_tot`), kt00001 예수금(`ord_alow_amt`), ka10076 체결(`cntr`), ka10075 미체결(`oso`)
