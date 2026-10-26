@@ -247,7 +247,8 @@ class RealTrader:
                        else f"장중 익절 없이 다음 날 09:00 시가 매도 (−{sl:.0%} 손절)" if sl
                        else "익절·손절 없이 다음 날 09:00 시가 매도")
                 self.notify(f"🔴 실전 매수 주문 {name}({code}) {qty}주 × 약 {price:,.0f}원 = {qty * price:,.0f}원 (주문 {no})\n"
-                            f"  [{label} {s.ts:%H:%M}] {how}")
+                            f"  [{label} {s.ts:%H:%M}] {how}"
+                            + "".join(f"\n{l}" for l in (getattr(s, "reason", "") or "").splitlines() if "🇺🇸" in l))
                 logging.info("실전 매수 주문 %s %s %s주 (주문 %s)", label, name, qty, no)
                 return
             except Exception as exc:
