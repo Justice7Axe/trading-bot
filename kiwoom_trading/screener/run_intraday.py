@@ -551,7 +551,7 @@ def main() -> int:
         logging.exception("급등 묶음 준비 실패")
         surges = None
     inverse = InverseGapWatcher(market, screener.hist.keys(), done=any(k == INVERSE_KIND for _, _, k in store.signal_keys(now.date())))
-    contra = ContraCloseWatcher(screener.hist.keys(), regime=regime, done=any(k == CONTRA_KIND for _, _, k in store.signal_keys(now.date())))
+    contra = ContraCloseWatcher(screener.hist.keys(), regime=regime, done=any(k == CONTRA_KIND for _, _, k in store.signal_keys(now.date())), market=market)
     retest: Optional[RetestWatcher] = None
     block: Optional[BlockedHighWatcher] = None
     newhigh: Optional[NewHighWatcher] = None

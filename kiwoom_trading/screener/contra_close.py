@@ -15,7 +15,11 @@
 - 하락 흐름 보통 날은 같은 조건이 −0.2~−0.4% → 강한 하락장 날에만 쓴다. (상승 흐름 보통 날 +0.40%, 강한 상승장 +0.37% 는 종가배팅 스킬 쪽)
 
 규칙 (고정): 강한 하락장 판정일, 15:15~15:19 첫 KRX 대금 상위 스냅샷에서 주식만 대금 순서 30위 안,
-           전일 대비 − 주식 중앙값 ≥ +3%p, 상한가(+29.5%↑) 제외 → 🌙 알림·기록.
+           전일 대비 − 주식 중앙값 ≥ +3%p, 상한가(+29.5%↑) 제외,
+           **고가 부근 마감**(KRX 정규장 (현재가−저가)/(고가−저가) ≥ 0.8, 2026-10-26 사용자 '④ 에 고가 부근 마감 조건도 넣어줘') → 🌙 알림·기록.
+재검증 (2026-10-26, 바로잡은 엔진·운영과 같은 09:10/09:20 판정 54일, 스킬 danswer 10-4 scripts/t_contra.py):
+  고가 부근 조건 없이 488건 +0.90% (앞 +0.84 / 뒤 +0.99) → 고가 부근 ≥0.8 140건 +1.48% (앞 +1.22 / 뒤 +1.66, 최고 5일 빼면 +14만),
+  고가에서 밀린(<0.5) 130건 +0.63%. 건수가 1/3 로 줄고 몇몇 큰 날 몫이 커서 모의 체결로 계속 확인.
 매수는 15:20~15:30 종가 동시호가, 매도는 다음 날 시초가 (갭 상승 노림).
 ⚠️ 모의투자는 아직 하룻밤 보유를 지원하지 않아 알림·기록만 한다 (paper_trader 가 건너뜀). 종가배팅 스킬(closing-bet) 참고.
 """
@@ -31,11 +35,14 @@ START, END = time(15, 15), time(15, 19)
 TOP_N = 30
 REL_MIN = 0.03
 LIMIT_UP = 0.295
+NEAR_HIGH = 0.8
 
 
 class ContraCloseWatcher:
-    def __init__(self, stock_codes: Iterable[str], regime=None, done: bool = False) -> None:
+    def __init__(self, stock_codes: Iterable[str], regime=None, done: bool = False, market=None) -> None:
         self.stocks = set(stock_codes)
+        self.market = market        # KRX 정규장 고가·저가 조회 (고가 부근 판단)
+        self.pos: dict[str, float] = {}
         self.regime = regime
         self.checked = done
 
@@ -54,13 +61,36 @@ class ContraCloseWatcher:
         n = len(xs)
         med = xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2
         picks = [i for i in stocks[:TOP_N] if i.change_rate - med >= REL_MIN and i.change_rate < LIMIT_UP and i.price]
+        near, far = [], []
+        for i in picks:
+            pos = self._close_pos(i.code)
+            if pos is None or pos < NEAR_HIGH:
+                far.append(f"{i.name}({'고가 부근 ' + format(pos, '.0%') if pos is not None else '시세 없음'})")
+                continue
+            self.pos[i.code] = pos
+            near.append(i)
+        if far:
+            logging.info("역행 강세 종가: 고가 부근(%.0f%%↑) 아니라 뺌 %s", NEAR_HIGH * 100, ", ".join(far))
+        picks = near
         logging.info("역행 강세 종가 %s: 주식 중앙 %+.2f%%, 대금 %s위 안 시장 대비 +%.0f%%p↑ %s종목: %s", f"{now:%H:%M}", med * 100,
                      TOP_N, REL_MIN * 100, len(picks), ", ".join(f"{i.name} {i.change_rate:+.1%}" for i in picks))
         ts = now.replace(second=0, microsecond=0, tzinfo=None)
         out = []
         for i in picks:
             reason = (f"강한 하락장 날 시장을 거스른 종목 — 전일 대비 {i.change_rate:+.1%} vs 주식 중앙 {med:+.1%} "
-                      f"(+{(i.change_rate - med) * 100:.1f}%p), 대금 {i.rank}위. 종가 동시호가 매수 → 다음 날 시초가 매도 "
-                      f"(1년 강한 하락장 47일 422건 +0.85%, 앞 +1.32 / 뒤 +0.56 · 모의투자 미지원, 알림·기록만)")
+                      f"(+{(i.change_rate - med) * 100:.1f}%p), 대금 {i.rank}위, 고가 부근 {self.pos.get(i.code, 0):.0%}. 종가 동시호가 매수 → 다음 날 시초가 매도 "
+                      f"(1년 강한 하락장 판정 54일: 고가 부근 140건 +1.48%, 조건 없이 488건 +0.90%)")
             out.append((i.code, i.name, KIND, Signal(ts, KIND, float(i.price), float(i.price), 0.0, reason)))
         return out
+
+    def _close_pos(self, code: str):
+        if self.market is None:
+            return None
+        try:
+            q = self.market.quote(code, integrated=False)
+        except Exception:
+            logging.warning("역행 강세 종가: 시세 조회 실패 %s", code)
+            return None
+        if not q or q.high <= q.low:
+            return 1.0 if q else None
+        return (q.price - q.low) / (q.high - q.low)
