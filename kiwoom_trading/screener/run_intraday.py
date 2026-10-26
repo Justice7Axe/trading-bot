@@ -40,6 +40,7 @@ from kiwoom_trading.screener.early_watch import EarlyDetector, EarlyHit, format_
 from kiwoom_trading.screener.engine import Screener
 from kiwoom_trading.screener.market_data import KiwoomMarket
 from kiwoom_trading.screener.paper_trader import PaperTrader, build_mock_client, mock_configured
+from dataclasses import replace
 from kiwoom_trading.screener.intraday_signals import QualityConfig, Signal
 from kiwoom_trading.screener.bigcap_flow import KIND as BIGCAP_KIND, BigcapFlowWatcher
 from kiwoom_trading.screener.early_nine import KIND as NINE_KIND, EarlyNineWatcher
@@ -460,6 +461,14 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
             watcher.add(e.candidate.code, e.candidate.name)
         signals = watcher.check(now)
     shared_bars: dict = {}   # 같은 분에 받은 KRX 1분봉을 두 판정이 함께 쓴다
+    lead_now: dict = {}      # 👑 지금 테마 대장 (☕ 네이버 테마 안 대금 1위) — 신호 표시·🏆 금액에 씀 (2026-10-27)
+    if cafe is not None:
+        try:
+            lead_now = cafe.leaders(value_top)
+        except Exception:
+            logging.exception("테마 대장 판단 실패")
+    if trader is not None:
+        trader.lead_now = lead_now
     own_msgs: list[str] = []  # 자기 알림 문구가 있는 판정(🧭·🌙)은 🎯 묶음과 따로 보낸다
     own_ids: set = set()
     for label, w in (("인버스 갭", inverse), ("장 초 공통점", nine), ("대형주 수급", bigcap), ("주도주 모양", leader), ("눌림 돌파", pullback), ("햄버거", burger), ("역행 강세 종가", contra), ("저항 돌파", retest), ("상승장 장 초", up), ("막힌 고점 돌파", block), ("주도주 신고가", newhigh), ("주도주 추세", trend), ("약세장 인버스", weak_inv), ("[디앤서] 종가 재돌파", rebreak), ("[디앤서] 종가 체크리스트", danswer)):
@@ -472,6 +481,8 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
         except Exception:
             logging.exception("%s 판정 실패", label)
             found = []
+        found = [(c, n, src, replace(s, reason=f"{s.reason} · 👑 테마 대장 '{lead_now[c][0]}'") if c in lead_now else s)
+                 for c, n, src, s in found]
         for code, name, source, s in found:
             store.save_signal(screener.today, code, name, s, source, True)
         if found and hasattr(w, "format"):

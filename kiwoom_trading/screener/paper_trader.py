@@ -64,6 +64,7 @@ from kiwoom_trading.screener.store import ScreenerStore
 
 MOCK_BASE_URL = "https://mockapi.kiwoom.com"
 BUDGET_PER_STOCK = 1_000_000
+LEAD_MULT, NONLEAD_MULT = 2.0, 0.5   # 🏆 주도주 신고가 금액: 테마 대장 / 아님 (홍인기·카페 '종목 고르기', 2026-10-27)
 MAX_POSITIONS = 10            # 키움 제한이 아니라 우리 규칙. 모의 계좌 약 1천만 원 ÷ 종목당 100만 원 (2026-10-20, 10-19 복기: 5종목 한도로 신호 85건 건너뜀)
 NEXT_DAY_KINDS = (RETEST_KIND, UP_KIND, BLOCK_KIND, NEWHIGH_KIND, CONTRA_KIND, WEAK_KIND, REBREAK_KIND, DANSWER_KIND)   # '다음날' 매도: 익절가 / 손절가 / 다음 날 09:00 (2026-10-25 시장 상황별 매매표)
 NEXT_DAY_TP = {UP_KIND: None, NEWHIGH_KIND: None, WEAK_KIND: WEAK_TP, REBREAK_KIND: None, DANSWER_KIND: None}   # '다음날' 익절가 — 기본 +7%. 📈 상승장 장 초·🏆 주도주 신고가·🌙 종가 재돌파·🧭 디앤서 종가는 익절 없음, 약세장 인버스 +5% (2026-10-25)
@@ -293,6 +294,7 @@ class PaperTrader:
         self.store = store
         self.today = today
         self.notify = notify or (lambda text: None)
+        self.lead_now: dict = {}   # 지금 테마 대장 {code: (테마, +4%↑ 수, 등락률)} — run_intraday 가 매분 ☕ cafe_leader 판단으로 채움
         self.halted = False
         self.regime = None                      # MarketRegime (run_intraday 가 넣어 줌) — 강한 하락장이면 보수적 매매
         self.prev_flow = load_prev_flow(today)  # 전날 외인·기관 순매수 (주도주 모양 매수 조건)
@@ -416,9 +418,13 @@ class PaperTrader:
                 reason = f"현재가 {price:,}원이 신호가보다 {price / s.price - 1:+.1%} — 추격 안 함"
         if reason is None:
             factor, why = self._nada_factor(t) if t.kind != TREND_KIND else (1.0, "")   # ⑦ 은 정한 금액 그대로 (사용자 2026-10-25)
+            if t.kind == NEWHIGH_KIND:   # 🏆 주도주 신고가: 테마 대장이면 2배, 아니면 절반 (2026-10-27, 1년 계좌 5,048만 → 5,423만, 스킬 hong 8장)
+                lead = self.lead_now.get(t.code)
+                factor *= LEAD_MULT if lead else NONLEAD_MULT
+                why = ((why + " · ") if why else "") + (f"👑 테마 대장 '{lead[0]}' → {LEAD_MULT:g}배" if lead else f"테마 대장 아님 → {NONLEAD_MULT:g}배")
             t.qty = order_qty(price, int(KIND_BUDGET.get(t.kind, BUDGET_PER_STOCK) * factor))
             if why:
-                t.note = f"Nada 금액 {factor:g}배: {why}"
+                t.note = f"금액 {factor:g}배: {why}"
                 logging.info("모의 매수 금액 축소 %s: %s", t.name, t.note)
             cash = self.mock.cash() if not t.virtual else t.qty * price
             used = self._trend_used()
