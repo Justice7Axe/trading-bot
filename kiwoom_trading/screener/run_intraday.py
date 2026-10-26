@@ -63,6 +63,7 @@ from kiwoom_trading.screener.pullback_breakout import KIND as PULLBACK_KIND, Pul
 from kiwoom_trading.screener.hamburger_watch import KIND as BURGER_KIND, HamburgerWatcher
 from kiwoom_trading.screener.signal_watch import SignalWatcher, format_signals
 from kiwoom_trading.screener.store import ScreenerStore
+from kiwoom_trading.screener.strong_list import StrongListWatcher
 from kiwoom_trading.screener.theme_track import ThemeTracker, build_peer_graph, format_clusters, format_features
 
 
@@ -355,7 +356,8 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
              surges: Optional[SurgeGroups] = None, burger: Optional[HamburgerWatcher] = None,
              weak_inv: Optional[WeakInverseWatcher] = None, rebreak: Optional[ClosingRebreakWatcher] = None,
              danswer: Optional[DanswerCloseWatcher] = None, small: Optional[SmallAccount] = None, real: Optional["real_inverse.RealTrader"] = None,
-             jh: Optional[JeonhwangAccount] = None, dwatch: Optional[DanswerWatch] = None) -> int:
+             jh: Optional[JeonhwangAccount] = None, dwatch: Optional[DanswerWatch] = None,
+             strong: Optional[StrongListWatcher] = None) -> int:
     now = datetime.now(KST)
     if real is not None:
         real.tick(now)                 # 🔴 실전 매매(6️⃣2️⃣5️⃣): 체결 확인·익절/손절·다음 날 09:00 매도 (자체 예외 처리)
@@ -375,6 +377,11 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
     store.save_ranks(now, "search_1m", search_1m)
     store.save_ranks(now, "search_day", search_day)
     store.save_ranks(now, "value_krx", value_top)
+    if strong is not None:
+        try:
+            strong.tick(now)           # 📡 강세 종목 10:00·13:30·15:20·19:50 (알림만)
+        except Exception:
+            logging.exception("📡 강세 종목 실패")
     if jh is not None:
         try:
             jh.tick(now, value_top)    # 📘 전황 1천만 가상 계좌: 11:00 주도주 매수, 손절·다음 날 09:00 매도, 15:40 요약
@@ -629,6 +636,10 @@ def main() -> int:
                          len(jctx.targets), ", ".join(t.name for t in jctx.targets[:15]))
         except Exception:
             logging.exception("전황 계좌 준비 실패")
+    strong: Optional[StrongListWatcher] = None
+    if not args.once:   # 📡 오늘의 강세 종목 — 대금·상승률 상위 (2026-10-26 사용자, 매수 없음)
+        strong = StrongListWatcher(store, market, now.date(), screener.names,
+                                   notify=None if args.no_telegram else (lambda text: send_telegram_message(_tag(text))))
     dwatch: Optional[DanswerWatch] = None
     if not args.once:
         try:   # 📒 [디앤서] 관심종목 2-2-2 · 🛡️ 하락장 헤지주 (2026-10-26 사용자, 주문 없음)
@@ -666,7 +677,7 @@ def main() -> int:
                         logging.info("오늘 데이터가 없음(휴장일로 판단, 기준일 %s) → 종료", probe[0].as_of)
                         break
                 run_once(screener, market, store, telegram=not args.no_telegram, watcher=watcher, early=early, investors=investors,
-                         themes=themes, board=board, trader=trader, leader=leader, pullback=pullback, nine=nine, bigcap=bigcap, regime=regime, inverse=inverse, contra=contra, retest=retest, up=up, block=block, newhigh=newhigh, trend=trend, surges=surges, burger=burger, weak_inv=weak_inv, rebreak=rebreak, danswer=danswer, small=small, real=real, jh=jh, dwatch=dwatch)
+                         themes=themes, board=board, trader=trader, leader=leader, pullback=pullback, nine=nine, bigcap=bigcap, regime=regime, inverse=inverse, contra=contra, retest=retest, up=up, block=block, newhigh=newhigh, trend=trend, surges=surges, burger=burger, weak_inv=weak_inv, rebreak=rebreak, danswer=danswer, small=small, real=real, jh=jh, dwatch=dwatch, strong=strong)
             except Exception:
                 logging.exception("스캔 실패 (다음 주기에 재시도)")
             if args.once:
