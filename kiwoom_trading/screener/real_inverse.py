@@ -17,6 +17,7 @@
 """
 import logging
 import os
+import re
 from datetime import datetime, time
 from typing import Any, Callable, Optional
 
@@ -88,8 +89,10 @@ class RealClient(KiwoomDailyClient):
         self.allowed: set[str] = set()
 
     def cash(self) -> int:
+        """증거금 100% 종목 주문 가능 금액 — 매도 대금(정산 전)까지 포함, 빌리는 돈 없음.
+        ord_alow_amt 는 예수금만이라 아침에 판 돈이 안 잡힌다 (2026-10-26 09:06 639원 vs 83,897원)."""
         payload, _, _ = self._post("/api/dostk/acnt", "kt00001", {"qry_tp": "3"})
-        return _to_int(payload.get("ord_alow_amt")) or 0
+        return max(_to_int(payload.get("100stk_ord_alow_amt")) or 0, _to_int(payload.get("ord_alow_amt")) or 0)
 
     def holdings(self) -> list[tuple[str, str, int]]:
         """[(코드, 이름, 매도 가능 수량)]"""
@@ -219,7 +222,15 @@ class RealTrader:
                     self.notify(f"⏭ 실전 {label} {name}({code}) 1주 {price:,.0f}원 > 쓸 수 있는 돈 {budget:,.0f}원 — 다음 신호를 기다림")
                     continue
                 self.client.allowed.add(code)
-                no = self.client.market_order("buy", code, qty)
+                try:
+                    no = self.client.market_order("buy", code, qty)
+                except RuntimeError as exc:   # 시장가는 상한가 기준 증거금 → '[2000](855056:매수증거금이 부족합니다. 46주 매수가능)' (2026-10-26)
+                    m = re.search(r"(\d+)주 매수가능", str(exc))
+                    if not m or not 0 < int(m.group(1)) < qty:
+                        raise
+                    logging.info("실전: %s %s주 증거금 부족 → %s주로 다시 주문", name, qty, m.group(1))
+                    qty = int(m.group(1))
+                    no = self.client.market_order("buy", code, qty)
                 tid = f"{now:%Y%m%d}-{code}"
                 self.conn.execute("""INSERT OR REPLACE INTO real_trades (id, date, code, name, kind, qty, buy_order_no, buy_ts, buy_price, status)
                                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ordered')""",
