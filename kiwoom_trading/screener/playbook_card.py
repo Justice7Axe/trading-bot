@@ -47,7 +47,7 @@ def build_card(day: date, trend_text: Optional[str] = None, real_mode: str = "")
 def main() -> None:
     from kiwoom_trading.common.config import KST
     from datetime import datetime
-    from kiwoom_trading.screener import real_inverse
+    from kiwoom_trading.execution import real as real_inverse
     parser = argparse.ArgumentParser(description="오늘의 트레이딩 전략")
     parser.add_argument("--send", action="store_true")
     args = parser.parse_args()

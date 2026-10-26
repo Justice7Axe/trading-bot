@@ -38,7 +38,7 @@ from kiwoom_trading.screener.trend_hold import KIND as TREND_KIND
 from kiwoom_trading.screener.inverse_gap import WEAK_KIND
 from kiwoom_trading.screener.hamburger_watch import KIND as BURGER_KIND
 from kiwoom_trading.screener.leader_shape import big_red_exit
-from kiwoom_trading.screener.paper_trader import COST, KIND_LIMIT, MAX_CHASE, MAX_POSITIONS, STRONG_STOP, TRAIL_GAP, TRAIL_START
+from kiwoom_trading.execution.paper import COST, KIND_LIMIT, MAX_CHASE, MAX_POSITIONS, STRONG_STOP, TRAIL_GAP, TRAIL_START
 from kiwoom_trading.screener.pullback_breakout import exit_reason as pullback_exit
 from kiwoom_trading.screener.store import ScreenerStore
 
