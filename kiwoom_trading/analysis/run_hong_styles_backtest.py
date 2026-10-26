@@ -28,9 +28,7 @@ from datetime import datetime, time
 
 import numpy as np
 
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, os.path.join(ROOT, ".claude", "skills", "danswer", "scripts"))
-import engine as E  # noqa: E402
+from kiwoom_trading.backtest import engine as E  # noqa: E402  (공통 엔진, docs/architecture.md)
 
 OUT = os.path.join(E.DATA, "hong")
 os.makedirs(OUT, exist_ok=True)

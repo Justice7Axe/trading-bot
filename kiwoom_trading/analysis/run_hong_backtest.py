@@ -22,9 +22,7 @@ from datetime import date, datetime, time
 
 import numpy as np
 
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, os.path.join(ROOT, ".claude", "skills", "danswer", "scripts"))
-import engine as E  # noqa: E402
+from kiwoom_trading.backtest import engine as E  # noqa: E402  (공통 엔진, docs/architecture.md)
 
 from kiwoom_trading.analysis.indicators.hong import HongParams, find_entry, simulate_exit, upper_limit  # noqa: E402
 
