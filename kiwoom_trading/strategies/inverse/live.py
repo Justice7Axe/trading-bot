@@ -64,9 +64,13 @@ class WeakInverseWatcher:
     근거 (스크래치 nm_ideas_a.py / nm_ideas_b.py, 인버스 1분봉, 조정·약세장 보통 날 56일, 비용 0.05%):
       +5/−3 56건 +0.92% (앞 +1.05 / 뒤 +0.79), 최고일 빼도 +43만(100만/건), 최대 낙폭 11만, 7개월 중 5개월 +.
       매수 09:01~10:01·익절/손절 5조합 모두 +. 다른 날 구분에선 모두 − (상승 흐름 보통 날 −0.47, 강한 상승장 −0.63, 강한 하락장 −0.45).
-      09:10 코스피가 약한 날로 좁히면 오히려 나빠짐 → 거르지 않는다."""
+      09:10 코스피가 약한 날로 좁히면 오히려 나빠짐 → 거르지 않는다.
+    🇺🇸 간밤 미국 지수(2026-10-27 사용자 '인버스 살 때 잘 체크'): 매수 전 간밤 방향별 1년 상승 21건 +0.80% · 혼조 17건 +1.07% ·
+      하락 18건 +0.92% → 결과 차이 없음(이미 09:00 시가·09:10 판정에 들어감). 결과를 가르는 건 들고 넘어가는 그날 밤 미국
+      (상승 −0.31% / 하락 +2.41%)인데, 한국장 중 나스닥 선물로는 그 밤을 못 맞춤(상관 −0.12). → 거르지 않고 알림·기록에 표시만 (스킬 us-overnight)."""
 
-    def __init__(self, market: KiwoomMarket, regime=None, done: bool = False) -> None:
+    def __init__(self, market: KiwoomMarket, regime=None, done: bool = False, us=None) -> None:
+        self.us = us     # common.us_market.Overnight (없으면 None)
         self.market = market
         self.regime = regime
         self.checked = done
@@ -88,6 +92,9 @@ class WeakInverseWatcher:
             return []
         reason = (f"하락 흐름 보통 날 ({r.trend_text()}) — 09:11 인버스, +{WEAK_TP:.0%} 익절 / −{WEAK_STOP:.0%} 손절, 못 닿으면 다음 날 09:00 "
                   f"(1년 하락 흐름 보통 날 56건 +0.92%)")
+        if self.us is not None:
+            reason += (f"\n  {self.us.text()} — 매수 전 간밤 방향은 1년 결과와 무관(상승 +0.80 · 혼조 +1.07 · 하락 +0.92%), "
+                       f"오늘 밤 미국이 오르면 내일 시가가 불리")
         logging.info("약세장 인버스: %s", reason)
         ts = now.replace(second=0, microsecond=0, tzinfo=None)
         return [(CODE, NAME, WEAK_KIND, Signal(ts, WEAK_KIND, float(q.price), float(q.open), float(q.price) * (1 - WEAK_STOP), reason))]

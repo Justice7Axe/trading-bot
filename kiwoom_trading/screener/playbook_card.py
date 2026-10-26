@@ -37,10 +37,16 @@ TABLE = """📋 오늘의 트레이딩 전략 — 시장 상황별 ({day:%m-%d})
   🧪 모의(1천만): 위 트레이딩 전략 그대로 · 💰 10만 원 가상: 6️⃣→2️⃣→5️⃣ 먼저 온 신호에 전액"""
 
 
-def build_card(day: date, trend_text: Optional[str] = None, real_mode: str = "") -> str:
+US_NOTE = ("  간밤 미국 방향 → 코스피 시가 상승 출발 비율(5년): 모두 상승 84% · 혼조 57% · 모두 하락 26%\n"
+           "  (시가 이후 흐름과는 무관 — 매매 신호는 그대로, 참고용)")
+
+
+def build_card(day: date, trend_text: Optional[str] = None, real_mode: str = "", us_text: Optional[str] = None) -> str:
     real = {"combo": "6️⃣→2️⃣→5️⃣ 먼저 온 신호에 전액 (10만 원 + 실현 손익, 한 번 20만 상한)",
             "inverse": "5️⃣ 약세장 인버스만 (10만 원 + 실현 손익)"}.get(real_mode, "꺼짐")
     trend = f"큰 흐름: {trend_text}" if trend_text else ""
+    if us_text:
+        trend = (trend + "\n" if trend else "") + us_text + "\n" + US_NOTE
     return TABLE.format(day=day, trend=trend, real=real).replace("\n\n\n", "\n\n")
 
 
@@ -59,7 +65,9 @@ def main() -> None:
         trend = MarketRegime([], client=build_client(), today=today).trend_text()
     except Exception:
         pass
-    card = build_card(today, trend, real_inverse.mode())
+    from kiwoom_trading.common import us_market
+    ov = us_market.fetch(today)
+    card = build_card(today, trend, real_inverse.mode(), ov.text() if ov else None)
     print(card)
     if args.send:
         from kiwoom_trading.common.telegram import send_telegram_message

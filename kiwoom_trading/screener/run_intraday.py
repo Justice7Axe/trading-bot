@@ -56,6 +56,7 @@ from kiwoom_trading.strategies.trend_hold.live import KIND as TREND_KIND, TrendH
 from kiwoom_trading.execution.small import SmallAccount
 from kiwoom_trading.execution import real as real_inverse
 from kiwoom_trading.screener.playbook_card import build_card
+from kiwoom_trading.common import us_market
 from kiwoom_trading.strategies.jeonhwang.live import JeonhwangAccount, load_jh_context
 from kiwoom_trading.strategies.hong_limitup.live import HONG_KIND, HongAccount, load_prev_limitups
 from kiwoom_trading.strategies.cafe_leader.live import CafeLeaderWatcher, load_cafe_context
@@ -584,7 +585,18 @@ def main() -> int:
     hsctx = None
     keys = store.signal_keys(now.date())
     up = UpOpenWatcher(market, screener.hist.keys(), regime=regime, done=any(k == UP_KIND for _, _, k in keys))
-    weak_inv = WeakInverseWatcher(market, regime=regime, done=any(k == WEAK_KIND for _, _, k in keys))
+    us_ov = us_market.fetch(now.date())   # 🇺🇸 간밤 미국 지수 (2026-10-27 사용자)
+    if us_ov is not None:
+        logging.info("%s", us_ov.text())
+        try:
+            store.conn.execute("CREATE TABLE IF NOT EXISTS us_overnight (date DATE PRIMARY KEY, us_date DATE, direction VARCHAR, "
+                               "nasdaq DOUBLE, dow DOUBLE, ndx DOUBLE, future DOUBLE, ts TIMESTAMP)")
+            store.conn.execute("INSERT OR REPLACE INTO us_overnight VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                               [now.date(), us_ov.us_date, us_ov.direction, us_ov.changes.get("나스닥"), us_ov.changes.get("다우"),
+                                us_ov.changes.get("나스닥100"), us_ov.future, now.replace(tzinfo=None)])
+        except Exception:
+            logging.exception("간밤 미국 지수 저장 실패")
+    weak_inv = WeakInverseWatcher(market, regime=regime, done=any(k == WEAK_KIND for _, _, k in keys), us=us_ov)
     close_notify = None if args.no_telegram else (lambda text: send_telegram_message(_tag(text)))   # 🧭·🌙 '해당 없음'·18시 정리
     rebreak = ClosingRebreakWatcher(market, screener.hist.keys(), done={c for c, _, k in keys if k == REBREAK_KIND}, notify=close_notify)   # 🌙 17시 이후 정규장 종가 위 → 다음 날 09:00
     try:   # 🧱 전 거래일 장 마감 저항 재시험 후보 → 강한 상승장 날 돌파 시 모의 매수
@@ -637,7 +649,8 @@ def main() -> int:
         try:   # 📋 매일 아침 오늘의 트레이딩 전략 (2026-10-25 사용자, 하루 한 번)
             store.conn.execute("CREATE TABLE IF NOT EXISTS playbook_sent (date DATE PRIMARY KEY)")
             if not store.conn.execute("SELECT count(*) FROM playbook_sent WHERE date = ?", [now.date()]).fetchone()[0]:
-                send_telegram_message(build_card(now.date(), regime.trend_text(), real_mode if real is not None else ""))
+                send_telegram_message(build_card(now.date(), regime.trend_text(), real_mode if real is not None else "",
+                                                 us_ov.text() if us_ov is not None else None))
                 store.conn.execute("INSERT INTO playbook_sent VALUES (?)", [now.date()])
         except Exception:
             logging.exception("트레이딩 전략 전송 실패")

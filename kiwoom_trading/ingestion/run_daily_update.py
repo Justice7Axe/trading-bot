@@ -97,6 +97,13 @@ def main() -> int:
         update_index(build_client())
     except Exception:
         logging.exception("지수 저장 실패")
+    try:   # 🇺🇸 미국 지수(나스닥·다우·나스닥100·선물) 일봉 → index.duckdb us_daily (2026-10-27)
+        from kiwoom_trading.common.us_market import backfill
+        from kiwoom_trading.ingestion.collectors.index_collector import INDEX_DB
+
+        backfill(INDEX_DB, rng="1mo")
+    except Exception:
+        logging.exception("미국 지수 저장 실패")
 
     if not args.no_telegram:
         try:

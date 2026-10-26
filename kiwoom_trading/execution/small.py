@@ -105,7 +105,8 @@ class SmallAccount:
                 continue
             stop = price * (s.stop / s.price) if s.stop else None      # 신호의 손절 비율을 현재가에 적용
             tp = TP.get(s.kind)
-            self.ledger.buy(now, code, name, price, _plan(price, stop, tp), qty=qty, note=f"[{s.kind}] {s.ts:%H:%M} 신호")
+            self.ledger.buy(now, code, name, price, _plan(price, stop, tp), qty=qty, note=f"[{s.kind}] {s.ts:%H:%M} 신호"
+                            + "".join(f"\n{l}" for l in (getattr(s, "reason", "") or "").splitlines() if "🇺🇸" in l))
             return
 
     # ------------------------------------------------------------ 매도
