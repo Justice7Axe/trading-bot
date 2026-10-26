@@ -1,6 +1,6 @@
 ---
 name: cafe-leader
-description: Ellie trading ☕ 카페 테마 대장 돌파 — 불개미 카페 '수학은직관력' 매매일지(2026-10-26 로보티즈·루닛) 관점을 규칙으로 옮긴 것. 장 초반 테마 형성·찐대장, 최근 기관 수급, NXT 프리장 햄버거로 9시 15분 기다림 해제, 일봉 박스 전고점 돌파, 1분봉 고점 돌파+햄버거 → 1차 돌파·2차 눌림 매수, 나눠 팔기. 실시간 체크리스트 알림(cafe_leader.py)·1천만 가상 장부·1년 백테스트(run_cafe_leader_backtest.py). 카페 일지·테마 대장·찐대장·프리장 햄버거·체크리스트를 묻거나 실행·수정·검증할 때 사용.
+description: Ellie trading ☕ 카페 테마 대장 돌파 — 불개미 카페 '수학은직관력' 매매일지(2026-10-26 로보티즈·루닛) 관점을 규칙으로 옮긴 것. 장 초반 테마 형성·찐대장, 최근 기관 수급, NXT 프리장 햄버거로 9시 15분 기다림 해제, 일봉 박스 전고점 돌파, 1분봉 고점 돌파+햄버거 → 1차 돌파·2차 눌림 매수, 나눠 팔기. 실시간 체크리스트 알림(strategies/cafe_leader/live.py)·1천만 가상 장부·1년 백테스트(strategies/cafe_leader/backtest.py). 카페 일지·테마 대장·찐대장·프리장 햄버거·체크리스트를 묻거나 실행·수정·검증할 때 사용.
 ---
 
 # ☕ 카페 테마 대장 돌파 (D:\Ellie\trading)
@@ -36,7 +36,7 @@ description: Ellie trading ☕ 카페 테마 대장 돌파 — 불개미 카페 
 보완 뒤 10-26 장중 기록 재현 (스크래치 cafe_replay.py): **루닛 09:08 13,210원**(카페 B 와 같은 자리), **로보티즈 09:25 246,000원**(카페 1차 돌파와 같은 자리)
 둘 다 ①③⑥ ✅ 체크리스트 알림 — ④ 박스가 아니라 가상 장부는 안 삼. 그날 알림 3건(삼현 포함), 기록만 8건.
 
-## 3. 규칙 (`kiwoom_trading/screener/cafe_leader.py`, 매분 09:00~10:30)
+## 3. 규칙 (`kiwoom_trading/strategies/cafe_leader/live.py`, 매분 09:00~10:30)
 - 대상: 전날 대금 200위 + 지금 KRX 대금 상위 200 (실시간이라 지금 순위는 미래 정보 아님).
 - ① **테마 대장**: 네이버 테마(`data/naver_groups.duckdb`, 264개) 중 지금 +4%↑ 종목 2개↑, 그중 오늘 누적 대금 1위이고 +5%↑.
 - ② **최근 기관**: 전날까지 3거래일 중 기관 순매수 + 2일↑ (일봉 investor_daily) — **표시만**.
@@ -46,9 +46,9 @@ description: Ellie trading ☕ 카페 테마 대장 돌파 — 불개미 카페 
 - ⑥ **매수 자리**: 1분봉 당일 고점 돌파 + 햄버거(봉 대금 ≥ 10억 & 직전 5봉 평균 2배, 양봉) → 돌파한 고점에 지정가, 10분 안 눌림 체결.
 - 텔레그램 체크리스트: ①③⑥ 이 맞을 때. 가상 장부 매수: ①③④⑥ 모두. 나머지는 `cafe_checks` 에 기록만.
 - 매도: 절반 +2.5%, 나머지 상한가 닿으면 상한가 / −2% 손절 즉시 / 아니면 다음 날 09:00. 하루 3종목, 종목당 잔고 ÷ 3, 비용 0.25%.
-- 표: `cafe_checks`(체크리스트 전부), `cafe_trades`, `cafe_days` (screener.duckdb). 주문 없음.
+- 표: `cafe_checks`(체크리스트 전부), `ledger_trades`(book '카페 대장'), `ledger_days` (screener.duckdb). 주문 없음.
 
-## 4. 1년 백테스트 (`kiwoom_trading/analysis/run_cafe_leader_backtest.py`, 2025-10-16 ~ 2026-10-22)
+## 4. 1년 백테스트 (`kiwoom_trading/strategies/cafe_leader/backtest.py`, 2025-10-16 ~ 2026-10-22)
 디앤서 공통 엔진(1분봉·수정주가 맞춤·다음 날 가격). 대상 = **전날 대금 200위 안**(1분봉 자료 쏠림 방지). 테마 소속은 지금 네이버 목록(과거 근사).
 결과 파일 data/cafe/backtest.txt, backtest_box.txt, backtest_box_close.txt.
 
@@ -72,6 +72,6 @@ description: Ellie trading ☕ 카페 테마 대장 돌파 — 불개미 카페 
 
 ## 6. 실행
 ```bash
-.venv\Scripts\python.exe -m kiwoom_trading.analysis.run_cafe_leader_backtest            # 1년 (약 20분)
-.venv\Scripts\python.exe -m kiwoom_trading.analysis.run_cafe_leader_backtest --report-only
+.venv\Scripts\python.exe -m kiwoom_trading.strategies.cafe_leader.backtest            # 1년 (약 20분)
+.venv\Scripts\python.exe -m kiwoom_trading.strategies.cafe_leader.backtest --report-only
 ```

@@ -16,7 +16,7 @@ import duckdb
 from kiwoom_trading.common.config import KST
 from kiwoom_trading.screener.early_watch import usual_value
 from kiwoom_trading.screener.history import load_history
-from kiwoom_trading.screener.paper_trader import COST, load_trades, net_pnl
+from kiwoom_trading.execution.paper import COST, load_trades, net_pnl
 from kiwoom_trading.screener.store import PROJECT_ROOT, ScreenerStore
 
 DAILY_DB = os.path.join(PROJECT_ROOT, "data", "daily_ohlcv.duckdb")
