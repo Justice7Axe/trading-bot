@@ -20,6 +20,8 @@ from typing import Callable, Optional
 from kiwoom_trading.analysis.indicators.hong import upper_limit
 
 TAG = "📕 [홍인기]"
+HONG_KIND = "📕 상한가 풀림"   # 실전 매매(real_inverse) 신호 종류 — '수급 없이' 장부가 살 때 함께 넘긴다 (2026-10-27 사용자)
+REAL_BOOK = "수급 없이"
 BOOKS = ("수급 확인", "수급 없이")
 START_CASH = 10_000_000
 SLOTS = 3
@@ -68,12 +70,14 @@ def load_prev_limitups(conn, today: date) -> set[str]:
 
 class HongAccount:
     def __init__(self, store, market, today: date, prev_limitups: Optional[set] = None,
-                 notify: Optional[Callable[[str], object]] = None) -> None:
+                 notify: Optional[Callable[[str], object]] = None,
+                 on_real: Optional[Callable[[datetime, str, str, float, int], object]] = None) -> None:
         self.conn = store.conn
         self.market = market
         self.today = today
         self.prev_limitups = prev_limitups or set()
         self.notify = notify or (lambda text: None)
+        self.on_real = on_real                 # (now, code, name, price, 상한가) → 🔴 실전 매매로 신호 넘김
         self.conn.execute(SCHEMA)
         row = self.conn.execute("SELECT reported FROM hg_days WHERE date = ?", [today]).fetchone()
         self.reported = bool(row and row[0])
@@ -175,6 +179,11 @@ class HongAccount:
                            " / ".join(f"{b}: {d}" for b, d in decisions.items())])
         logging.info("홍인기 계좌: %s 상한가 %s 풀림 %s (잠김 %s분, 기관 %s, 프로그램 %s) → %s", name, lim, price, run, inst, pg, decisions)
         fmt = lambda v: "-" if v is None else f"{v / 1e8:+,.0f}억"
+        if decisions.get(REAL_BOOK) == "매수" and self.on_real is not None:
+            try:
+                self.on_real(now, code, name, price, lim)
+            except Exception:
+                logging.exception("홍인기 → 실전 신호 넘기기 실패 %s", name)
         for book, decision in decisions.items():
             if decision != "매수":
                 continue
