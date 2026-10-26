@@ -1,12 +1,15 @@
-"""🔴 실전 매매 — 키움 실계좌로 6️⃣ 주도주 신고가 · 2️⃣ 저항 돌파 · 5️⃣ 약세장 인버스 중 그날 먼저 온 신호를 산다
-(2026-10-25 사용자: "10만 원 시드로 실전 매매, 월요일부터" → 처음엔 5️⃣ 만, 같은 날 "인버스 타이밍이 아니면 다른 기법도 — 6️⃣2️⃣5️⃣ 로 넓혀라").
+"""🔴 실전 매매 — 키움 실계좌로 6️⃣ 주도주 신고가 · 2️⃣ 저항 돌파 · 5️⃣ 약세장 인버스 · 📕 홍인기 상한가 풀림 중 그날 먼저 온 신호를 산다
+(2026-10-25 사용자: "10만 원 시드로 실전 매매, 월요일부터" → 처음엔 5️⃣ 만, 같은 날 "인버스 타이밍이 아니면 다른 기법도 — 6️⃣2️⃣5️⃣ 로 넓혀라".
+ 2026-10-27 사용자: "홍인기 매매를 바로 실전에 — 6️⃣2️⃣5️⃣ 와 하나로 합침" → 📕 를 네 번째 신호로 추가).
 
 켜는 법 (.env.local KIWOOM_REAL_TRADING):
   combo   = 6️⃣·2️⃣·5️⃣ (💰 10만 원 가상 계좌와 같은 규칙)      inverse = 5️⃣ 만      그 밖 / 없음 = 주문 안 함
 규칙:
 - 들고 있는 종목이 없고 오늘 아직 안 샀으면, 신호가 온 순서대로 첫 신호를 시장가로 산다 (정규장 09:00~15:19).
   금액 = min(시드 10만 원 + 실전 실현 손익, 계좌 주문 가능 금액, 주문 상한 20만 원). 1주도 못 사면 다음 신호. 신호가 +1% 넘게 오른 뒤면 추격 안 함.
-- 매도 (체결가 기준, 1분마다 현재가 확인): 6️⃣ 익절 없음 · −4% / 2️⃣ +7% · −5% / 5️⃣ +5% · −3%,
+- 📕 신호 = 홍인기 가상 장부 '수급 없이' 매수 판단 (첫 상한가 · 5분↑ 잠김 뒤 풀림, hong_account.py). 지금가가 상한가면(다시 잠김) 안 산다.
+- 매도 (체결가 기준, 1분마다 현재가 확인): 6️⃣ 익절 없음 · −4% / 2️⃣ +7% · −5% / 5️⃣ +5% · −3% / 📕 익절·손절 없음 (1년: 손절 넣으면 나빠짐,
+  전부 다음 날 09:00 870건 건당 +1.93%, 호가 2칸 미끄러짐 포함),
   그날 못 닿으면 15:19 에 팔지 않고 다음 날 09:00 첫 확인 때 시장가.
 안전장치:
 - 그날 신호로 받은 종목만 주문한다 (RealClient.allowed). 팔 때는 이 매매로 산 수량만 (계좌의 다른 보유분은 건드리지 않음).
@@ -22,6 +25,7 @@ from datetime import datetime, time
 from typing import Any, Callable, Optional
 
 from kiwoom_trading.ingestion.collectors.daily_backfill import KiwoomDailyClient, _to_int
+from kiwoom_trading.screener.hong_account import HONG_KIND
 from kiwoom_trading.screener.inverse_gap import CODE as INVERSE_CODE, WEAK_KIND, WEAK_STOP, WEAK_TP
 from kiwoom_trading.screener.regime_plays import NEWHIGH_KIND, NEWHIGH_STOP
 from kiwoom_trading.screener.resistance_retest import RETEST_KIND, RETEST_STOP, RETEST_TP
@@ -37,6 +41,7 @@ PLAYS = {   # 종류 → (이름, 익절, 손절)
     NEWHIGH_KIND: ("6️⃣ 주도주 신고가", None, NEWHIGH_STOP),
     RETEST_KIND: ("2️⃣ 저항 돌파", RETEST_TP, RETEST_STOP),
     WEAK_KIND: ("5️⃣ 약세장 인버스", WEAK_TP, WEAK_STOP),
+    HONG_KIND: ("📕 홍인기 상한가 풀림", None, None),
 }
 
 SCHEMA = """
@@ -214,6 +219,9 @@ class RealTrader:
                 price = float(q.price) if q and q.price else None
                 if not price:
                     continue
+                if s.kind == HONG_KIND and s.level and price >= s.level:
+                    logging.info("실전: %s 다시 상한가 %s — 풀림 아님, 안 삼", name, s.level)
+                    continue
                 if price > s.price * (1 + MAX_CHASE):
                     logging.info("실전: %s 신호가보다 %+.1f%% — 추격 안 함", name, (price / s.price - 1) * 100)
                     continue
@@ -236,7 +244,8 @@ class RealTrader:
                                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ordered')""",
                                   [tid, self.today, code, name, s.kind, qty, no, now.replace(tzinfo=None), price])
                 how = (f"익절 +{tp:.0%} / 손절 −{sl:.0%}, 못 닿으면 다음 날 09:00 매도" if tp
-                       else f"장중 익절 없이 다음 날 09:00 시가 매도 (−{sl:.0%} 손절)")
+                       else f"장중 익절 없이 다음 날 09:00 시가 매도 (−{sl:.0%} 손절)" if sl
+                       else "익절·손절 없이 다음 날 09:00 시가 매도")
                 self.notify(f"🔴 실전 매수 주문 {name}({code}) {qty}주 × 약 {price:,.0f}원 = {qty * price:,.0f}원 (주문 {no})\n"
                             f"  [{label} {s.ts:%H:%M}] {how}")
                 logging.info("실전 매수 주문 %s %s %s주 (주문 %s)", label, name, qty, no)
@@ -260,7 +269,8 @@ class RealTrader:
                 px = self.client.fill_price(buy_no, code)
                 if px:
                     self._set(tid, buy_price=px, status="open")
-                    self.notify(f"🔴 실전 매수 체결 {name} {qty}주 × {px:,.0f}원 [{label}] — 손절 {px * (1 - sl):,.0f}원"
+                    self.notify(f"🔴 실전 매수 체결 {name} {qty}주 × {px:,.0f}원 [{label}] — "
+                                + (f"손절 {px * (1 - sl):,.0f}원" if sl else "손절 없음")
                                 + (f" · 익절 {px * (1 + tp):,.0f}원" if tp else " · 장중 익절 없이 다음 날 09:00 시가 매도"))
                 return
             if status == "selling":
@@ -279,7 +289,7 @@ class RealTrader:
             elif tm < LAST:
                 q = self.market.quote(code, integrated=False)
                 if q and q.price:
-                    if q.price <= buy_price * (1 - sl):
+                    if sl and q.price <= buy_price * (1 - sl):
                         reason = f"손절 −{sl:.0%}"
                     elif tp and q.price >= buy_price * (1 + tp):
                         reason = f"익절 +{tp:.0%}"

@@ -40,7 +40,7 @@ from kiwoom_trading.screener.early_watch import EarlyDetector, EarlyHit, format_
 from kiwoom_trading.screener.engine import Screener
 from kiwoom_trading.screener.market_data import KiwoomMarket
 from kiwoom_trading.screener.paper_trader import PaperTrader, build_mock_client, mock_configured
-from kiwoom_trading.screener.intraday_signals import QualityConfig
+from kiwoom_trading.screener.intraday_signals import QualityConfig, Signal
 from kiwoom_trading.screener.bigcap_flow import KIND as BIGCAP_KIND, BigcapFlowWatcher
 from kiwoom_trading.screener.early_nine import KIND as NINE_KIND, EarlyNineWatcher
 from kiwoom_trading.screener.inverse_gap import KIND as INVERSE_KIND, WEAK_KIND, InverseGapWatcher, WeakInverseWatcher
@@ -56,8 +56,9 @@ from kiwoom_trading.screener.small_account import SmallAccount
 from kiwoom_trading.screener import real_inverse
 from kiwoom_trading.screener.playbook_card import build_card
 from kiwoom_trading.screener.jeonhwang_account import JeonhwangAccount, load_jh_context
-from kiwoom_trading.screener.hong_account import HongAccount, load_prev_limitups
+from kiwoom_trading.screener.hong_account import HONG_KIND, HongAccount, load_prev_limitups
 from kiwoom_trading.screener.cafe_leader import CafeLeaderWatcher, load_cafe_context
+from kiwoom_trading.screener.hong_styles import HongStylesAccount, load_hs_context
 from kiwoom_trading.screener.market_regime import MarketRegime
 from kiwoom_trading.screener.surge_groups import SurgeGroups
 from kiwoom_trading.screener.leader_shape import KIND as LEADER_KIND, LeaderShapeWatcher
@@ -360,7 +361,7 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
              danswer: Optional[DanswerCloseWatcher] = None, small: Optional[SmallAccount] = None, real: Optional["real_inverse.RealTrader"] = None,
              jh: Optional[JeonhwangAccount] = None, dwatch: Optional[DanswerWatch] = None,
              strong: Optional[StrongListWatcher] = None, hong: Optional[HongAccount] = None,
-             cafe: Optional[CafeLeaderWatcher] = None) -> int:
+             cafe: Optional[CafeLeaderWatcher] = None, hstyles: Optional[HongStylesAccount] = None) -> int:
     now = datetime.now(KST)
     if real is not None:
         real.tick(now)                 # 🔴 실전 매매(6️⃣2️⃣5️⃣): 체결 확인·익절/손절·다음 날 09:00 매도 (자체 예외 처리)
@@ -400,6 +401,11 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
             cafe.tick(now, value_top)  # ☕ 카페 테마 대장 체크리스트 (09:00~10:30) + 1천만 가상 장부
         except Exception:
             logging.exception("카페 테마 대장 확인 실패")
+    if hstyles is not None:
+        try:
+            hstyles.tick(now, value_top)   # 📕 홍인기 상따 밖 가상 장부: 대형주 돌파 · 강한 쪽 · 애프터 급락
+        except Exception:
+            logging.exception("홍인기 상따 밖 장부 확인 실패")
     if dwatch is not None:
         try:
             dwatch.tick(now, value_top, search_day)    # 📒 디앤서 관심종목 2-2-2 (조회 누적·대금 20위, 14:30 미리 보기·15:35 기록) · 🛡️ 15:15 헤지주
@@ -580,6 +586,7 @@ def main() -> int:
     jctx = None
     hlim: set = set()
     cctx = None
+    hsctx = None
     keys = store.signal_keys(now.date())
     up = UpOpenWatcher(market, screener.hist.keys(), regime=regime, done=any(k == UP_KIND for _, _, k in keys))
     weak_inv = WeakInverseWatcher(market, regime=regime, done=any(k == WEAK_KIND for _, _, k in keys))
@@ -599,6 +606,7 @@ def main() -> int:
             jctx = load_jh_context(dconn, now.date())
             hlim = load_prev_limitups(dconn, now.date())
             cctx = load_cafe_context(dconn, now.date())
+            hsctx = load_hs_context(dconn, now.date())
         finally:
             dconn.close()
         retest = RetestWatcher(market, cands, regime=regime,
@@ -656,7 +664,12 @@ def main() -> int:
     hong: Optional[HongAccount] = None
     if not args.once:
         try:   # 📕 홍인기 상한가 풀림 1천만 가상 계좌 (2026-10-27 사용자, 주문 없음)
-            hong = HongAccount(store, market, now.date(), prev_limitups=hlim, notify=None if args.no_telegram else send_telegram_message)
+            def hong_real(t, code, name, price, lim):   # 🔴 실전(6️⃣2️⃣5️⃣📕 그날 먼저 온 신호 하나)으로 넘김
+                if real is not None and real_mode == "combo":
+                    sig = Signal(ts=t.replace(tzinfo=None), kind=HONG_KIND, price=price, level=lim, stop=0.0, reason="상한가 5분↑ 잠김 뒤 풀림")
+                    real.on_signals(t, [(code, name, "홍인기", sig)])
+            hong = HongAccount(store, market, now.date(), prev_limitups=hlim, notify=None if args.no_telegram else send_telegram_message,
+                               on_real=hong_real)
             logging.info("홍인기 계좌: 잔고 수급 확인 %s원 · 수급 없이 %s원, 보유 %s건, 전날 상한가 %s종목 제외", f"{hong.cash('수급 확인'):,.0f}",
                          f"{hong.cash('수급 없이'):,.0f}", len(hong.open_trades()), len(hlim))
         except Exception:
@@ -668,6 +681,14 @@ def main() -> int:
             logging.info("카페 테마 대장: 전날 %s 기준 일봉 %s종목, 테마 소속 %s종목, 잔고 %s원", cctx.day, len(cctx.stocks), len(cctx.themes), f"{cafe.cash():,.0f}")
         except Exception:
             logging.exception("카페 테마 대장 준비 실패")
+    hstyles: Optional[HongStylesAccount] = None
+    if not args.once and hsctx is not None:
+        try:   # 📕 홍인기 상따 밖 (돌파·강한 쪽·애프터 급락) 1천만 가상 장부 (2026-10-27 사용자, 주문 없음)
+            hstyles = HongStylesAccount(store, market, now.date(), hsctx, notify=None if args.no_telegram else send_telegram_message,
+                                        leaders=cafe.leaders if cafe is not None else None)
+            logging.info("홍인기 상따 밖 장부: 대형주 %s종목(60일 고가) · 시총 5위 %s", len(hsctx.big30), ", ".join(hsctx.big5.values()))
+        except Exception:
+            logging.exception("홍인기 상따 밖 장부 준비 실패")
     strong: Optional[StrongListWatcher] = None
     if not args.once:   # 📡 오늘의 강세 종목 — 대금·상승률 상위 (2026-10-26 사용자, 매수 없음)
         strong = StrongListWatcher(store, market, now.date(), screener.names,
@@ -709,7 +730,7 @@ def main() -> int:
                         logging.info("오늘 데이터가 없음(휴장일로 판단, 기준일 %s) → 종료", probe[0].as_of)
                         break
                 run_once(screener, market, store, telegram=not args.no_telegram, watcher=watcher, early=early, investors=investors,
-                         themes=themes, board=board, trader=trader, leader=leader, pullback=pullback, nine=nine, bigcap=bigcap, regime=regime, inverse=inverse, contra=contra, retest=retest, up=up, block=block, newhigh=newhigh, trend=trend, surges=surges, burger=burger, weak_inv=weak_inv, rebreak=rebreak, danswer=danswer, small=small, real=real, jh=jh, dwatch=dwatch, strong=strong, hong=hong, cafe=cafe)
+                         themes=themes, board=board, trader=trader, leader=leader, pullback=pullback, nine=nine, bigcap=bigcap, regime=regime, inverse=inverse, contra=contra, retest=retest, up=up, block=block, newhigh=newhigh, trend=trend, surges=surges, burger=burger, weak_inv=weak_inv, rebreak=rebreak, danswer=danswer, small=small, real=real, jh=jh, dwatch=dwatch, strong=strong, hong=hong, cafe=cafe, hstyles=hstyles)
             except Exception:
                 logging.exception("스캔 실패 (다음 주기에 재시도)")
             if args.once:
