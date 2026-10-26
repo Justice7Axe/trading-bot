@@ -120,9 +120,19 @@ class Strategy(Protocol):
   - ✅ 💰 10만 원 계좌 → 공용 장부 book '10만 원' (small_trades 거래·보유 인버스 넘겨받음, 예전·새 코드 매매·잔고 같음)
   - ✅ 장중 재현 도구 `kiwoom_trading/backtest/replay.py`
   - ✅ 스킬·문서 경로 갱신
+- 같은 날 07:00~07:40 사용자 "남은 백테스트 입력 재생성도 지금" (PR #102): 스크립트 파일은 없었지만 **세션 대화 기록(jsonl)에 원래 코드 원문**이 남아 있어
+  규칙을 바꾸지 않고 옮김. 다시 만든 입력은 `data/backtest/playbook_rebuilt/`, 계좌 백테스트는 `PLAYBOOK_INPUTS=rebuilt` 로 그것을 씀.
+  | 입력 | 다시 만드는 명령 | 보존본과 비교 |
+  |---|---|---|
+  | 시장 상황 regime_feat · 가격 불일치 mismatch | `python -m kiwoom_trading.backtest.playbook.build_regime` | 249일 분류·3,173개 100% |
+  | ① u_cands | `python -m kiwoom_trading.strategies.regime_plays.build_up` | 21,600행·필터 627건 100% |
+  | ② g2g_filter | `python -m kiwoom_trading.strategies.resistance_retest.build` | 3,371행·필터 74건 100% |
+  | ③ resbo2 | `python -m kiwoom_trading.strategies.regime_plays.build_block` | 64,319행·필터 2,690건 100% |
+  | ④ closebet | `python -m kiwoom_trading.strategies.contra_close.build` | 47,800행·필터 422건 100% |
+  | ⑥ np_cands | `python -m kiwoom_trading.strategies.regime_plays.build_newhigh --asof "2026-10-25 10:31"` | 84,326행 100% |
+  | ⑤ inv_bars | `python -m kiwoom_trading.strategies.inverse.build [--fetch]` | 날짜 248일 같음, 인버스 1분봉은 DB 에 없어 `--fetch`(키움 약 250번) 전까지 보존본 사용 |
+  - 1분봉 DB 는 상위 500 백필로 종목·일이 계속 늘어난다 → 보존본과 똑같이 맞출 땐 `minute_backfill_done.done_at` 이 그 시각 전인 것만 쓰는 옵션(--asof 등) 사용.
 - 남은 일:
-  - 매매표 계좌 백테스트 입력 pkl(①②③④·mismatch) 재생성 — 만든 스크립트가 없어 매매법마다 `strategies/<이름>/backtest.py` 를 새로 짜고
-    보존본(data/backtest/playbook)과 같은 매매가 나오는지 확인해야 함 (몇 시간 작업, 장 밖에서 하나씩)
   - ①③⑥ 은 한 파일(regime_plays) 안에 있음 — 매매법별 폴더로 더 나눌지는 위 백테스트 작업 때 함께
   - 디앤서 스킬 폴더의 백테스트 스크립트(.claude/skills/danswer/scripts/t_*.py)를 strategies/danswer/ 로
   - 옛 경로 연결 파일은 다른 세션 코드까지 새 경로로 바뀐 뒤 지움

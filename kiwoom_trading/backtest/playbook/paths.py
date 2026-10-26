@@ -35,6 +35,10 @@ def rebuilt(name: str) -> str:
 
 
 def pb(name: str) -> str:
+    """입력 파일 경로. PLAYBOOK_INPUTS=rebuilt 면 원본 자료에서 다시 만든 것(data/backtest/playbook_rebuilt)을 먼저 쓰고,
+    없는 것(⑤ inv_bars — 인버스 1분봉이 DB 에 없어 키움에서 다시 받아야 함)만 보존본을 쓴다."""
+    if os.environ.get("PLAYBOOK_INPUTS") == "rebuilt" and os.path.exists(os.path.join(REBUILT, name)):
+        return os.path.join(REBUILT, name)
     p = os.path.join(PB, name)
     if not os.path.exists(p):
         raise FileNotFoundError(f"매매표 백테스트 입력 없음: {p} (data/research_archive/INDEX.md 참고)")

@@ -12,6 +12,7 @@ description: Ellie trading 백테스트 공통 원칙 — 자료 함정(9-14 통
 |---|---|
 | 공통 엔진 (1분봉·일봉 보정·다음 날 가격·비용·★ 집계 `Report.stats`) | `kiwoom_trading/backtest/engine.py` (옛 경로 `.claude/skills/danswer/scripts/engine.py` 도 같은 모듈) |
 | 매매표 전체 계좌 1년 (현금 나눠 쓰기·복리) | `python -m kiwoom_trading.backtest.playbook.full_bt` — 입력 `data/backtest/playbook/`, 옛 스크래치 보존 `data/research_archive/` (INDEX.md) |
+| 매매표 입력 다시 만들기 | `strategies/*/build*.py`·`backtest/playbook/build_regime.py` → `data/backtest/playbook_rebuilt/`, 계좌 백테스트에 쓰려면 `PLAYBOOK_INPUTS=rebuilt` (docs/architecture.md 6장 표). 1분봉은 백필로 늘어나니 같게 맞출 땐 `--asof` |
 | 공통 판단 | `common/krx.py`(호가·상한가) · `common/leader.py`(👑 테마 대장) · `common/market.py`(지수 20일선) |
 | 매매법 백테스트 | `kiwoom_trading/strategies/<이름>/backtest.py` → `data/<이름>/backtest.txt` |
 
@@ -22,6 +23,7 @@ description: Ellie trading 백테스트 공통 원칙 — 자료 함정(9-14 통
 - **`kang_minute`** = 장중 +15%↑ 종목·일 전부 → 상한가·급등주 시험은 쏠림 없이 가능.
 - 장중 기관 가집계(ka10063)는 약 500종목·첫 발표 09:50 무렵, 프로그램(ka90004)은 2026-10-26 부터만 쌓음 → 과거 1년 검증 불가, 가상 장부로 쌓는다.
 - 네이버 테마는 지금 목록 → 과거에 없던 테마가 섞인다(근사).
+- 스크립트 파일이 없어진 옛 연구도 세션 대화 기록 `~/.claude/projects/D--Ellie-trading/<세션>.jsonl`(보조 에이전트는 `<세션>/subagents/*.jsonl`)에 코드 원문이 남아 있다 — 짐작해 다시 짜기 전에 먼저 찾는다.
 
 ## 3. 매도 규칙 (모든 백테스트 같게)
 - 익절가 닿으면 그 가격(시가가 이미 넘었으면 시가), **손절가 닿으면 즉시**(같은 봉이면 손절 먼저), 둘 다 아니면 **다음 날 09:00 시가**.
