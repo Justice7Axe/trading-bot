@@ -11,7 +11,34 @@ DAILY_DB = os.environ.get("PLAYBOOK_DAILY_DB") or os.path.join(DATA, "daily_ohlc
 INV_DAILY_DB = os.path.join(PB, "inv_daily_ohlcv.duckdb")   # ② 저항 돌파 시총 계산용 (2026-10-24 스냅샷)
 
 
+REBUILT = os.path.join(DATA, "backtest", "playbook_rebuilt")   # 원본 자료에서 다시 만든 입력 (strategies/*/build*.py)
+SNAPSHOT_DB = os.path.join(PB, "daily_ohlcv_20261025.duckdb")   # 보존본을 만들 때와 같은 기준의 일봉 스냅샷
+MINUTE_DB = os.path.join(DATA, "minute_history.duckdb")
+
+
+def open_ro(path: str):
+    """DuckDB 를 읽기 전용으로 연다. 다른 프로그램이 쓰는 중이라 잠겨 있으면 임시 폴더 복사본을 연다."""
+    import tempfile
+
+    import duckdb
+    try:
+        return duckdb.connect(path, read_only=True)
+    except Exception:
+        dst = os.path.join(tempfile.gettempdir(), "pbr_" + os.path.basename(path))
+        shutil.copy(path, dst)
+        return duckdb.connect(dst, read_only=True)
+
+
+def rebuilt(name: str) -> str:
+    os.makedirs(REBUILT, exist_ok=True)
+    return os.path.join(REBUILT, name)
+
+
 def pb(name: str) -> str:
+    """입력 파일 경로. PLAYBOOK_INPUTS=rebuilt 면 원본 자료에서 다시 만든 것(data/backtest/playbook_rebuilt)을 먼저 쓰고,
+    없는 것(⑤ inv_bars — 인버스 1분봉이 DB 에 없어 키움에서 다시 받아야 함)만 보존본을 쓴다."""
+    if os.environ.get("PLAYBOOK_INPUTS") == "rebuilt" and os.path.exists(os.path.join(REBUILT, name)):
+        return os.path.join(REBUILT, name)
     p = os.path.join(PB, name)
     if not os.path.exists(p):
         raise FileNotFoundError(f"매매표 백테스트 입력 없음: {p} (data/research_archive/INDEX.md 참고)")
