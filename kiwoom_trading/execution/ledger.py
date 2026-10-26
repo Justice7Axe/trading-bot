@@ -40,7 +40,8 @@ class Plan:
     target: Optional[float] = None
     next_day: bool = True
     session: str = "regular"            # 'regular' / 'after'
-    until: Optional[str] = None          # 'HH:MM' — after 세션 관리 끝
+    until: Optional[str] = None          # 'HH:MM' — 그날 손절·익절을 보는 마지막 시각 (regular 기본 15:30 전, after 기본 19:55)
+    target_fill: str = "target"          # 'target' = 목표가에 매도 / 'price' = 닿은 때의 가격에 매도 (💰 10만 원 계좌)
 
     def dumps(self) -> str:
         return json.dumps(asdict(self))
@@ -88,7 +89,7 @@ class Ledger:
     """장부 하나. 같은 표를 여러 장부가 함께 쓴다 (book 칸으로 구분)."""
 
     def __init__(self, conn, book: str, tag: str, today: date, start_cash: float = 10_000_000, slots: int = 3,
-                 notify: Optional[Callable[[str], object]] = None) -> None:
+                 notify: Optional[Callable[[str], object]] = None, cost_of: Optional[Callable[[str], float]] = None) -> None:
         self.conn = conn
         self.book = book
         self.tag = tag
@@ -96,6 +97,7 @@ class Ledger:
         self.start_cash = start_cash
         self.slots = slots
         self.notify = notify or (lambda text: None)
+        self.cost_of = cost_of or (lambda code: COST)     # 왕복 비용 (ETF 0.05% 등 장부별로)
         self.conn.execute(SCHEMA)
 
     # ------------------------------------------------------------ 상태
@@ -164,7 +166,7 @@ class Ledger:
                     continue
                 p = price_of(t["code"], True)
             else:
-                if not (OPEN <= tm < CLOSE):
+                if not (OPEN <= tm < (time.fromisoformat(plan.until) if plan.until else CLOSE)):
                     continue
                 p = price_of(t["code"], False)
             if not p:
@@ -172,18 +174,18 @@ class Ledger:
             if plan.stop and p <= plan.stop:
                 self._close(now, t, p, "손절")
             elif plan.target and p >= plan.target:
-                self._close(now, t, plan.target, "목표가")
+                self._close(now, t, p if plan.target_fill == "price" else plan.target, "목표가")
             elif plan.half_at and not part and p >= plan.half_at and qty >= 2:
                 h = qty // 2
                 self.conn.execute("UPDATE ledger_trades SET part_ts = ?, part_qty = ?, part_price = ? WHERE id = ?",
                                   [now.replace(tzinfo=None), h, float(plan.half_at), t["id"]])
-                self.notify(f"{self.tag}·{self.book} {t['name']} {plan.half_at:,.0f} → 절반 {h}주 매도 ({plan.half_at / buy - 1 - COST:+.2%}), "
+                self.notify(f"{self.tag}·{self.book} {t['name']} {plan.half_at:,.0f} → 절반 {h}주 매도 ({plan.half_at / buy - 1 - self.cost_of(t['code']):+.2%}), "
                             f"나머지 {qty - h}주 {'다음 날 09:00' if plan.next_day else '계속 관리'} (가상)")
 
     def _close(self, now: datetime, t: dict, price: float, reason: str) -> None:
         buy, qty, part = t["buy_price"], t["qty"], t["part_qty"] or 0
         rest = qty - part
-        pnl = part * ((t["part_price"] or buy) - buy) + rest * (price - buy) - qty * buy * COST
+        pnl = part * ((t["part_price"] or buy) - buy) + rest * (price - buy) - qty * buy * self.cost_of(t["code"])
         self.conn.execute("UPDATE ledger_trades SET sell_ts = ?, sell_price = ?, reason = ?, pnl = ?, status = 'closed' WHERE id = ?",
                           [now.replace(tzinfo=None), float(price), reason, pnl, t["id"]])
         part_txt = f" (절반 {part}주는 {t['part_price']:,.0f})" if part else ""

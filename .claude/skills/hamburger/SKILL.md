@@ -1,6 +1,6 @@
 ---
 name: hamburger
-description: Ellie trading 🍔 햄버거 매매법 — 불개미 파이널 특강 9·10·12·13강의 '1분봉 거래대금(햄버거)' 기법. 기준 캔들 날·기준봉 고르기, 무지성 수급 빼기, 9시 15분 규칙·NXT 9시 전환, 끼, 눌림 지정가 매수, 익절·손절, H4 모의매매 규칙, 백테스트 결과와 결정 기록. 햄버거 판정·기준봉·타점을 묻거나, 햄버거 코드(hamburger.py, hamburger_watch.py)·백테스트·모의매매를 실행·수정·검증할 때 사용.
+description: Ellie trading 🍔 햄버거 매매법 — 불개미 파이널 특강 9·10·12·13강의 '1분봉 거래대금(햄버거)' 기법. 기준 캔들 날·기준봉 고르기, 무지성 수급 빼기, 9시 15분 규칙·NXT 9시 전환, 끼, 눌림 지정가 매수, 익절·손절, H4 모의매매 규칙, 백테스트 결과와 결정 기록. 햄버거 판정·기준봉·타점을 묻거나, 햄버거 코드(strategies/hamburger/rules.py, strategies/hamburger/live.py)·백테스트·모의매매를 실행·수정·검증할 때 사용.
 ---
 
 # 🍔 햄버거 매매법 (D:\Ellie\trading)
@@ -46,7 +46,7 @@ description: Ellie trading 🍔 햄버거 매매법 — 불개미 파이널 특�
 - 미구현(사람 판단): 고점 의심(3번째 파동 2~3배 봉), 도레미, 끼 해제(30분 조정 뒤 재트라이), 테마 1·2등 교차, 분할 매수·매도, 첫 전저점 이탈 턴 확인, NXT 종목 09:00 장대음봉 1~2분 대기, 일봉 자리·섹터·이슈·수급 필터.
 
 ## 5. 모의매매 규칙 — H4 엄격 선정 (2026-10-23 부터, PR #46·#47)
-`screener/hamburger_watch.py` (`HamburgerWatcher`), 모의투자 mode='목표'.
+`strategies/hamburger/live.py` (`HamburgerWatcher`), 모의투자 mode='목표'.
 - **대상**: 전날 대금 상위 **40** 중 최근 20거래일 안에 기준 캔들 날이 있는 종목. 장 시작 전에 기준봉을 정해 둔다(`data/hamburger_minute_cache.duckdb` 캐시).
 - **장중**: 09:15~14:31 매분 대상 종목 통합 1분봉으로 `simulate_day` 를 처음부터 다시 돌린다(인과적). 눌림 체결 봉이 3분 안이면 신호 → 시장가 매수(+1% 추격 금지).
 - **햄버거 봉 위치(종가, 전일 대비) 0% 초과 ~ +3% 이하만.** 밖이면 그날 그 종목은 버린다. 눌림 미체결·끼 초과도 그날 끝. 종목당 하루 1번.
@@ -76,13 +76,13 @@ description: Ellie trading 🍔 햄버거 매매법 — 불개미 파이널 특�
 ## 8. 실행·점검
 ```bash
 # 강의 기준봉 정답 맞추기 (16건 중 13건 일치가 기준선)
-.venv\Scripts\python.exe -m kiwoom_trading.analysis.run_hamburger_backtest --lecture
+.venv\Scripts\python.exe -m kiwoom_trading.strategies.hamburger.backtest --lecture
 # 엇갈림 규칙 비교 (24조합)
-.venv\Scripts\python.exe -m kiwoom_trading.analysis.run_hamburger_backtest --sample --since 2026-09-01 --until 2026-10-15
+.venv\Scripts\python.exe -m kiwoom_trading.strategies.hamburger.backtest --sample --since 2026-09-01 --until 2026-10-15
 # 파라미터 바꿔 보기
-.venv\Scripts\python.exe -m kiwoom_trading.analysis.run_hamburger_backtest --params "{\"tp\": 0.02}"
+.venv\Scripts\python.exe -m kiwoom_trading.strategies.hamburger.backtest --params "{\"tp\": 0.02}"
 ```
-- 순수 함수: `kiwoom_trading/analysis/indicators/hamburger.py` (`BurgerParams`, `pick_reference_days`, `reference_bar`, `simulate_day`, `with_params`). 장중·백테스트가 같은 함수를 쓴다.
+- 순수 함수: `kiwoom_trading/strategies/hamburger/rules.py` (`BurgerParams`, `pick_reference_days`, `reference_bar`, `simulate_day`, `with_params`). 장중·백테스트가 같은 함수를 쓴다.
 - 정답 픽스처: `tests/fixtures/hamburger/{code}_{date}_AL.json` (카페 예시 5건). 강의 예시 16건은 `run_hamburger_backtest.LECTURE_REFS`.
 - 1년 1분봉: `data/minute_history.duckdb` (통합 AL, 날짜별 대금 상위 200). **날짜 D 에는 전날 대금 상위만 써야 한다** (그날 상위가 섞이면 결과가 부푼다). 다른 작업이 쓰는 중이면 잠겨 있으니 임시 폴더로 복사해서 읽는다.
 - 장중 로그: `data/logs/screener_YYYYMMDD.log` 의 "햄버거 대상 N종목", "햄버거 …: 햄버거 위치 … 버림". 신호는 `buy_signals` kind='햄버거', 체결은 `paper_trades`.

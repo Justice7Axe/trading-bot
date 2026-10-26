@@ -1,7 +1,7 @@
 # 햄버거 강의 노트 (불개미 파이널특강 9~13강)
 
 받아쓰기 원본: `data/lectures/불개미09·10·12·13강_*.txt` (faster-whisper, 오탈자 있음, git 제외).
-전체 정리(예시 46건·실제 1분봉 대조)는 `docs/hamburger_lectures.md`, 코드는 `analysis/indicators/hamburger.py`.
+전체 정리(예시 46건·실제 1분봉 대조)는 `docs/hamburger_lectures.md`, 코드는 `strategies/hamburger/rules.py`.
 이 노트는 구현에 필요한 규칙만 뽑아 정리한다. `[9강 05:03]` 은 원본 위치.
 
 ## 9강 — 햄버거의 원리

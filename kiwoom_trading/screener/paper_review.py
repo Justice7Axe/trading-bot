@@ -29,17 +29,17 @@ if __package__ is None or __package__ == "":
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from kiwoom_trading.common.daily_store import DEFAULT_DB_PATH
-from kiwoom_trading.screener.contra_close import KIND as CONTRA_KIND
-from kiwoom_trading.screener.closing_rebreak import KIND as REBREAK_KIND
-from kiwoom_trading.screener.danswer_close import KIND as DANSWER_KIND
-from kiwoom_trading.screener.resistance_retest import RETEST_KIND
-from kiwoom_trading.screener.regime_plays import BLOCK_KIND, NEWHIGH_KIND, UP_KIND
-from kiwoom_trading.screener.trend_hold import KIND as TREND_KIND
-from kiwoom_trading.screener.inverse_gap import WEAK_KIND
-from kiwoom_trading.screener.hamburger_watch import KIND as BURGER_KIND
-from kiwoom_trading.screener.leader_shape import big_red_exit
+from kiwoom_trading.strategies.contra_close.live import KIND as CONTRA_KIND
+from kiwoom_trading.strategies.danswer.rebreak import KIND as REBREAK_KIND
+from kiwoom_trading.strategies.danswer.close import KIND as DANSWER_KIND
+from kiwoom_trading.strategies.resistance_retest.live import RETEST_KIND
+from kiwoom_trading.strategies.regime_plays.live import BLOCK_KIND, NEWHIGH_KIND, UP_KIND
+from kiwoom_trading.strategies.trend_hold.live import KIND as TREND_KIND
+from kiwoom_trading.strategies.inverse.live import WEAK_KIND
+from kiwoom_trading.strategies.hamburger.live import KIND as BURGER_KIND
+from kiwoom_trading.strategies.leader_shape.live import big_red_exit
 from kiwoom_trading.execution.paper import COST, KIND_LIMIT, MAX_CHASE, MAX_POSITIONS, STRONG_STOP, TRAIL_GAP, TRAIL_START
-from kiwoom_trading.screener.pullback_breakout import exit_reason as pullback_exit
+from kiwoom_trading.strategies.pullback_breakout.live import exit_reason as pullback_exit
 from kiwoom_trading.screener.store import ScreenerStore
 
 SCHEMA = """

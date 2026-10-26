@@ -18,7 +18,7 @@ description: Ellie trading 종목 선정 알고리즘 — 65기법(급등 장대
 
 | 로직 | 시점 | 목적 | 코드 |
 |---|---|---|---|
-| 65기법 | 장 마감 후(20:00) | 며칠간 급등한 주도주 → 눌림 매수 | `kiwoom_trading/analysis/indicators/sixty_five_*.py`, `analysis/sixty_five_report.py` |
+| 65기법 | 장 마감 후(20:00) | 며칠간 급등한 주도주 → 눌림 매수 | `kiwoom_trading/analysis/indicators/sixty_five_*.py`, `strategies/sixty_five/report.py` |
 | 주도주 스크리너 | 장중 1분마다 + 장 마감 후 | 오늘/내일의 주도주 | `kiwoom_trading/screener/{conditions,engine,run_intraday,run_daily}.py` |
 | 조기 발굴 | 장 마감 후 + 장중 | 두산테스나형을 매수 타점 전에 감시 목록에 | `kiwoom_trading/screener/early_watch.py` |
 
@@ -43,9 +43,9 @@ description: Ellie trading 종목 선정 알고리즘 — 65기법(급등 장대
 
 실행:
 ```
-.venv\Scripts\python.exe -m kiwoom_trading.analysis.sixty_five_report            # 오늘 리포트 (🆕오늘 포착/⏳매수 대기/📌보유 중/✅오늘 청산)
-.venv\Scripts\python.exe -m kiwoom_trading.analysis.sixty_five_report --history  # 과거 신호 전체
-.venv\Scripts\python.exe -m kiwoom_trading.analysis.run_sixty_five_backtest
+.venv\Scripts\python.exe -m kiwoom_trading.strategies.sixty_five.report            # 오늘 리포트 (🆕오늘 포착/⏳매수 대기/📌보유 중/✅오늘 청산)
+.venv\Scripts\python.exe -m kiwoom_trading.strategies.sixty_five.report --history  # 과거 신호 전체
+.venv\Scripts\python.exe -m kiwoom_trading.strategies.sixty_five.backtest
 ```
 
 ---
@@ -296,7 +296,7 @@ description: Ellie trading 종목 선정 알고리즘 — 65기법(급등 장대
 - 과거 뉴스 기록이 없어 1년 검증 불가. 사용자 '주도섹터' 캡처와 `surge_groups` 를 대조해 쓸모를 판단한다.
 - 매수 신호가 아니다. 포착 뒤 따라 사기는 1년·실전 모두 손실이었다.
 
-## 6. 🧱 저항 재시험 후보 — 지투지바이오형 (`screener/resistance_retest.py`, 2026-10-25 사용자) — 알림용
+## 6. 🧱 저항 재시험 후보 — 지투지바이오형 (`strategies/resistance_retest/live.py`, 2026-10-25 사용자) — 알림용
 
 **사용자:** "지투지바이오가 지금 규칙으로 10-23 에 안 나오니, 일봉 캔들 모양과 거래대금 패턴으로 포착되게 하라."
 **지투지바이오(456160) 10-22 장 마감 모양:** 10-01 +20.7% 장대양봉(대금 4.9배) 고가 45,150 = 예전 고점 → 10-08~15 −34% 급락 → 10-19 +24.6%·10-21 +17.9% 장대양봉으로 V자 회복 → 10-21·22 고가 45,000·45,200 으로 저항에 닿고 종가 −7.5% 에서 버팀, 최근 3일 대금 4.3배 → 10-23 45,200 돌파 +18.8% (시장 −4.4%).
