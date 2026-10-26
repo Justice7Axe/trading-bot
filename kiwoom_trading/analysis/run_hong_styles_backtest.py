@@ -29,6 +29,7 @@ from datetime import datetime, time
 import numpy as np
 
 from kiwoom_trading.backtest import engine as E  # noqa: E402  (공통 엔진, docs/architecture.md)
+from kiwoom_trading.common.market import ma20_tag  # noqa: E402
 
 OUT = os.path.join(E.DATA, "hong")
 os.makedirs(OUT, exist_ok=True)
@@ -37,13 +38,7 @@ os.makedirs(OUT, exist_ok=True)
 # ---------------------------------------------------------------- 공통
 def mkt_tags():
     """{date: '둘 다 20일선 아래' / '둘 중 하나↑ 20일선 위'} — 전날 마감 기준."""
-    out = {}
-    for code in ("001", "101"):
-        rows = E.IX.execute("SELECT date, close FROM idx_daily WHERE code=? ORDER BY date", [code]).fetchall()
-        cl = np.array([r[1] for r in rows], float)
-        for i in range(20, len(rows)):
-            out.setdefault(rows[i][0], [None, None])[0 if code == "001" else 1] = cl[i - 1] < cl[i - 20:i].mean()
-    return {d: ("둘 다 20일선 아래" if all(v) else "둘 중 하나↑ 20일선 위") for d, v in out.items()}
+    return ma20_tag(E.IX)
 
 
 MKT = mkt_tags()

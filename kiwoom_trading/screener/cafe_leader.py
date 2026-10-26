@@ -24,7 +24,8 @@ from typing import Callable, Optional
 
 import duckdb
 
-from kiwoom_trading.analysis.indicators.hong import upper_limit
+from kiwoom_trading.common.krx import upper_limit
+from kiwoom_trading.common.leader import theme_leaders
 from kiwoom_trading.common.daily_store import PROJECT_ROOT
 from kiwoom_trading.ingestion.collectors.minute_collector import fetch_minute_bars
 
@@ -155,20 +156,9 @@ class CafeLeaderWatcher:
 
     def leaders(self, value_top) -> dict[str, tuple[str, int, float]]:
         """지금 테마 대장 → {code: (테마, +4%↑ 종목 수, 등락률)} (지금 대금 상위 200 안 종목으로 판단)."""
-        rows = [r for r in value_top if r.code in self.ctx.stocks and r.change_rate is not None and r.trade_value]
-        by_theme = defaultdict(list)
-        for r in rows:
-            if r.change_rate >= UP_MIN:
-                for th in self.ctx.themes.get(r.code, ()):
-                    by_theme[th].append(r)
-        out = {}
-        for th, mem in by_theme.items():
-            if len(mem) < 2:
-                continue
-            top = max(mem, key=lambda r: r.trade_value)
-            if top.change_rate >= LEAD_MIN and (top.code not in out or len(mem) > out[top.code][1]):
-                out[top.code] = (th, len(mem), top.change_rate)
-        return out
+        rows = [(r.code, r.change_rate, r.trade_value) for r in value_top
+                if r.code in self.ctx.stocks and r.change_rate is not None and r.trade_value]
+        return theme_leaders(rows, self.ctx.themes, UP_MIN, LEAD_MIN)
 
     def _scan(self, now: datetime, value_top) -> None:
         minute = now.replace(second=0, microsecond=0, tzinfo=None)

@@ -25,6 +25,8 @@ import duckdb
 import numpy as np
 
 from kiwoom_trading.backtest import engine as E  # noqa: E402  (공통 엔진, docs/architecture.md)
+from kiwoom_trading.common.leader import theme_leaders  # noqa: E402
+from kiwoom_trading.common.market import ma20_tag  # noqa: E402
 
 OUT = os.path.join(E.DATA, "cafe")
 os.makedirs(OUT, exist_ok=True)
@@ -112,23 +114,16 @@ def day_trades(d, mkt):
 
 def leader_at(c, d, t, info):
     """t 시각 c 가 자기 테마 중 하나에서 대장인가: 그 테마 종목(대상 안) 중 +4%↑ 2개↑, c 가 누적 대금 1위 & +5%↑."""
-    best = (False, 0)
-    for th in THEME.get(c, ()):
-        mem = []
-        for o, v in info.items():
-            if th not in THEME.get(o, ()):
-                continue
-            upto = [x for x in v["reg"] if x[0] <= t]
-            if not upto:
-                continue
-            mem.append((o, upto[-1][4] / v["pc"] - 1, sum(val(x) for x in v["pre"]) + sum(val(x) for x in upto)))
-        up = [m for m in mem if m[1] >= 0.04]
-        if len(up) >= 2:
-            top = max(up, key=lambda m: m[2])
-            if top[0] == c and top[1] >= 0.05:
-                return True, len(up)
-            best = (best[0], max(best[1], len(up)))
-    return best
+    mine = THEME.get(c, ())
+    rows = []
+    for o, v in info.items():
+        if not (THEME.get(o, set()) & set(mine)):
+            continue
+        upto = [x for x in v["reg"] if x[0] <= t]
+        if upto:
+            rows.append((o, upto[-1][4] / v["pc"] - 1, sum(val(x) for x in v["pre"]) + sum(val(x) for x in upto)))
+    lead = theme_leaders(rows, {o: THEME.get(o, set()) & set(mine) for o, _, _ in rows})
+    return (True, lead[c][1]) if c in lead else (False, 0)
 
 
 def exit_from(c, d, reg, k, buy, pc, same_bar_open=True):
@@ -152,13 +147,7 @@ def exit_from(c, d, reg, k, buy, pc, same_bar_open=True):
 
 
 def index_mkt():
-    out = {}
-    for code in ("001", "101"):
-        rows = E.IX.execute("SELECT date, close FROM idx_daily WHERE code=? ORDER BY date", [code]).fetchall()
-        cl = np.array([r[1] for r in rows], float)
-        for i in range(20, len(rows)):
-            out.setdefault(rows[i][0], [None, None])[0 if code == "001" else 1] = cl[i - 1] < cl[i - 20:i].mean()
-    return {d: ("둘 다 20일선 아래" if all(v) else "둘 중 하나↑ 20일선 위") for d, v in out.items()}
+    return ma20_tag(E.IX)
 
 
 def run():

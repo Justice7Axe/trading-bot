@@ -23,6 +23,7 @@ from datetime import date, datetime, time
 import numpy as np
 
 from kiwoom_trading.backtest import engine as E  # noqa: E402  (공통 엔진, docs/architecture.md)
+from kiwoom_trading.common.market import index_below_ma20 as _below_ma20  # noqa: E402
 
 from kiwoom_trading.analysis.indicators.hong import HongParams, find_entry, simulate_exit, upper_limit  # noqa: E402
 
@@ -61,14 +62,7 @@ CONFIGS = build_configs()
 # ---------------------------------------------------------------- 시장 (지수 20일선)
 def index_below_ma20():
     """{date: (코스피 전날 종가 < 20일선, 코스닥 전날 종가 < 20일선)} — 판단은 전날 마감 기준."""
-    out = {}
-    for code in ("001", "101"):
-        rows = E.IX.execute("SELECT date, close FROM idx_daily WHERE code=? ORDER BY date", [code]).fetchall()
-        ds = [r[0] for r in rows]; cl = np.array([r[1] for r in rows], float)
-        for i in range(20, len(ds)):
-            below = cl[i - 1] < cl[i - 20:i].mean()      # i 날 판단 = i-1 날 종가 vs i-1 까지 20일 평균
-            out.setdefault(ds[i], [None, None])[0 if code == "001" else 1] = below
-    return {d: tuple(v) for d, v in out.items()}
+    return _below_ma20(E.IX)
 
 
 # ---------------------------------------------------------------- 후보·매매

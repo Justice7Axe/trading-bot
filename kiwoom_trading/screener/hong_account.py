@@ -17,7 +17,7 @@ import logging
 from datetime import date, datetime, time, timedelta
 from typing import Callable, Optional
 
-from kiwoom_trading.analysis.indicators.hong import upper_limit
+from kiwoom_trading.common.krx import upper_limit
 
 TAG = "📕 [홍인기]"
 HONG_KIND = "📕 상한가 풀림"   # 실전 매매(real_inverse) 신호 종류 — '수급 없이' 장부가 살 때 함께 넘긴다 (2026-10-27 사용자)

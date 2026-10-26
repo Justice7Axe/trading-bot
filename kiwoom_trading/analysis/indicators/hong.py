@@ -12,6 +12,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import time
 
+from kiwoom_trading.common.krx import tick_size, upper_limit  # noqa: F401  (공용, 예전 이름 그대로 쓸 수 있게)
+
 
 @dataclass(frozen=True)
 class HongParams:
@@ -28,21 +30,6 @@ class HongParams:
 
     def with_(self, **kw) -> "HongParams":
         return replace(self, **kw)
-
-
-def tick_size(price: float) -> int:
-    """KRX 호가 단위 (2023-01-25 부터, 코스피·코스닥 같음)."""
-    for lim, t in ((2000, 1), (5000, 5), (20000, 10), (50000, 50), (200000, 100), (500000, 500)):
-        if price < lim:
-            return t
-    return 1000
-
-
-def upper_limit(base: float) -> int:
-    """상한가 = 기준가 × 1.3 을 그 가격대 호가 단위로 내림. 예: 루닛 2026-10-26 기준가 11,300 → 14,690."""
-    raw = base * 1.3
-    t = tick_size(raw)
-    return int(raw // t * t)
 
 
 def find_entry(reg, limit, p: HongParams):
