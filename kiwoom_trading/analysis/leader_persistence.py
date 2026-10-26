@@ -28,7 +28,7 @@ from datetime import date, time
 import duckdb
 
 from kiwoom_trading.common.daily_store import PROJECT_ROOT
-from kiwoom_trading.screener.leader_shape import features
+from kiwoom_trading.strategies.leader_shape.live import features
 
 COST = 0.0025
 TS = (time(9, 30), time(10, 0))

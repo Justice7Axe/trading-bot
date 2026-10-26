@@ -33,7 +33,7 @@ description: Ellie trading 운영 — 일일 일봉 업데이트/리포트 스�
 ## 코드 구조 (2026-10-27 정리, docs/architecture.md)
 - `common/` 자료·판단 공용(krx 호가·상한가, leader 👑 테마 대장, market 지수 20일선) · `backtest/` 공통 엔진·매매표 계좌(`python -m kiwoom_trading.backtest.playbook.full_bt`)
 - `execution/` 실전(real)·모의(paper)·10만 원(small)·**공용 가상 장부(ledger — 표 `ledger_trades`·`ledger_days`, book 칸으로 장부 구분)**
-- `strategies/<이름>/` 매매법마다 rules·live·backtest (hong_limitup, hong_styles, cafe_leader, jeonhwang). 실행기 `screener/run_intraday.py` 는 가상 장부 매매법을 `books` 목록으로 돌림.
+- `strategies/<이름>/` 매매법마다 rules·live·backtest — regime_plays(①③⑥) · resistance_retest(②) · contra_close(④) · inverse(⑤) · trend_hold(⑦) · danswer(🧭📒🌙) · hamburger(🍔) · bigcap_flow · early_nine · pullback_breakout · leader_shape · sixty_five · testa · hong_limitup · hong_styles · cafe_leader · jeonhwang. 장중 재현: `python -m kiwoom_trading.backtest.replay 날짜…`. 실행기 `screener/run_intraday.py` 는 가상 장부 매매법을 `books` 목록으로 돌림.
 - 옛 경로(screener/real_inverse·paper_trader·hong_account …, analysis/run_*_backtest)는 같은 모듈을 가리키는 연결 파일 — 예전 명령 그대로 동작. 백테스트 공통 원칙은 스킬 backtest-rules.
 
 ## 데이터
@@ -82,7 +82,7 @@ description: Ellie trading 운영 — 일일 일봉 업데이트/리포트 스�
 - 모의 계좌 시작 자금은 1,000만 원이다. `MockClient` 는 주소에 `mockapi` 가 없으면 만들지 않는다(실계좌 주문 방지).
 - 장중 스캐너가 자동으로 매매한다(정규장 실주문, NXT 프리·애프터장 가상 체결, 15:40·19:55 리포트). `--once` 나 `--no-paper` 로 실행하면 주문하지 않는다. 규칙은 `buy-signals` 스킬 5장에 있다.
 - 점검: `python -m kiwoom_trading.screener.paper_trader --status`(잔고), `--report [YYYYMMDD]`(리포트 미리보기)
-- 모의 계좌와 따로 도는 **가상 계좌**(주문 없음, screener.duckdb 에 기록): 💰 10만 원 계좌 `execution/small.py`(small_trades), 📒 [디앤서] 관심종목 2-2-2·🛡️ 하락일 헤지주 `danswer_watch.py`(danswer_watch, 12:00 네이버 업종·테마 받기 → data/naver_groups.duckdb, 14:30 미리 보기·15:15 헤지주 알림·15:35 관심종목+전날 결과 — 스킬 danswer 10장), 📘 [전황] 1천만 계좌 `strategies/jeonhwang/live.py`(ledger_trades(book '전황 11시')·jh_days, 11:00 매수·다음 날 09:00 매도, 코스피 1구간 날만 — 스킬 jeonhwang 0장), 📕 [홍인기] 상한가 풀림 두 장부(수급 확인·수급 없이) `strategies/hong_limitup/live.py`(ledger_trades(book)·hg_events, 5분↑ 잠김 뒤 풀리면 매수·다시 상한가 절반·다음 날 09:00 — 스킬 hong 4장), ☕ [카페] 테마 대장 체크리스트·가상 장부 `strategies/cafe_leader/live.py`(cafe_checks·ledger_trades(book '카페 대장'), 09:00~10:30 — 스킬 cafe-leader 3장), 📕 [홍인기·상따 밖] 돌파·대장/돌파/강한 쪽/애프터 급락 `strategies/hong_styles/live.py`(ledger_trades(book), 19:58 요약 — 스킬 hong 7장).
+- 모의 계좌와 따로 도는 **가상 계좌**(주문 없음, screener.duckdb 에 기록): 💰 10만 원 계좌 `execution/small.py`(small_trades), 📒 [디앤서] 관심종목 2-2-2·🛡️ 하락일 헤지주 `strategies/danswer/watch.py`(danswer_watch, 12:00 네이버 업종·테마 받기 → data/naver_groups.duckdb, 14:30 미리 보기·15:15 헤지주 알림·15:35 관심종목+전날 결과 — 스킬 danswer 10장), 📘 [전황] 1천만 계좌 `strategies/jeonhwang/live.py`(ledger_trades(book '전황 11시')·jh_days, 11:00 매수·다음 날 09:00 매도, 코스피 1구간 날만 — 스킬 jeonhwang 0장), 📕 [홍인기] 상한가 풀림 두 장부(수급 확인·수급 없이) `strategies/hong_limitup/live.py`(ledger_trades(book)·hg_events, 5분↑ 잠김 뒤 풀리면 매수·다시 상한가 절반·다음 날 09:00 — 스킬 hong 4장), ☕ [카페] 테마 대장 체크리스트·가상 장부 `strategies/cafe_leader/live.py`(cafe_checks·ledger_trades(book '카페 대장'), 09:00~10:30 — 스킬 cafe-leader 3장), 📕 [홍인기·상따 밖] 돌파·대장/돌파/강한 쪽/애프터 급락 `strategies/hong_styles/live.py`(ledger_trades(book), 19:58 요약 — 스킬 hong 7장).
 - 키움 API 메모:
   - kt10000 매수, kt10001 매도(`trde_tp` 3 = 시장가, `dmst_stex_tp` KRX)
   - kt00018 잔고(`acnt_evlt_remn_indv_tot`), kt00001 예수금(`ord_alow_amt`), ka10076 체결(`cntr`), ka10075 미체결(`oso`)

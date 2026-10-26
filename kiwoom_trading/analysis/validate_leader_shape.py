@@ -23,7 +23,7 @@ from datetime import date, datetime, time
 import duckdb
 
 from kiwoom_trading.common.daily_store import PROJECT_ROOT
-from kiwoom_trading.screener.leader_shape import LeaderShapeConfig, big_red_exit, failed, features, stop_price
+from kiwoom_trading.strategies.leader_shape.live import LeaderShapeConfig, big_red_exit, failed, features, stop_price
 
 COST = 0.0025
 

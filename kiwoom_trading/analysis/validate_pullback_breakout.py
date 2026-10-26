@@ -21,7 +21,7 @@ from datetime import date, datetime, time
 import duckdb
 
 from kiwoom_trading.common.daily_store import PROJECT_ROOT
-from kiwoom_trading.screener.pullback_breakout import PullbackConfig, scan
+from kiwoom_trading.strategies.pullback_breakout.live import PullbackConfig, scan
 
 COST = 0.0025
 

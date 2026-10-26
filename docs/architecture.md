@@ -113,9 +113,16 @@ class Strategy(Protocol):
   5. ✅ `strategies/{hong_limitup,hong_styles,cafe_leader,jeonhwang}/` + `execution/{real,paper,small}.py`, 실행기 `books` 목록
      (실전 끔·복사 DB 로 실행기 6회 실행 오류 없음). 옛 경로는 모두 같은 모듈을 가리키는 연결 파일로 남김.
   6. ✅ 스킬 경로 갱신, 공통 스킬 `backtest-rules` 신설
-- 남은 일 (장 밖에서):
-  - 💰 10만 원 계좌(`execution/small.py`) 를 공용 장부로 — 10-26 산 TIGER 인버스가 10-27 09:00 에 팔린 뒤
-  - 매매표 신호 매매법(①~⑦·🧭·🌙·🍔 등 screener/ 의 감시들)을 하나씩 `strategies/` 로 — 각자 rules·live·backtest, 재현 확인
-  - 매매표 계좌 백테스트의 입력 pkl(①②③④·mismatch)을 일봉·1분봉에서 다시 만드는 코드 (지금은 보존본 사용)
-  - 장중 재현 도구를 `kiwoom_trading/backtest/replay.py` 로 (지금은 스크래치 cafe_replay·hs_replay)
-  - 옛 경로 연결 파일은 다른 코드·문서가 모두 새 경로를 쓰면 지움
+- 같은 날 06:00~07:10 사용자 "남은 것도 지금 다 옮겨줘" (PR #99):
+  - ✅ 매매법 코드 전부 `strategies/` 로 — ①③⑥ regime_plays · ② resistance_retest · ④ contra_close · ⑤ inverse · ⑦ trend_hold ·
+    🧭📒🌙 danswer(close·watch·rebreak) · 🍔 hamburger(rules·live·backtest) · bigcap_flow · early_nine · pullback_breakout · leader_shape ·
+    65기법 sixty_five · 테스타 testa (옛 경로는 연결 파일, 모듈 53개 불러오기 확인)
+  - ✅ 💰 10만 원 계좌 → 공용 장부 book '10만 원' (small_trades 거래·보유 인버스 넘겨받음, 예전·새 코드 매매·잔고 같음)
+  - ✅ 장중 재현 도구 `kiwoom_trading/backtest/replay.py`
+  - ✅ 스킬·문서 경로 갱신
+- 남은 일:
+  - 매매표 계좌 백테스트 입력 pkl(①②③④·mismatch) 재생성 — 만든 스크립트가 없어 매매법마다 `strategies/<이름>/backtest.py` 를 새로 짜고
+    보존본(data/backtest/playbook)과 같은 매매가 나오는지 확인해야 함 (몇 시간 작업, 장 밖에서 하나씩)
+  - ①③⑥ 은 한 파일(regime_plays) 안에 있음 — 매매법별 폴더로 더 나눌지는 위 백테스트 작업 때 함께
+  - 디앤서 스킬 폴더의 백테스트 스크립트(.claude/skills/danswer/scripts/t_*.py)를 strategies/danswer/ 로
+  - 옛 경로 연결 파일은 다른 세션 코드까지 새 경로로 바뀐 뒤 지움

@@ -3,7 +3,7 @@
 불개미 '햄버거' 기법을 코드로 옮긴 설계다.
 - 1차 초안은 주식넘버원 카페 공개 글(공지 62954 외 약 50건)로 재구성했다.
 - 이번 개정은 **파이널 특강 9·10·12·13강 정의**(`docs/hamburger_lectures.md`, 구현용 요약 `docs/hamburger_lecture_notes.md`)와 **백테스트 결과**를 반영했다.
-- 코드: `kiwoom_trading/analysis/indicators/hamburger.py`(순수 함수), `kiwoom_trading/analysis/run_hamburger_backtest.py`(백테스트).
+- 코드: `kiwoom_trading/strategies/hamburger/rules.py`(순수 함수), `kiwoom_trading/strategies/hamburger/backtest.py`(백테스트).
 
 ## 0. 개념
 

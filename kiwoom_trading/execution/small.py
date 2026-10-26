@@ -4,8 +4,9 @@
 규칙 (스캐너가 낸 신호를 그대로 받아 주문 없이 기록만 한다):
 - 들고 있는 종목이 없고 오늘 아직 안 샀으면, 신호가 온 순서대로 첫 신호를 산다 (현재가, 정수 주, 1주도 못 사면 다음 신호).
   신호가 대비 +1% 넘게 오른 뒤면 추격 안 함 (모의투자와 같음). 매수는 정규장 09:00~15:19.
-- 매도는 각 매매 규칙: ⑥ 익절 없음 · −4% / ② +7% · −5% / ⑤ +5% · −3%, 그날 못 닿으면 15:19 에 팔지 않고 다음 날 09:00 첫 확인 때 판다.
+- 매도는 각 매매 규칙: ⑥ 익절 없음 · −4% / ② +7% · −5% / ⑤ +5% · −3% (15:19 까지, 닿은 때의 가격), 못 닿으면 다음 날 09:00 첫 확인 때.
 - 손익은 비용을 뺀다 (주식 왕복 0.25%, ETF 0.05%). 잔고 = 10만 원 + 지금까지 실현 손익 (번 돈을 계속 굴림).
+- 2026-10-27: 공용 가상 장부(execution/ledger.py, book '10만 원')로 옮김. 예전 표 small_trades 의 거래(보유 중 포함)는 처음 한 번 넘겨받는다.
 1년 백테스트 (스크래치 small.py·small2.py, 신호 시각 순서, 정수 주): 10만 → 808,902원 (8.1배), 최대 낙폭 18.2%, 166건,
 앞 반기 3.9배 / 뒤 반기 2.1배. ⚠️ 381 조합 중 1등이고 큰 수익은 상승장 날 ⑥ 에서 — 최근 약세장 석 달은 1.1~1.3배.
 """
@@ -13,10 +14,13 @@ import logging
 from datetime import datetime, time
 from typing import Callable, Optional
 
-from kiwoom_trading.screener.inverse_gap import WEAK_KIND, WEAK_TP
-from kiwoom_trading.screener.regime_plays import NEWHIGH_KIND
-from kiwoom_trading.screener.resistance_retest import RETEST_KIND, RETEST_TP
+from kiwoom_trading.execution.ledger import Ledger, Plan, price_source
+from kiwoom_trading.strategies.inverse.live import WEAK_KIND, WEAK_TP
+from kiwoom_trading.strategies.regime_plays.live import NEWHIGH_KIND
+from kiwoom_trading.strategies.resistance_retest.live import RETEST_KIND, RETEST_TP
 
+TAG = "💰"
+BOOK = "10만 원"
 START_CASH = 100_000
 KINDS = (NEWHIGH_KIND, RETEST_KIND, WEAK_KIND)
 TP = {NEWHIGH_KIND: None, RETEST_KIND: RETEST_TP, WEAK_KIND: WEAK_TP}
@@ -24,30 +28,13 @@ ETF_CODES = {"123310"}
 MAX_CHASE = 0.01
 OPEN, LAST_BUY, CLOSE, REPORT_AT = time(9, 0), time(15, 19), time(15, 30), time(15, 40)
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS small_trades (   -- 💰 10만 원 가상 계좌 (주문 없음)
-    id          VARCHAR PRIMARY KEY,
-    date        DATE,
-    code        VARCHAR,
-    name        VARCHAR,
-    kind        VARCHAR,
-    buy_ts      TIMESTAMP,
-    buy_price   DOUBLE,
-    qty         INTEGER,
-    stop        DOUBLE,
-    tp          DOUBLE,
-    sell_ts     TIMESTAMP,
-    sell_price  DOUBLE,
-    reason      VARCHAR,
-    pnl         DOUBLE,
-    status      VARCHAR      -- open / closed
-);
-CREATE TABLE IF NOT EXISTS small_days (date DATE PRIMARY KEY, reported BOOLEAN);
-"""
-
 
 def _cost(code: str) -> float:
     return 0.0005 if code in ETF_CODES else 0.0025
+
+
+def _plan(price: float, stop: Optional[float], tp: Optional[float]) -> Plan:
+    return Plan(stop=stop, target=price * (1 + tp) if tp else None, next_day=True, until=LAST_BUY.strftime("%H:%M"), target_fill="price")
 
 
 class SmallAccount:
@@ -56,25 +43,48 @@ class SmallAccount:
         self.market = market
         self.today = today
         self.notify = notify or (lambda text: None)
-        self.conn.execute(SCHEMA)
-        row = self.conn.execute("SELECT reported FROM small_days WHERE date = ?", [today]).fetchone()
-        self.reported = bool(row and row[0])
+        self.ledger = Ledger(self.conn, BOOK, TAG, today, START_CASH, slots=1, notify=self.notify, cost_of=_cost)
+        self._migrate()
+        self.reported = self.ledger.reported()
 
-    # ------------------------------------------------------------ 상태
+    def _migrate(self) -> None:
+        """예전 표 small_trades → 공용 장부 (장부에 아직 아무 거래도 없을 때 한 번)."""
+        if self.conn.execute("SELECT count(*) FROM ledger_trades WHERE book = ?", [BOOK]).fetchone()[0]:
+            return
+        try:
+            rows = self.conn.execute("""SELECT id, date, code, name, kind, buy_ts, buy_price, qty, stop, tp, sell_ts, sell_price, reason, pnl, status
+                                        FROM small_trades""").fetchall()
+        except Exception:
+            return                                   # 예전 표 없음
+        for tid, d, code, name, kind, bts, bp, qty, stop, tp, sts, sp, reason, pnl, status in rows:
+            self.conn.execute("""INSERT OR REPLACE INTO ledger_trades (id, book, date, code, name, buy_ts, buy_price, qty, plan, part_qty,
+                                 sell_ts, sell_price, reason, pnl, status, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)""",
+                              [f"{tid}-{BOOK}", BOOK, d, code, name, bts, bp, qty, _plan(bp, stop, tp).dumps(), sts, sp, reason, pnl, status,
+                               f"[{kind}] small_trades 에서 옮김"])
+        if rows:
+            logging.info("10만 원 계좌: 예전 표 small_trades %s건을 공용 장부로 옮김", len(rows))
+
+    # ------------------------------------------------------------ 상태 (예전 이름 유지)
     def cash(self) -> float:
-        return START_CASH + (self.conn.execute("SELECT coalesce(sum(pnl), 0) FROM small_trades WHERE status = 'closed'").fetchone()[0] or 0)
+        return self.ledger.cash()
 
     def open_trade(self) -> Optional[tuple]:
-        return self.conn.execute("""SELECT id, date, code, name, kind, buy_ts, buy_price, qty, stop, tp FROM small_trades
-                                    WHERE status = 'open' ORDER BY buy_ts LIMIT 1""").fetchone()
+        """(id, date, code, name, kind, buy_ts, buy_price, qty, stop, tp) — 예전 모양."""
+        t = next(iter(self.ledger.open_trades()), None)
+        if not t:
+            return None
+        plan = Plan.loads(t["plan"])
+        kind = (t["note"] or "").split("]")[0].lstrip("[") if (t["note"] or "").startswith("[") else ""
+        tp = plan.target / t["buy_price"] - 1 if plan.target else None
+        return (t["id"], t["date"], t["code"], t["name"], kind, t["buy_ts"], t["buy_price"], t["qty"], plan.stop, tp)
 
     def bought_today(self) -> bool:
-        return bool(self.conn.execute("SELECT count(*) FROM small_trades WHERE date = ?", [self.today]).fetchone()[0])
+        return self.ledger.bought_today()
 
     # ------------------------------------------------------------ 매수
     def on_signals(self, now: datetime, items) -> None:
         tm = now.time()
-        if not (OPEN <= tm < LAST_BUY) or self.open_trade() or self.bought_today():
+        if not (OPEN <= tm < LAST_BUY) or self.ledger.open_trades() or self.bought_today():
             return
         cash = self.cash()
         for code, name, _source, s in sorted((x for x in items if x[3].kind in KINDS), key=lambda x: x[3].ts):
@@ -95,56 +105,17 @@ class SmallAccount:
                 continue
             stop = price * (s.stop / s.price) if s.stop else None      # 신호의 손절 비율을 현재가에 적용
             tp = TP.get(s.kind)
-            tid = f"{now:%Y%m%d}-{code}-{s.kind}"
-            self.conn.execute("""INSERT OR REPLACE INTO small_trades (id, date, code, name, kind, buy_ts, buy_price, qty, stop, tp, status)
-                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')""",
-                              [tid, self.today, code, name, s.kind, now.replace(tzinfo=None), price, qty, stop, tp])
-            how = (f"익절 +{tp:.0%} / " if tp else "장중 익절 없이 다음 날 시가 매도 / ") + (f"손절 {stop:,.0f}원 ({stop / price - 1:+.0%})" if stop else "손절 없음")
-            self.notify(f"💰 10만 원 계좌 매수 {name}({code}) {qty}주 × {price:,.0f}원 = {qty * price:,.0f}원 (잔고 {cash:,.0f}원)\n"
-                        f"  [{s.kind} {s.ts:%H:%M}] {how}, 못 닿으면 다음 날 09:00 매도 (주문 없는 가상 기록)"
-                        + "".join(f"\n{l}" for l in (getattr(s, "reason", "") or "").splitlines() if "🇺🇸" in l))
-            logging.info("10만 원 계좌 매수 %s %s주 × %s", name, qty, price)
+            self.ledger.buy(now, code, name, price, _plan(price, stop, tp), qty=qty, note=f"[{s.kind}] {s.ts:%H:%M} 신호"
+                            + "".join(f"\n{l}" for l in (getattr(s, "reason", "") or "").splitlines() if "🇺🇸" in l))
             return
 
     # ------------------------------------------------------------ 매도
     def tick(self, now: datetime) -> None:
-        tm = now.time()
-        t = self.open_trade()
-        if t and OPEN <= tm < CLOSE:
-            tid, d, code, name, kind, buy_ts, buy_price, qty, stop, tp = t
-            reason = None
-            q = None
-            try:
-                q = self.market.quote(code, integrated=False)
-            except Exception:
-                logging.warning("10만 원 계좌: %s 시세 조회 실패", code)
-            if q and q.price:
-                price = float(q.price)
-                if d < self.today:
-                    reason = "다음 날 시초 매도"
-                elif tm < LAST_BUY:
-                    if stop and price <= stop:
-                        reason = "손절"
-                    elif tp and price >= buy_price * (1 + tp):
-                        reason = f"익절 +{tp:.0%}"
-                if reason:
-                    pnl = qty * (price - buy_price) - qty * buy_price * _cost(code)
-                    self.conn.execute("""UPDATE small_trades SET sell_ts = ?, sell_price = ?, reason = ?, pnl = ?, status = 'closed'
-                                         WHERE id = ?""", [now.replace(tzinfo=None), price, reason, pnl, tid])
-                    cash = self.cash()
-                    self.notify(f"💰 10만 원 계좌 매도 {name}({code}) {qty}주 × {price:,.0f}원 — {reason}, "
-                                f"{price / buy_price - 1 - _cost(code):+.2%} ({pnl:+,.0f}원) → 잔고 {cash:,.0f}원 "
-                                f"(시작 10만 원 대비 {cash / START_CASH - 1:+.1%})")
-                    logging.info("10만 원 계좌 매도 %s %s — %s, %+.0f원", name, price, reason, pnl)
-        if tm >= REPORT_AT and not self.reported:
+        self.ledger.manage(now, price_source(self.market, ()))
+        if now.time() >= REPORT_AT and not self.reported:
             self.reported = True
-            self.conn.execute("INSERT OR REPLACE INTO small_days VALUES (?, true)", [self.today])
+            self.ledger.mark_reported()
             self.notify(self.summary())
 
     def summary(self) -> str:
-        cash = self.cash()
-        n, w = self.conn.execute("SELECT count(*), count(*) FILTER (WHERE pnl > 0) FROM small_trades WHERE status = 'closed'").fetchone()
-        t = self.open_trade()
-        hold = f"\n  보유: {t[3]}({t[2]}) {t[7]}주 × {t[6]:,.0f}원 [{t[4]}] — 다음 날 09:00 매도" if t else "\n  보유 없음"
-        return (f"💰 10만 원 계좌 {self.today:%m-%d} 마감: 잔고 {cash:,.0f}원 (시작 대비 {cash / START_CASH - 1:+.1%}), "
-                f"끝난 매매 {n}건 중 수익 {w}건{hold}")
+        return f"💰 10만 원 계좌 {self.today:%m-%d} 마감\n" + self.ledger.summary_line()
