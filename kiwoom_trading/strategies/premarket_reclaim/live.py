@@ -1,4 +1,4 @@
-"""🔁 시초 흔들기 뒤 시가 회복 — 모의 매수 (2026-10-27 사용자 'B 로 해봐', 주문은 모의 계좌만).
+"""🔁 시가 탈환 — 시초 흔들기 뒤 시가 회복 — 모의·실전 매수 (2026-10-27 사용자 'B 로 해봐' → 같은 날 '모의·실전 모두', 이름 '시가 탈환').
 
 삼성SDI 10-27 차트에서 정형화 (backtest.py · timing.py, 스킬 buy-signals 18장):
   ① 프리장 갭     : 08:00~08:59 통합 1분봉 고점 ≥ 전일 종가 × 1.02
@@ -17,7 +17,7 @@ from typing import Optional
 from kiwoom_trading.ingestion.collectors.minute_collector import fetch_minute_bars
 from kiwoom_trading.screener.intraday_signals import Signal
 
-KIND = "시초 회복"
+KIND = "시가 탈환"   # 처음 이름 "시초 회복" (2026-10-27 사용자 이름 변경)
 GAP, SHAKE, HOLD = 0.02, 0.02, 0.01
 VAL_MIN, MULT = 1e9, 2.0
 HALF_R, TRAIL = 2.0, 0.03   # paper.py 매도
@@ -54,7 +54,7 @@ class ReclaimWatcher:
                 continue
             if q and q.base_price and q.high >= q.base_price * (1 + GAP):
                 self.gappers.append(code)
-        logging.info("시초 회복: 프리장 갭 2%%↑ %s종목 (전날 대금 200위 중)", len(self.gappers))
+        logging.info("시가 탈환: 프리장 갭 2%%↑ %s종목 (전날 대금 200위 중)", len(self.gappers))
 
     def _bars(self, code: str):
         b = fetch_minute_bars(self.client, code, self.today, "AL")
@@ -70,7 +70,7 @@ class ReclaimWatcher:
                     continue
                 b = self._bars(code)
             except Exception:
-                logging.warning("시초 회복: %s 1분봉 실패", code)
+                logging.warning("시가 탈환: %s 1분봉 실패", code)
                 continue
             pre = [x for x in b if x[0] < time(9, 0)]
             early = [x for x in b if time(9, 0) <= x[0] <= SHAKE_END]
@@ -83,7 +83,7 @@ class ReclaimWatcher:
                 self.setups[code] = (pre_hi, early[0][1], lo, low_bar[0], prev)
             if len(self.setups) >= MAX_WATCH:
                 break
-        logging.info("시초 회복: 프리장 갭·시초 흔들기 %s종목 %s", len(self.setups),
+        logging.info("시가 탈환: 프리장 갭·시초 흔들기 %s종목 %s", len(self.setups),
                      ", ".join(f"{self.names.get(c, c)}(프리장 고점 {s[0]:,.0f}·흔들기 저가 {s[2]:,.0f})" for c, s in self.setups.items()))
 
     def check(self, now: datetime, value_top=()) -> list[tuple[str, str, str, Signal]]:
@@ -116,7 +116,7 @@ class ReclaimWatcher:
                     stop = lo * 0.999
                     price = b[i][4]
                     name = self.names.get(code, code)
-                    reason = (f"🔁 시초 흔들기 뒤 시가 회복 — 프리장 고점 {pre_hi:,.0f}(전일 대비 {pre_hi / prev - 1:+.1%}) → 09:00~ 저가 {lo:,.0f}, "
+                    reason = (f"🔁 시가 탈환 — 시초 흔들기 뒤 시가 회복 — 프리장 고점 {pre_hi:,.0f}(전일 대비 {pre_hi / prev - 1:+.1%}) → 09:00~ 저가 {lo:,.0f}, "
                               f"{b[i][0]:%H:%M} 종가 {price:,.0f} > 시가 {op:,.0f}, 봉 대금 {vals[i] / 1e8:.0f}억(직전 5봉 {avg5 / 1e8:.0f}억). "
                               f"손절 {stop:,.0f}({stop / price - 1:+.1%}), +{HALF_R:g}R 에 절반 익절 → 남은 절반 고점 −{TRAIL:.0%} 트레일링, "
                               f"못 닿으면 다음 날 09:00")
