@@ -28,6 +28,9 @@ from typing import Any, Callable, Optional
 from kiwoom_trading.ingestion.collectors.daily_backfill import KiwoomDailyClient, _to_int
 from kiwoom_trading.strategies.hong_limitup.live import HONG_KIND
 from kiwoom_trading.strategies.inverse.live import CODE as INVERSE_CODE, WEAK_KIND, WEAK_STOP, WEAK_TP
+from kiwoom_trading.execution import split_exit
+from kiwoom_trading.strategies.cafe_leader.live import KIND as CAFE_KIND
+from kiwoom_trading.strategies.premarket_reclaim.live import KIND as RECLAIM_KIND
 from kiwoom_trading.strategies.regime_plays.live import NEWHIGH_KIND, NEWHIGH_STOP, UP_HALF_TP, UP_KIND, UP_STOP, UP_TRAIL
 from kiwoom_trading.strategies.resistance_retest.live import RETEST_KIND, RETEST_STOP, RETEST_TP
 
@@ -44,6 +47,8 @@ PLAYS = {   # 종류 → (이름, 익절, 손절)
     WEAK_KIND: ("5️⃣ 약세장 인버스", WEAK_TP, WEAK_STOP),
     HONG_KIND: ("📕 홍인기 상한가 풀림", None, None),
     UP_KIND: ("1️⃣ 상승장 장 초", None, UP_STOP),     # 2026-10-27 사용자 '1 을 실전에도'
+    RECLAIM_KIND: ("🔁 시초 회복", None, None),        # 2026-10-27 사용자 '모의·실전 모두' — 손절·익절은 split_exit
+    CAFE_KIND: ("☕ 카페 테마 대장", None, None),
 }
 
 SCHEMA = """
@@ -70,6 +75,7 @@ ALTER TABLE real_trades ADD COLUMN IF NOT EXISTS name VARCHAR;
 ALTER TABLE real_trades ADD COLUMN IF NOT EXISTS part_qty INTEGER;     -- 1️⃣ +7% 에 먼저 판 절반 수량
 ALTER TABLE real_trades ADD COLUMN IF NOT EXISTS part_price DOUBLE;
 ALTER TABLE real_trades ADD COLUMN IF NOT EXISTS peak DOUBLE;           -- 매수 뒤 가장 높은 값 (트레일링용)
+ALTER TABLE real_trades ADD COLUMN IF NOT EXISTS stop_px DOUBLE;        -- 🔁 처음 손절가 (흔들기 저가)
 CREATE TABLE IF NOT EXISTS real_liquidations (date DATE, code VARCHAR, name VARCHAR, qty INTEGER, order_no VARCHAR, ts TIMESTAMP, note VARCHAR);
 """
 
@@ -245,11 +251,12 @@ class RealTrader:
                     qty = int(m.group(1))
                     no = self.client.market_order("buy", code, qty)
                 tid = f"{now:%Y%m%d}-{code}"
-                self.conn.execute("""INSERT OR REPLACE INTO real_trades (id, date, code, name, kind, qty, buy_order_no, buy_ts, buy_price, status)
-                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ordered')""",
-                                  [tid, self.today, code, name, s.kind, qty, no, now.replace(tzinfo=None), price])
-                how = (f"+{UP_HALF_TP:.0%} 에 절반 익절 → 남은 절반 고점 −{UP_TRAIL:.0%} 트레일링 / 처음 −{sl:.0%} 손절, 못 닿으면 다음 날 09:00 매도"
-                       if s.kind == UP_KIND else
+                self.conn.execute("""INSERT OR REPLACE INTO real_trades (id, date, code, name, kind, qty, buy_order_no, buy_ts, buy_price, status, stop_px)
+                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ordered', ?)""",
+                                  [tid, self.today, code, name, s.kind, qty, no, now.replace(tzinfo=None), price,
+                                   float(s.stop) if s.kind == RECLAIM_KIND and s.stop else None])
+                how = (split_exit.plan_text(s.kind, price, s.stop if s.kind == RECLAIM_KIND else None)
+                       if s.kind in split_exit.KINDS else
                        f"익절 +{tp:.0%} / 손절 −{sl:.0%}, 못 닿으면 다음 날 09:00 매도" if tp
                        else f"장중 익절 없이 다음 날 09:00 시가 매도 (−{sl:.0%} 손절)" if sl
                        else "익절·손절 없이 다음 날 09:00 시가 매도")
@@ -282,7 +289,7 @@ class RealTrader:
                                 + (f" · {px * (1 + UP_HALF_TP):,.0f}원에 절반 익절, 남은 절반 트레일링" if kind == UP_KIND
                                    else f" · 익절 {px * (1 + tp):,.0f}원" if tp else " · 장중 익절 없이 다음 날 09:00 시가 매도"))
                 return
-            part, ppx, peak = self.conn.execute("SELECT coalesce(part_qty, 0), part_price, peak FROM real_trades WHERE id = ?", [tid]).fetchone()
+            part, ppx, peak, stop_px = self.conn.execute("SELECT coalesce(part_qty, 0), part_price, peak, stop_px FROM real_trades WHERE id = ?", [tid]).fetchone()
             if status == "selling":
                 px = self.client.fill_price(sell_no, code)
                 if px:
@@ -298,27 +305,23 @@ class RealTrader:
                 reason = "다음 날 시초 매도"
             elif tm < LAST:
                 q = self.market.quote(code, integrated=False)
-                if q and q.price and kind == UP_KIND:      # 1️⃣: +7% 절반 익절 → 남은 절반 고점 −4% 트레일링 (2026-10-27 사용자 'B 방식')
+                if q and q.price and kind in split_exit.KINDS:   # 나눠 팔기 (1️⃣ +7%·🔁 +2R·☕ +2.5% 절반 익절 → 남은 절반 트레일링/상한가)
                     peak = max(peak or buy_price, float(q.price))
                     self._set(tid, peak=peak)
-                    if not part and q.price >= buy_price * (1 + UP_HALF_TP):
+                    act, why = split_exit.decide(kind, buy_price, stop_px, peak, part, float(q.price), getattr(q, "upper", None))
+                    if act == "half":
                         if qty < 2:
-                            reason = f"익절 +{UP_HALF_TP:.0%} (1주라 전부)"
+                            reason = f"{why} (1주라 전부)"
                         else:
                             half = qty // 2
                             self.client.allowed.add(code)
                             no = self.client.market_order("sell", code, half)
                             self._set(tid, part_qty=half, part_price=float(q.price))
-                            self.notify(f"🔴 실전 절반 익절 {name}({code}) {half}주 × 약 {q.price:,.0f}원 (+{q.price / buy_price - 1:.1%}, 주문 {no}) "
-                                        f"— 남은 {qty - half}주는 고점 −{UP_TRAIL:.0%} 트레일링(본전 아래로 안 내림), 못 닿으면 다음 날 09:00")
+                            self.notify(f"🔴 실전 절반 익절 {name}({code}) {half}주 × 약 {q.price:,.0f}원 ({q.price / buy_price - 1:+.1%}, 주문 {no}) [{label}]")
                             logging.info("실전 절반 익절 %s %s주", name, half)
                             return
-                    elif part:
-                        stop = max(buy_price * (1 - sl), peak * (1 - UP_TRAIL), buy_price)
-                        if q.price <= stop:
-                            reason = f"트레일링 고점 −{UP_TRAIL:.0%} (절반 익절 뒤)"
-                    elif q.price <= buy_price * (1 - sl):
-                        reason = f"손절 −{sl:.0%}"
+                    elif act == "sell":
+                        reason = why
                 elif q and q.price:
                     if sl and q.price <= buy_price * (1 - sl):
                         reason = f"손절 −{sl:.0%}"

@@ -98,7 +98,7 @@ def signal_flow(bars: list[dict], s: Signal, avg_value_20: Optional[float]) -> t
 
 def format_signals(now: datetime, items: list[tuple[str, str, str, Signal]],
                    flow: Optional[dict[tuple[str, datetime], tuple[float, Optional[float]]]] = None) -> str:
-    lines = [f"🎯 매수 신호 {now:%H:%M} ({len(items)}건) — 관찰용 (1년 검증상 아직 비용을 넘는 수익 규칙 없음)"]
+    lines = [f"🎯 매수 신호 {now:%H:%M} ({len(items)}건)"]
     for code, name, source, s in items:
         after = " · 애프터마켓(NXT) — 모의투자는 가상 체결" if s.ts.time() >= time(15, 30) else ""
         lines.append(
