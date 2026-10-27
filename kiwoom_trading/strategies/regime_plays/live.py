@@ -49,8 +49,8 @@ from kiwoom_trading.screener.intraday_signals import Signal
 UP_KIND = "상승장 장 초"
 UP_TOP_N = 40
 UP_STOP = 0.04                   # 처음 손절
-UP_HALF_TP = 0.07               # 2026-10-27 사용자 'B 방식': +7% 에 절반 익절 → 남은 절반은 고점 −4% 트레일링(본전 아래로는 안 내림),
-UP_TRAIL = 0.04                 # 15:19 까지 안 닿으면 다음 날 09:00. 1년 627건 +0.71% (익절 없음 +0.86% 보다 −0.15%p, bt_up_exits.py)
+UP_HALF_TP = None               # 2026-10-28 사용자 '옛 방식으로': 익절 없음 · −4% 손절 · 못 닿으면 다음 날 09:00
+UP_TRAIL = 0.04                 # (UP_HALF_TP 가 있을 때만) 1년 1천만/일: 옛 방식 +412만 vs B(+7% 절반·4% 트레일링) +332만 (bt_up_score.py)
 UP_BUDGET = 250_000
 UP_DECIDE = time(9, 10)          # 09:10 판정일 때만 (09:10~09:15 스냅샷)
 UP_DEADLINE = time(9, 16)

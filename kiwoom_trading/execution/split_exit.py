@@ -1,6 +1,6 @@
 """나눠 팔기 규칙 (실전 real.py 가 쓴다) — 절반 익절 → 남은 절반 처리.
 
-  1️⃣ 상승장 장 초 (UP)      : 처음 −4% · +7% 절반 · 남은 절반 고점 −4% 트레일링(본전 아래로 안 내림)
+  1️⃣ 상승장 장 초 (UP)      : UP_HALF_TP 가 있을 때만 (2026-10-28 부터 None → 익절 없음·−4%·다음 날 09:00, real.PLAYS 로 처리)
   🔁 시가 탈환 (RECLAIM)    : 처음 흔들기 저가 · +2R 절반 · 남은 절반 고점 −3% 트레일링(본전 아래로 안 내림)
   ☕ 카페 테마 대장 (CAFE)   : 처음 −2% · +2.5% 절반 · 남은 절반 상한가 닿으면 전부 (손절 −2% 그대로)
   모두 15:19 까지 안 끝나면 다음 날 09:00 (호출하는 쪽).
@@ -11,7 +11,7 @@ from kiwoom_trading.strategies.cafe_leader.live import HALF_TP as CAFE_HALF_TP, 
 from kiwoom_trading.strategies.premarket_reclaim.live import HALF_R as RECLAIM_HALF_R, KIND as RECLAIM_KIND, TRAIL as RECLAIM_TRAIL
 from kiwoom_trading.strategies.regime_plays.live import UP_HALF_TP, UP_KIND, UP_STOP, UP_TRAIL
 
-KINDS = (UP_KIND, RECLAIM_KIND, CAFE_KIND)
+KINDS = ((UP_KIND,) if UP_HALF_TP else ()) + (RECLAIM_KIND, CAFE_KIND)   # 1️⃣ 는 2026-10-28 부터 옛 방식(익절 없음)이라 나눠 팔지 않음
 
 
 def first_stop(kind: str, buy: float, stop_px: Optional[float]) -> float:
