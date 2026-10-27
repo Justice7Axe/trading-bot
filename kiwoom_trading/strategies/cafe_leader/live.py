@@ -31,6 +31,7 @@ from kiwoom_trading.common.daily_store import PROJECT_ROOT
 from kiwoom_trading.ingestion.collectors.minute_collector import fetch_minute_bars
 
 TAG = "☕ [카페]"
+KIND = "카페 테마 대장"     # 모의·실전 신호 종류 (2026-10-27 사용자 "모의·실전 모두") — 가상 장부가 살 때 함께 넘긴다
 START_CASH = 10_000_000
 SLOTS = 3
 BOOK = "카페 대장"            # 공용 가상 장부(execution/ledger.py) 이름
@@ -108,7 +109,9 @@ def _val(b: dict) -> float:
 
 class CafeLeaderWatcher:
     def __init__(self, store, market, client, today: date, ctx: CafeContext,
-                 notify: Optional[Callable[[str], object]] = None) -> None:
+                 notify: Optional[Callable[[str], object]] = None,
+                 on_trade: Optional[Callable[[datetime, str, str, float], object]] = None) -> None:
+        self.on_trade = on_trade                # (now, code, name, 매수가) → 모의·실전 매수 신호로 넘김
         self.conn = store.conn
         self.market = market
         self.client = client
@@ -213,7 +216,7 @@ class CafeLeaderWatcher:
             f"  ④ 일봉 박스 돌파 {ok(box)} 15일 고가 {hi15} (폭 {width})\n"
             f"  ⑤ 오늘 수급(잠정): 외국인 {fmt(fo)} · 기관 {fmt(ins)} · 프로그램 {fmt(pg)} (참고)\n"
             f"  ⑥ 1분봉 고점 {hi:,.0f} 돌파 + 햄버거 {bv / 1e8:,.0f}억 ✅\n"
-            f"  → {decision} (가상 장부, 주문 없음 · 1년 ①③④⑥ 91건 건당 +0.82%)")
+            f"  → {decision} (①③④⑥ 이면 가상 장부·모의·실전 매수 · 1년 91건 건당 +0.82%)")
 
     def _try_fill(self, now: datetime, code: str, bars: list[dict]) -> None:
         p = self.pending[code]
@@ -237,6 +240,11 @@ class CafeLeaderWatcher:
         self.ledger.buy(now, code, name, price,
                         Plan(stop=price * (1 - STOP), half_at=price * (1 + HALF_TP), target=float(lim), next_day=True),
                         note=f"돌파 고점 눌림 체결 {ts:%H:%M} (상한가 {lim:,.0f} 닿으면 전부)")
+        if self.on_trade is not None:
+            try:
+                self.on_trade(now, code, name, float(price))
+            except Exception:
+                logging.exception("카페: 모의·실전 신호 넘기기 실패 %s", name)
 
     def _manage(self, now: datetime, value_top) -> None:
         self.ledger.manage(now, price_source(self.market, value_top))

@@ -60,7 +60,7 @@ from kiwoom_trading.screener.playbook_card import build_card
 from kiwoom_trading.common import us_market
 from kiwoom_trading.strategies.jeonhwang.live import JeonhwangAccount, load_jh_context
 from kiwoom_trading.strategies.hong_limitup.live import HONG_KIND, HongAccount, load_prev_limitups
-from kiwoom_trading.strategies.cafe_leader.live import CafeLeaderWatcher, load_cafe_context
+from kiwoom_trading.strategies.cafe_leader.live import KIND as CAFE_KIND, STOP as CAFE_STOP, CafeLeaderWatcher, load_cafe_context
 from kiwoom_trading.strategies.hong_styles.live import HongStylesAccount, load_hs_context
 from kiwoom_trading.screener.market_regime import MarketRegime
 from kiwoom_trading.screener.surge_groups import SurgeGroups
@@ -526,8 +526,8 @@ def main() -> int:
     early: Optional[EarlyRunner] = EarlyRunner(screener, watcher, store, now) if DISCOVERY else None
     leader = LeaderShapeWatcher(client, now.date(), prev_close={c: h.last_close for c, h in screener.hist.items()},
                                 done={c for c, _, k in store.signal_keys(now.date()) if k == LEADER_KIND})
-    pullback = PullbackWatcher(client, now.date(), prev_close={c: h.last_close for c, h in screener.hist.items()},
-                               seen={(c, ts) for c, ts, k in store.signal_keys(now.date()) if k == PULLBACK_KIND})
+    # 🎯 눌림 돌파: 1년 5,650건 −0.30% 로 10-24 매수 중단, 알림만 하루 20~40통 → 2026-10-27 사용자 "쓸데없다" — 끔
+    pullback: Optional[PullbackWatcher] = None
     try:
         nine: Optional[EarlyNineWatcher] = EarlyNineWatcher(
             client, now.date(), done={c for c, _, k in store.signal_keys(now.date()) if k == NINE_KIND})
@@ -691,7 +691,19 @@ def main() -> int:
     cafe: Optional[CafeLeaderWatcher] = None
     if not args.once and cctx is not None:
         try:   # ☕ 카페(불개미 '수학은직관력') 테마 대장 체크리스트 + 1천만 가상 장부 (2026-10-27 사용자, 주문 없음)
-            cafe = CafeLeaderWatcher(store, market, client, now.date(), cctx, notify=None if args.no_telegram else send_telegram_message)
+            def cafe_trade(t, code, name, price):   # ☕ 가상 장부가 산 순간(①③④⑥ + 눌림 체결) → 모의·실전 매수 (2026-10-27 사용자 '모의·실전 모두')
+                sig = Signal(ts=t.replace(tzinfo=None, second=0, microsecond=0), kind=CAFE_KIND, price=price, level=price,
+                             stop=price * (1 - CAFE_STOP), reason="☕ 테마 대장 · 프리장 햄버거 · 일봉 박스 돌파 · 1분봉 고점 돌파 눌림 체결")
+                items = [(code, name, "카페", sig)]
+                if trader is not None:
+                    try:
+                        trader.on_signals(t, items, {})
+                    except Exception:
+                        logging.exception("카페 → 모의 매수 실패")
+                if real is not None and real_mode == "combo":
+                    real.on_signals(t, items)
+            cafe = CafeLeaderWatcher(store, market, client, now.date(), cctx, notify=None if args.no_telegram else send_telegram_message,
+                                     on_trade=cafe_trade)
             logging.info("카페 테마 대장: 전날 %s 기준 일봉 %s종목, 테마 소속 %s종목, 잔고 %s원", cctx.day, len(cctx.stocks), len(cctx.themes), f"{cafe.cash():,.0f}")
         except Exception:
             logging.exception("카페 테마 대장 준비 실패")

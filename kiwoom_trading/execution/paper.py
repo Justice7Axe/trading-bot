@@ -54,6 +54,7 @@ from kiwoom_trading.strategies.danswer.rebreak import KIND as REBREAK_KIND
 from kiwoom_trading.strategies.danswer.close import KIND as DANSWER_KIND
 from kiwoom_trading.strategies.resistance_retest.live import RETEST_KIND, RETEST_TP
 from kiwoom_trading.strategies.regime_plays.live import BLOCK_KIND, NEWHIGH_KIND, UP_BUDGET, UP_HALF_TP, UP_KIND, UP_TOP_N, UP_TRAIL
+from kiwoom_trading.strategies.cafe_leader.live import HALF_TP as CAFE_HALF_TP, KIND as CAFE_KIND, STOP as CAFE_STOP
 from kiwoom_trading.strategies.premarket_reclaim.live import HALF_R as RECLAIM_HALF_R, KIND as RECLAIM_KIND, TRAIL as RECLAIM_TRAIL
 from kiwoom_trading.strategies.trend_hold.live import BUDGET as TREND_BUDGET, BUY_END as TREND_BUY_END, KIND as TREND_KIND, MAX_HOLD as TREND_MAX, TREND_POOL
 from kiwoom_trading.screener.market_regime import BIGCAP_MAX_WHEN_DOWN, CHECKS, CONSERVATIVE_LOSS_LIMIT, UP_ONLY_KINDS, WINDOW_MIN
@@ -67,8 +68,8 @@ MOCK_BASE_URL = "https://mockapi.kiwoom.com"
 BUDGET_PER_STOCK = 1_000_000
 LEAD_MULT, NONLEAD_MULT = 2.0, 0.5   # 🏆 주도주 신고가 금액: 테마 대장 / 아님 (홍인기·카페 '종목 고르기', 2026-10-27)
 MAX_POSITIONS = 10            # 키움 제한이 아니라 우리 규칙. 모의 계좌 약 1천만 원 ÷ 종목당 100만 원 (2026-10-20, 10-19 복기: 5종목 한도로 신호 85건 건너뜀)
-NEXT_DAY_KINDS = (RETEST_KIND, UP_KIND, BLOCK_KIND, NEWHIGH_KIND, CONTRA_KIND, WEAK_KIND, REBREAK_KIND, DANSWER_KIND, RECLAIM_KIND)   # '다음날' 매도: 익절가 / 손절가 / 다음 날 09:00 (2026-10-25 시장 상황별 매매표)
-NEXT_DAY_TP = {RECLAIM_KIND: None, UP_KIND: None, NEWHIGH_KIND: None, WEAK_KIND: WEAK_TP, REBREAK_KIND: None, DANSWER_KIND: None}   # '다음날' 익절가 — 기본 +7%. 📈 상승장 장 초·🏆 주도주 신고가·🌙 종가 재돌파·🧭 디앤서 종가는 익절 없음, 약세장 인버스 +5% (2026-10-25)
+NEXT_DAY_KINDS = (RETEST_KIND, UP_KIND, BLOCK_KIND, NEWHIGH_KIND, CONTRA_KIND, WEAK_KIND, REBREAK_KIND, DANSWER_KIND, RECLAIM_KIND, CAFE_KIND)   # '다음날' 매도: 익절가 / 손절가 / 다음 날 09:00 (2026-10-25 시장 상황별 매매표)
+NEXT_DAY_TP = {CAFE_KIND: None, RECLAIM_KIND: None, UP_KIND: None, NEWHIGH_KIND: None, WEAK_KIND: WEAK_TP, REBREAK_KIND: None, DANSWER_KIND: None}   # '다음날' 익절가 — 기본 +7%. 📈 상승장 장 초·🏆 주도주 신고가·🌙 종가 재돌파·🧭 디앤서 종가는 익절 없음, 약세장 인버스 +5% (2026-10-25)
 OVERNIGHT_VIRTUAL = (REBREAK_KIND,)   # NXT 애프터장에 가상으로 사서 밤을 넘기는 신호 (모의 서버는 애프터장 주문 불가)
 KIND_BUDGET = {UP_KIND: UP_BUDGET, TREND_KIND: TREND_BUDGET}   # 📈 상승장 장 초: 종목당 25만 원, 보유 한도(10종목) 예외로 40종목까지 (2026-10-25 사용자)
 KIND_LIMIT = {PULLBACK_KIND: 2}  # 눌림 돌파는 장 초부터 자주 나와 자리를 차지 → 동시 2종목까지 (1년 −0.34%, 10-19 유일한 마이너스 −0.08%)
@@ -356,16 +357,16 @@ class PaperTrader:
             return "매수 시간 아님 (정규장 09:00~15:19, 가상 08:00~08:45·15:30~19:45)"
         if self.halted:
             return f"하루 손실 한도 -{self._loss_limit():.1%} 도달"
-        if not t.virtual and t.kind not in (BIGCAP_KIND, INVERSE_KIND, WEAK_KIND, TREND_KIND, RECLAIM_KIND) and self._before_regime(tm):
+        if not t.virtual and t.kind not in (BIGCAP_KIND, INVERSE_KIND, WEAK_KIND, TREND_KIND, RECLAIM_KIND, CAFE_KIND) and self._before_regime(tm):
             return f"시장 분위기 판정({REGIME_FIRST:%H:%M}) 전 — 차트 신호는 사지 않음"
-        if self.regime is not None and self.regime.strong_down and not t.virtual and t.kind not in (RETEST_KIND, CONTRA_KIND, DANSWER_KIND, TREND_KIND, RECLAIM_KIND):   # 🔁 시초 회복은 1년 모든 날 검증 · 저항 돌파·디앤서 종가·주도주 추세는 모든 날, 역행 강세 종가는 강한 하락장 날 산다
+        if self.regime is not None and self.regime.strong_down and not t.virtual and t.kind not in (RETEST_KIND, CONTRA_KIND, DANSWER_KIND, TREND_KIND, RECLAIM_KIND, CAFE_KIND):   # 🔁 시초 회복은 1년 모든 날 검증 · 저항 돌파·디앤서 종가·주도주 추세는 모든 날, 역행 강세 종가는 강한 하락장 날 산다
             if t.kind not in (BIGCAP_KIND, INVERSE_KIND):
                 return "강한 하락장 — 차트 신호는 새로 사지 않음 (보수적 매매)"
             bought = sum(1 for x in self.trades if x.date == self.today and x.kind == BIGCAP_KIND and x.buy_ts)
             if bought >= BIGCAP_MAX_WHEN_DOWN:
                 return f"강한 하락장 — 대형주 수급은 {BIGCAP_MAX_WHEN_DOWN}종목까지 (보수적 매매)"
         r = self.regime
-        if (r is not None and r.trend_weak and not r.strong_up and not t.virtual and t.kind not in (INVERSE_KIND, RETEST_KIND, CONTRA_KIND, WEAK_KIND, DANSWER_KIND, TREND_KIND, RECLAIM_KIND)
+        if (r is not None and r.trend_weak and not r.strong_up and not t.virtual and t.kind not in (INVERSE_KIND, RETEST_KIND, CONTRA_KIND, WEAK_KIND, DANSWER_KIND, TREND_KIND, RECLAIM_KIND, CAFE_KIND)
                 and not self._before_regime(tm)):
             return f"하락 흐름 보통 날 ({r.trend_text()}) — 이 신호는 쉼 (저항 돌파·약세장 인버스만 삼)"
         if t.kind == PULLBACK_KIND:
@@ -524,6 +525,13 @@ class PaperTrader:
             if t.kind == UP_KIND and t.part_qty and reason == "손절":
                 reason = f"트레일링 고점 −{UP_TRAIL:.0%} (절반 익절 뒤)"
             return self._sell(now, t, reason)
+        if t.kind == CAFE_KIND and t.mode == "다음날":      # ☕ +2.5% 절반 익절 → 남은 절반 상한가 닿으면 전부 (−2% 손절 그대로)
+            if not t.part_qty and q.price >= t.buy_price * (1 + CAFE_HALF_TP):
+                return self._sell_half(now, t, q.price, CAFE_HALF_TP, "상한가 닿으면 전부·−2% 손절, 못 닿으면 다음 날 09:00")
+            lim = getattr(q, "upper", None)
+            if t.part_qty and lim and q.price >= lim:
+                return self._sell(now, t, "상한가")
+            return
         if t.kind == RECLAIM_KIND and t.mode == "다음날":   # 🔁 +2R 절반 익절 → 남은 절반 고점 −3% 트레일링 (손절선은 매수 뒤 안 바뀌므로 R 은 지금 손절가로)
             if not t.part_qty:
                 R = t.buy_price - (t.stop or 0)
