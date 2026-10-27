@@ -45,6 +45,7 @@ class Quote:
     base_price: int                           # 전일 종가(기준가)
     volume: int
     high_250: Optional[int] = None
+    upper: Optional[int] = None                # 거래소가 정한 오늘 상한가 (upl_pric) — 신규 상장 첫날은 공모가의 400%
 
 
 @dataclass(frozen=True)
@@ -145,7 +146,7 @@ class KiwoomMarket:
             open=_to_int(payload.get("open_pric")) or price, high=_to_int(payload.get("high_pric")) or price,
             low=_to_int(payload.get("low_pric")) or price, price=price,
             base_price=_to_int(payload.get("base_pric")) or price, volume=_to_int(payload.get("trde_qty")) or 0,
-            high_250=_to_int(payload.get("250hgst")),
+            high_250=_to_int(payload.get("250hgst")), upper=_to_int(payload.get("upl_pric")),
         )
 
     def investor_intraday(self, investor: str, max_pages: int = 10) -> dict[str, int]:

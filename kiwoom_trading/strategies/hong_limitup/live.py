@@ -129,7 +129,16 @@ class HongAccount:
                     continue
                 if not q or not q.base_price:
                     continue
-                self.limits[code] = upper_limit(float(q.base_price))
+                calc = upper_limit(float(q.base_price))
+                if q.upper and abs(q.upper / calc - 1) > 0.01:
+                    # 거래소 상한가가 기준가 +30% 가 아님 = 신규 상장 첫날(공모가 60~400%) 등 → 백테스트에 없는 날, 감시 안 함
+                    # (2026-10-27 에스케이증권제14호 상장 첫날: 실제 상한가 8,000 인데 2,600 으로 계산해 '상한가 풀림'으로 잘못 삼)
+                    logging.info("홍인기 계좌: %s 상한가 %s ≠ 기준가 +30%% %s (신규 상장 등) → 제외", r.name, q.upper, calc)
+                    self.limits[code] = None
+                    continue
+                self.limits[code] = calc
+            elif self.limits[code] is None:
+                continue
             lim = self.limits[code]
             price = float(r.price)
             if price >= lim:
