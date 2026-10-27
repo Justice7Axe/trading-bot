@@ -198,7 +198,7 @@ def load_prev_flow(day: date, db_path: str = DEFAULT_DB_PATH) -> dict[str, tuple
 
 
 def _next_day_how(tp: Optional[float], stop: Optional[float], kind: str = "") -> str:
-    if kind == UP_KIND:
+    if kind == UP_KIND and UP_HALF_TP:
         return (f"+{UP_HALF_TP:.0%} 에 절반 익절 → 남은 절반 고점 −{UP_TRAIL:.0%} 트레일링 / 처음 손절 {stop:,.0f}원, "
                 f"못 닿으면 다음 날 09:00 매도")
     tp_txt = f"+{tp:.0%} 익절" if tp is not None else "익절 없음"
@@ -548,7 +548,7 @@ class PaperTrader:
                     t.stop = new
                     save_trade(self.store, t)
             return
-        if t.kind == UP_KIND and t.mode == "다음날":        # 1️⃣: +7% 절반 익절 → 남은 절반 고점 −4% 트레일링 (2026-10-27 사용자 'B 방식')
+        if t.kind == UP_KIND and UP_HALF_TP and t.mode == "다음날":        # 1️⃣: +7% 절반 익절 → 남은 절반 고점 −4% 트레일링 (2026-10-27 사용자 'B 방식')
             if not t.part_qty and q.price >= t.buy_price * (1 + UP_HALF_TP):
                 return self._sell_half(now, t, q.price, UP_HALF_TP,
                                        f"고점 −{UP_TRAIL:.0%} 트레일링(본전 아래로 안 내림), 못 닿으면 다음 날 09:00")

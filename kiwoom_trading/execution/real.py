@@ -297,7 +297,7 @@ class RealTrader:
                     self._set(tid, buy_price=px, status="open")
                     self.notify(f"🔴 실전 매수 체결 {name} {qty}주 × {px:,.0f}원 [{label}] — "
                                 + (f"손절 {px * (1 - sl):,.0f}원" if sl else "손절 없음")
-                                + (f" · {px * (1 + UP_HALF_TP):,.0f}원에 절반 익절, 남은 절반 트레일링" if kind == UP_KIND
+                                + (f" · {px * (1 + UP_HALF_TP):,.0f}원에 절반 익절, 남은 절반 트레일링" if kind == UP_KIND and UP_HALF_TP
                                    else f" · 익절 {px * (1 + tp):,.0f}원" if tp else " · 장중 익절 없이 다음 날 09:00 시가 매도"))
                 return
             part, ppx, peak, stop_px = self.conn.execute("SELECT coalesce(part_qty, 0), part_price, peak, stop_px FROM real_trades WHERE id = ?", [tid]).fetchone()
