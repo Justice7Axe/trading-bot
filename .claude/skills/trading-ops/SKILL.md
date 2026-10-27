@@ -94,3 +94,8 @@ description: Ellie trading 운영 — 일일 일봉 업데이트/리포트 스�
 1. 새 브랜치 → 커밋 → push → PR → merge → 로컬 main fast-forward
 2. 공개 저장소다. push 전에 staged 파일에 비밀값이 없는지 검사한다. `.env*`, `chapter_0/1/config.py`, `data/` 는 ignore 되어 있다.
 3. `GH_TOKEN=$(gh auth token --user Justice7Axe) gh pr create/merge -R Justice7Axe/trading-bot` 로 실행한다. 전역 gh 계정(Dev-Expertise-TS)은 바꾸지 않는다.
+
+## 텔레그램 알림 원칙 (2026-10-27 사용자)
+- **실전·모의·가상 매매 대상이 아닌 포착은 알림 안 함** — buy_signals·cafe_checks·danswer_watch 등 기록과 로그만. 꺼진 알림: 🎯 신호 묶음, 🧭 급등 묶음, 📡 강세 종목, 📒 2-2-2·🛡️ 헤지주, 🧭 디앤서 14:30, ☕ 체크리스트(①③④⑥ 미달), 🎯 눌림 돌파 감시 자체.
+- 매매가 되면 🟢 모의 / 🟣 가상 / 🔴 실전 매수 알림에 '포착:' 이유가 붙는다.
+- **대상인데 못 샀으면** 이유 + 포착 이유를 알림·로그: 모의 `⏭ 모의 매수 못 함`(잔고·보유 한도·추격·시세 등 — 규칙상 대상 아님 `paper.RULE_SKIPS` 은 로그만), 실전 `⏭ 실전 매수 못 함 N건`(하루 1종목·1주가 시드보다 비쌈·추격, 한 번에 묶음), ☕ ①③④⑥ 인데 3종목 다 참 / 10분 안 안 눌림.

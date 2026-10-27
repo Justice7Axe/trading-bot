@@ -482,12 +482,8 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
         if signals:
             logging.info("매수 신호 %s건: %s", len(signals), ", ".join(f"{n} {s.kind} {s.ts:%H:%M}" for _, n, _, s in signals))
             flow = watcher.flow if watcher is not None else {}
-            if telegram:
-                for text in own_msgs:
-                    send_telegram_message(_tag(text))
-                rest = [x for x in signals if id(x) not in own_ids]
-                if rest:
-                    send_telegram_message(_tag(format_signals(now, rest, flow)))
+            # 🎯 신호 묶음 알림은 보내지 않는다 (2026-10-27 사용자): 매매가 되면 🟢·🟣·🔴 매수 알림에, 대상인데 못 사면 ⏭ 알림에
+            # 포착 이유가 같이 나간다. 매매 대상이 아닌 신호(알림만·규칙상 쉼)는 buy_signals 기록과 로그만.
             if trader is not None:
                 trader.on_signals(now, signals, flow)
             if real is not None:
@@ -568,8 +564,7 @@ def main() -> int:
     global _REGIME
     _REGIME = regime
     try:
-        surges: Optional[SurgeGroups] = SurgeGroups(store, now.date(), screener.names,
-                                                    notify=None if args.no_telegram else (lambda text: send_telegram_message(_tag(text))))
+        surges: Optional[SurgeGroups] = SurgeGroups(store, now.date(), screener.names, notify=None)   # 2026-10-27 사용자: 실전·모의·가상 매매 대상이 아닌 포착은 알림 안 함 (기록·로그만)
     except Exception:
         logging.exception("급등 묶음 준비 실패")
         surges = None
@@ -634,7 +629,7 @@ def main() -> int:
             trader.trend_picks = len(tpicks)
         logging.info("주도주 추세: 매수 대상 %s종목 (%s 마감 기준) %s · 보유 %s종목 중 20일선 이탈 %s", len(tpicks), tday,
                      ", ".join(f"{p.name} {p.rank}위" for p in tpicks), len(held), ", ".join(texit) or "없음")
-        danswer = DanswerCloseWatcher(market, client, dctx, screener.hist.keys(), done=any(k == DANSWER_KIND for _, _, k in keys), notify=close_notify)   # 🧭 14:30 주도주 종가 (알림만)
+        danswer = DanswerCloseWatcher(market, client, dctx, screener.hist.keys(), done=any(k == DANSWER_KIND for _, _, k in keys), notify=None)   # 🧭 14:30 주도주 종가 (기록만 — 매매 대상 아님)
         logging.info("디앤서 종가 준비: 250일 고가 %s종목", len(dctx.hi250))
     except Exception:
         logging.exception("저항 재시험 후보 준비 실패")
@@ -719,13 +714,12 @@ def main() -> int:
                                               ("📕 홍인기 상따 밖 장부", hstyles)) if b is not None)
     strong: Optional[StrongListWatcher] = None
     if not args.once:   # 📡 오늘의 강세 종목 — 대금·상승률 상위 (2026-10-26 사용자, 매수 없음)
-        strong = StrongListWatcher(store, market, now.date(), screener.names,
-                                   notify=None if args.no_telegram else (lambda text: send_telegram_message(_tag(text))))
+        strong = StrongListWatcher(store, market, now.date(), screener.names, notify=None)   # 2026-10-27 사용자: 실전·모의·가상 매매 대상이 아닌 포착은 알림 안 함 (기록·로그만)
     dwatch: Optional[DanswerWatch] = None
     if not args.once:
         try:   # 📒 [디앤서] 관심종목 2-2-2 · 🛡️ 하락장 헤지주 (2026-10-26 사용자, 주문 없음)
             dwatch = DanswerWatch(store, market, client, now.date(), screener.names, screener.sectors, regime=regime,
-                                  notify=None if args.no_telegram else (lambda text: send_telegram_message(_tag(text))),
+                                  notify=None,   # 2026-10-27 사용자: 실전·모의·가상 매매 대상이 아닌 포착은 알림 안 함 (기록·로그만)
                                   theme_map=screener.theme_map, theme_names=store.theme_names())
         except Exception:
             logging.exception("디앤서 관심종목 준비 실패")
