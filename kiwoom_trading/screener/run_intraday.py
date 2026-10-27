@@ -50,6 +50,7 @@ from kiwoom_trading.strategies.danswer.rebreak import KIND as REBREAK_KIND, Clos
 from kiwoom_trading.strategies.danswer.watch import DanswerWatch
 from kiwoom_trading.strategies.danswer.close import KIND as DANSWER_KIND, DanswerCloseWatcher, load_danswer_context
 from kiwoom_trading.strategies.resistance_retest.live import RETEST_KIND, RetestWatcher, find_retest
+from kiwoom_trading.strategies.premarket_reclaim.live import KIND as RECLAIM_KIND, ReclaimWatcher, load_candidates as load_reclaim_cands
 from kiwoom_trading.strategies.regime_plays.live import (BLOCK_KIND, NEWHIGH_KIND, UP_KIND, BlockedHighWatcher, NewHighWatcher, UpOpenWatcher,
                                                   load_block_candidates, load_newhigh_candidates)
 from kiwoom_trading.strategies.trend_hold.live import KIND as TREND_KIND, TrendHoldWatcher, load_trend_picks, ma_breaks
@@ -361,7 +362,7 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
              surges: Optional[SurgeGroups] = None, burger: Optional[HamburgerWatcher] = None,
              weak_inv: Optional[WeakInverseWatcher] = None, rebreak: Optional[ClosingRebreakWatcher] = None,
              danswer: Optional[DanswerCloseWatcher] = None, small: Optional[SmallAccount] = None, real: Optional["real_inverse.RealTrader"] = None,
-             dwatch: Optional[DanswerWatch] = None, strong: Optional[StrongListWatcher] = None,
+             reclaim=None, dwatch: Optional[DanswerWatch] = None, strong: Optional[StrongListWatcher] = None,
              books: tuple = (), leader_fn=None) -> int:
     now = datetime.now(KST)
     if real is not None:
@@ -456,7 +457,7 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
         trader.lead_now = lead_now
     own_msgs: list[str] = []  # 자기 알림 문구가 있는 판정(🧭·🌙)은 🎯 묶음과 따로 보낸다
     own_ids: set = set()
-    for label, w in (("인버스 갭", inverse), ("장 초 공통점", nine), ("대형주 수급", bigcap), ("주도주 모양", leader), ("눌림 돌파", pullback), ("햄버거", burger), ("역행 강세 종가", contra), ("저항 돌파", retest), ("상승장 장 초", up), ("막힌 고점 돌파", block), ("주도주 신고가", newhigh), ("주도주 추세", trend), ("약세장 인버스", weak_inv), ("[디앤서] 종가 재돌파", rebreak), ("[디앤서] 종가 체크리스트", danswer)):
+    for label, w in (("인버스 갭", inverse), ("장 초 공통점", nine), ("대형주 수급", bigcap), ("주도주 모양", leader), ("눌림 돌파", pullback), ("햄버거", burger), ("역행 강세 종가", contra), ("저항 돌파", retest), ("상승장 장 초", up), ("막힌 고점 돌파", block), ("주도주 신고가", newhigh), ("주도주 추세", trend), ("약세장 인버스", weak_inv), ("[디앤서] 종가 재돌파", rebreak), ("[디앤서] 종가 체크리스트", danswer), ("시초 회복", reclaim)):
         if w is not None and hasattr(w, "cache"):
             w.cache = shared_bars
         if w is None:
@@ -577,6 +578,7 @@ def main() -> int:
     retest: Optional[RetestWatcher] = None
     block: Optional[BlockedHighWatcher] = None
     newhigh: Optional[NewHighWatcher] = None
+    reclaim: Optional[ReclaimWatcher] = None
     trend: Optional[TrendHoldWatcher] = None
     danswer: Optional[DanswerCloseWatcher] = None
     jctx = None
@@ -606,6 +608,7 @@ def main() -> int:
             cands = find_retest(dconn, last) if last else []
             bcands = load_block_candidates(dconn, now.date())
             ncands = load_newhigh_candidates(dconn, now.date())
+            rcands = load_reclaim_cands(dconn, now.date())
             tday, tpicks = load_trend_picks(dconn, now.date())
             held = [t.code for t in trader.active() if t.kind == TREND_KIND and t.date < now.date()] if trader is not None else []
             texit = ma_breaks(dconn, held, now.date()) if held else {}
@@ -622,6 +625,8 @@ def main() -> int:
         block = BlockedHighWatcher(market, client, bcands, regime=regime, done={c for c, _, k in keys if k == BLOCK_KIND})
         logging.info("막힌 고점 돌파 감시 %s종목", len(bcands))
         newhigh = NewHighWatcher(market, ncands, screener.hist.keys(), regime=regime, done={c for c, _, k in keys if k == NEWHIGH_KIND})
+        reclaim = ReclaimWatcher(market, client, now.date(), rcands, screener.names, done={c for c, _, k in keys if k == RECLAIM_KIND})   # 🔁 시초 흔들기 뒤 시가 회복 (모의)
+        logging.info("시초 회복 감시 후보 %s종목 (전날 대금 200위)", len(rcands))
         logging.info("주도주 신고가 감시 %s종목 (전날 대금 상위 200, 52주 고가)", len(ncands))
         trend = TrendHoldWatcher(market, tpicks, tday, done=any(k == TREND_KIND for _, _, k in keys))   # ⑦ 09:00 시가 매수
         if trader is not None:
@@ -741,7 +746,7 @@ def main() -> int:
                         logging.info("오늘 데이터가 없음(휴장일로 판단, 기준일 %s) → 종료", probe[0].as_of)
                         break
                 run_once(screener, market, store, telegram=not args.no_telegram, watcher=watcher, early=early, investors=investors,
-                         themes=themes, board=board, trader=trader, leader=leader, pullback=pullback, nine=nine, bigcap=bigcap, regime=regime, inverse=inverse, contra=contra, retest=retest, up=up, block=block, newhigh=newhigh, trend=trend, surges=surges, burger=burger, weak_inv=weak_inv, rebreak=rebreak, danswer=danswer, small=small, real=real, dwatch=dwatch, strong=strong, books=books, leader_fn=cafe.leaders if cafe is not None else None)
+                         themes=themes, board=board, trader=trader, leader=leader, pullback=pullback, nine=nine, bigcap=bigcap, regime=regime, inverse=inverse, contra=contra, retest=retest, up=up, block=block, newhigh=newhigh, trend=trend, surges=surges, burger=burger, weak_inv=weak_inv, rebreak=rebreak, danswer=danswer, small=small, real=real, reclaim=reclaim, dwatch=dwatch, strong=strong, books=books, leader_fn=cafe.leaders if cafe is not None else None)
             except Exception:
                 logging.exception("스캔 실패 (다음 주기에 재시도)")
             if args.once:
