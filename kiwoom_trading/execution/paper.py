@@ -54,7 +54,7 @@ from kiwoom_trading.strategies.danswer.rebreak import KIND as REBREAK_KIND
 from kiwoom_trading.strategies.danswer.close import KIND as DANSWER_KIND
 from kiwoom_trading.strategies.resistance_retest.live import RETEST_KIND, RETEST_TP
 from kiwoom_trading.strategies.regime_plays.live import BLOCK_KIND, NEWHIGH_KIND, UP_BUDGET, UP_KIND, UP_TOP_N
-from kiwoom_trading.strategies.trend_hold.live import BUDGET as TREND_BUDGET, KIND as TREND_KIND, MAX_HOLD as TREND_MAX, TREND_POOL
+from kiwoom_trading.strategies.trend_hold.live import BUDGET as TREND_BUDGET, BUY_END as TREND_BUY_END, KIND as TREND_KIND, MAX_HOLD as TREND_MAX, TREND_POOL
 from kiwoom_trading.screener.market_regime import BIGCAP_MAX_WHEN_DOWN, CHECKS, CONSERVATIVE_LOSS_LIMIT, UP_ONLY_KINDS, WINDOW_MIN
 from kiwoom_trading.strategies.leader_shape.live import KIND as LEADER_KIND, big_red_exit
 from kiwoom_trading.strategies.pullback_breakout.live import KIND as PULLBACK_KIND, exit_reason as pullback_exit
@@ -298,6 +298,7 @@ class PaperTrader:
         self.halted = False
         self.regime = None                      # MarketRegime (run_intraday 가 넣어 줌) — 강한 하락장이면 보수적 매매
         self.prev_flow = load_prev_flow(today)  # 전날 외인·기관 순매수 (주도주 모양 매수 조건)
+        self.trend_picks: int = 0                  # 오늘 ⑦ 매수 대상 수 (run_intraday 가 넣어 줌) — 0 이면 ⑦ 몫을 남겨 두지 않음
         self.trend_exit: dict[str, tuple] = {}   # ⑦ 주도주 추세: 전날 종가가 20일선 아래인 보유 종목 → 오늘 09:00 매도 (run_intraday 가 넣어 줌)
         self.last_price: dict[str, float] = {}
         self._last_tick = 0.0
@@ -428,10 +429,11 @@ class PaperTrader:
                 logging.info("모의 매수 금액 축소 %s: %s", t.name, t.note)
             cash = self.mock.cash() if not t.virtual else t.qty * price
             used = self._trend_used()
+            keep = self._trend_keep(now, used)
             if t.kind == TREND_KIND and used + t.qty * price > TREND_POOL:
                 reason = f"7️⃣ 몫 {TREND_POOL / 1e4:,.0f}만 원 중 {used / 1e4:,.0f}만 원 사용 중 — {t.qty * price / 1e4:,.0f}만 원 더 못 삼"
-            elif t.kind != TREND_KIND and not t.virtual and cash - max(0, TREND_POOL - used) < t.qty * price:
-                reason = (f"주문 가능 금액 부족 ({cash:,}원 중 7️⃣ 몫 {max(0, TREND_POOL - used):,.0f}원은 남겨 둠 < {t.qty * price:,}원)")
+            elif t.kind != TREND_KIND and not t.virtual and keep and cash - keep < t.qty * price:
+                reason = (f"주문 가능 금액 부족 ({cash:,}원 중 7️⃣ 몫 {keep:,.0f}원은 남겨 둠 < {t.qty * price:,}원)")
             elif cash < t.qty * price:
                 reason = f"주문 가능 금액 부족 ({cash:,}원 < {t.qty * price:,}원)"
         if reason:
@@ -654,6 +656,13 @@ class PaperTrader:
         """오늘 실현 + 평가 손익 (추정 비용 0.25% 차감)."""
         today = [t for t in self.trades if t.date == self.today and t.buy_price]
         return sum((net_pnl(t) or 0) if t.status == "closed" else (net_pnl(t, self.last_price.get(t.code)) or 0) for t in today)
+
+    def _trend_keep(self, now: datetime, used: float) -> float:
+        """다른 매매가 남겨 둘 ⑦ 몫. 오늘 ⑦ 매수 대상이 있고 ⑦ 매수 시간(09:00~09:30) 안일 때만 남긴다 —
+        대상이 없거나 시간이 지나면 ⑦ 은 오늘 더 못 사므로 다른 매매에 풀어 쓴다 (2026-10-27 사용자 '제안대로')."""
+        if not self.trend_picks or now.time() > TREND_BUY_END:
+            return 0.0
+        return max(0.0, TREND_POOL - used)
 
     def _trend_used(self) -> float:
         """⑦ 주도주 추세로 들고 있는(주문 중 포함) 원금 합계."""
