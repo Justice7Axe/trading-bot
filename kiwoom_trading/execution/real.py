@@ -1,6 +1,7 @@
 """🔴 실전 매매 — 키움 실계좌로 6️⃣ 주도주 신고가 · 2️⃣ 저항 돌파 · 5️⃣ 약세장 인버스 · 📕 홍인기 상한가 풀림 중 그날 먼저 온 신호를 산다
 (2026-10-25 사용자: "10만 원 시드로 실전 매매, 월요일부터" → 처음엔 5️⃣ 만, 같은 날 "인버스 타이밍이 아니면 다른 기법도 — 6️⃣2️⃣5️⃣ 로 넓혀라".
- 2026-10-27 사용자: "홍인기 매매를 바로 실전에 — 6️⃣2️⃣5️⃣ 와 하나로 합침" → 📕 를 네 번째 신호로 추가).
+ 2026-10-27 사용자: "홍인기 매매를 바로 실전에 — 6️⃣2️⃣5️⃣ 와 하나로 합침" → 📕 를 네 번째 신호로 추가,
+ 같은 날 "1 을 실전에도 매매 적용" → 1️⃣ 상승장 장 초(강한 상승장 09:10 대금 40위·시가 위)를 다섯 번째로 추가 — 익절 없음 · −4% · 다음 날 09:00).
 
 켜는 법 (.env.local KIWOOM_REAL_TRADING):
   combo   = 6️⃣·2️⃣·5️⃣ (💰 10만 원 가상 계좌와 같은 규칙)      inverse = 5️⃣ 만      그 밖 / 없음 = 주문 안 함
@@ -27,7 +28,7 @@ from typing import Any, Callable, Optional
 from kiwoom_trading.ingestion.collectors.daily_backfill import KiwoomDailyClient, _to_int
 from kiwoom_trading.strategies.hong_limitup.live import HONG_KIND
 from kiwoom_trading.strategies.inverse.live import CODE as INVERSE_CODE, WEAK_KIND, WEAK_STOP, WEAK_TP
-from kiwoom_trading.strategies.regime_plays.live import NEWHIGH_KIND, NEWHIGH_STOP
+from kiwoom_trading.strategies.regime_plays.live import NEWHIGH_KIND, NEWHIGH_STOP, UP_KIND, UP_STOP
 from kiwoom_trading.strategies.resistance_retest.live import RETEST_KIND, RETEST_STOP, RETEST_TP
 
 ENV_FLAG = "KIWOOM_REAL_TRADING"
@@ -42,6 +43,7 @@ PLAYS = {   # 종류 → (이름, 익절, 손절)
     RETEST_KIND: ("2️⃣ 저항 돌파", RETEST_TP, RETEST_STOP),
     WEAK_KIND: ("5️⃣ 약세장 인버스", WEAK_TP, WEAK_STOP),
     HONG_KIND: ("📕 홍인기 상한가 풀림", None, None),
+    UP_KIND: ("1️⃣ 상승장 장 초", None, UP_STOP),     # 2026-10-27 사용자 '1 을 실전에도'
 }
 
 SCHEMA = """

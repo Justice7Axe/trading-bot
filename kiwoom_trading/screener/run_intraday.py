@@ -626,6 +626,7 @@ def main() -> int:
         trend = TrendHoldWatcher(market, tpicks, tday, done=any(k == TREND_KIND for _, _, k in keys))   # ⑦ 09:00 시가 매수
         if trader is not None:
             trader.trend_exit = texit
+            trader.trend_picks = len(tpicks)
         logging.info("주도주 추세: 매수 대상 %s종목 (%s 마감 기준) %s · 보유 %s종목 중 20일선 이탈 %s", len(tpicks), tday,
                      ", ".join(f"{p.name} {p.rank}위" for p in tpicks), len(held), ", ".join(texit) or "없음")
         danswer = DanswerCloseWatcher(market, client, dctx, screener.hist.keys(), done=any(k == DANSWER_KIND for _, _, k in keys), notify=close_notify)   # 🧭 14:30 주도주 종가 (알림만)
