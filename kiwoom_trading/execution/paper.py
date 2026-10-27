@@ -68,6 +68,9 @@ MOCK_BASE_URL = "https://mockapi.kiwoom.com"
 BUDGET_PER_STOCK = 1_000_000
 LEAD_MULT, NONLEAD_MULT = 2.0, 0.5   # 🏆 주도주 신고가 금액: 테마 대장 / 아님 (홍인기·카페 '종목 고르기', 2026-10-27)
 MAX_POSITIONS = 10            # 키움 제한이 아니라 우리 규칙. 모의 계좌 약 1천만 원 ÷ 종목당 100만 원 (2026-10-20, 10-19 복기: 5종목 한도로 신호 85건 건너뜀)
+# 규칙상 이 신호는 매매 대상이 아님(알림만·시장 상황상 쉼·수급 조건 등) → 알림 없이 기록만. 그 밖의 건너뜀(잔고·보유 한도·추격·시세)은 알림.
+RULE_SKIPS = ("매수 시간 아님", "시장 분위기 판정", "강한 하락장", "하락 흐름 보통 날", "눌림 돌파는", "[디앤서]", "강한 상승장 아님",
+              "전날 외인", "이미 보유 중")
 NEXT_DAY_KINDS = (RETEST_KIND, UP_KIND, BLOCK_KIND, NEWHIGH_KIND, CONTRA_KIND, WEAK_KIND, REBREAK_KIND, DANSWER_KIND, RECLAIM_KIND, CAFE_KIND)   # '다음날' 매도: 익절가 / 손절가 / 다음 날 09:00 (2026-10-25 시장 상황별 매매표)
 NEXT_DAY_TP = {CAFE_KIND: None, RECLAIM_KIND: None, UP_KIND: None, NEWHIGH_KIND: None, WEAK_KIND: WEAK_TP, REBREAK_KIND: None, DANSWER_KIND: None}   # '다음날' 익절가 — 기본 +7%. 📈 상승장 장 초·🏆 주도주 신고가·🌙 종가 재돌파·🧭 디앤서 종가는 익절 없음, 약세장 인버스 +5% (2026-10-25)
 OVERNIGHT_VIRTUAL = (REBREAK_KIND,)   # NXT 애프터장에 가상으로 사서 밤을 넘기는 신호 (모의 서버는 애프터장 주문 불가)
@@ -445,8 +448,9 @@ class PaperTrader:
                 reason = f"주문 가능 금액 부족 ({cash:,}원 < {t.qty * price:,}원)"
         if reason:
             t.note = reason
-            logging.info("모의 매수 건너뜀 %s: %s", t.name, reason)
-            self.notify(f"⏭ 모의 매수 건너뜀 {t.name}({t.code}) [{t.kind} {s.ts:%H:%M}] — {reason}")
+            logging.info("모의 매수 건너뜀 %s [%s]: %s — 포착: %s", t.name, t.kind, reason, (s.reason or "")[:200])
+            if not reason.startswith(RULE_SKIPS):     # 규칙상 대상 아님 → 기록·로그만. 대상인데 못 산 것(잔고·한도·추격·시세)만 알림 (2026-10-27 사용자)
+                self.notify(f"⏭ 모의 매수 못 함 {t.name}({t.code}) [{t.kind} {s.ts:%H:%M}] — {reason}\n  포착: {(s.reason or '')[:300]}")
             return
         if t.virtual:
             t.status, t.buy_ts, t.buy_price, t.peak = "open", now.replace(tzinfo=None), float(price), float(price)
@@ -459,7 +463,7 @@ class PaperTrader:
                         f"  [{t.kind} {s.ts:%H:%M}] "
                         + (_next_day_how(NEXT_DAY_TP.get(t.kind, RETEST_TP), s.stop, t.kind) if t.mode == "다음날"
                            else f"손절 {t.stop:,.0f}원 ({t.stop / price - 1:+.1%})" if t.stop else "손절 없음") + f" — {t.source}"
-                        + (f"\n  📏 {t.note}" if t.note else ""))
+                        + (f"\n  📏 {t.note}" if t.note else "") + f"\n  포착: {(s.reason or '')[:300]}")
             return
         t.buy_order_no = self.mock.market_order("buy", t.code, t.qty)
         t.status, t.buy_ts, t.peak = "ordered", now.replace(tzinfo=None), float(price)
@@ -469,7 +473,7 @@ class PaperTrader:
         logging.info("모의 매수 주문 %s %s주 (주문 %s)", t.name, t.qty, t.buy_order_no)
         self.notify(f"🟢 모의 매수 {t.name}({t.code}) {t.qty}주 × 약 {price:,}원 = {t.qty * price / 1e4:,.0f}만 원\n"
                     f"  [{t.kind} {s.ts:%H:%M}] {how} — {t.source}"
-                    + (f"\n  📏 {t.note}" if t.note else ""))
+                    + (f"\n  📏 {t.note}" if t.note else "") + f"\n  포착: {(s.reason or '')[:300]}")
 
     # ------------------------------------------------------------ 보유·매도
     def tick(self, now: datetime, force: bool = False) -> None:

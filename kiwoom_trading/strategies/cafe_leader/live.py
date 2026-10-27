@@ -202,7 +202,9 @@ class CafeLeaderWatcher:
         if all_ok:
             self.pending[code] = dict(level=hi, until=x["ts"] + timedelta(minutes=PULL_BARS), name=st.name)
         logging.info("카페 체크 %s %s → %s (프리장 %.0f억)", st.name, x["ts"], decision, pre_value / 1e8)
-        if pre_value < PRE_VALUE and not all_ok:     # 텔레그램은 ①③⑥(카페 핵심)이 맞을 때만, 나머지는 cafe_checks 에 기록만
+        if not all_ok and box:   # ①③④⑥ 다 맞았는데 오늘 3종목이 차서 못 삼 → 포착 이유와 함께 알림 (2026-10-27 사용자)
+            pass
+        elif not all_ok:         # 매매 대상(①③④⑥)이 아닌 포착은 알림 안 함 (2026-10-27 사용자) → cafe_checks 에 기록만
             return
         ok = lambda b: "✅" if b else "❌"
         fmt = lambda v: "-" if v is None else f"{v / 1e8:+,.0f}억"

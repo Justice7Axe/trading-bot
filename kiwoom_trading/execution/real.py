@@ -210,12 +210,21 @@ class RealTrader:
         self.conn.execute(f"UPDATE real_trades SET {cols} WHERE id = ?", [*kw.values(), tid])
 
     # ------------------------------------------------------------ 매수
+    def _skip_note(self, skipped: list[str], why: str = "") -> None:
+        """실전 대상 신호인데 못 산 것 — 한 번에 묶어 알림·로그 (2026-10-27 사용자 '못 산 이유도 알림')."""
+        if skipped:
+            logging.info("실전 못 삼 %s: %s", why, "; ".join(skipped))
+            self.notify(f"⏭ 실전 매수 못 함 {len(skipped)}건{(' — ' + why) if why else ''}\n" + "\n".join(f"  {x}" for x in skipped[:15]))
+
     def on_signals(self, now: datetime, items) -> None:
-        if not (OPEN <= now.time() < LAST) or self.active() or self.bought_today():
-            return
         cands = sorted((x for x in items if x[3].kind in self.kinds), key=lambda x: x[3].ts)
-        if not cands:
+        if not cands or not (OPEN <= now.time() < LAST):
             return
+        if self.active() or self.bought_today():
+            t = self.active()
+            why = f"실전은 하루 1종목 — 오늘 이미 {t[3] if t else '매수함'}"
+            return self._skip_note([f"{n}({c}) [{PLAYS[s.kind][0]} {s.ts:%H:%M}] 포착: {(s.reason or '')[:120]}" for c, n, _, s in cands], why)
+        skipped = []
         try:
             cash = self.client.cash()
         except Exception as exc:
@@ -234,11 +243,11 @@ class RealTrader:
                     logging.info("실전: %s 다시 상한가 %s — 풀림 아님, 안 삼", name, s.level)
                     continue
                 if price > s.price * (1 + MAX_CHASE):
-                    logging.info("실전: %s 신호가보다 %+.1f%% — 추격 안 함", name, (price / s.price - 1) * 100)
+                    skipped.append(f"{name}({code}) [{label} {s.ts:%H:%M}] 신호가보다 {price / s.price - 1:+.1%} — 추격 안 함 · 포착: {(s.reason or '')[:120]}")
                     continue
                 qty = int(budget // price)
                 if qty < 1:
-                    self.notify(f"⏭ 실전 {label} {name}({code}) 1주 {price:,.0f}원 > 쓸 수 있는 돈 {budget:,.0f}원 — 다음 신호를 기다림")
+                    skipped.append(f"{name}({code}) [{label} {s.ts:%H:%M}] 1주 {price:,.0f}원 > 쓸 수 있는 돈 {budget:,.0f}원 · 포착: {(s.reason or '')[:120]}")
                     continue
                 self.client.allowed.add(code)
                 try:
@@ -264,11 +273,13 @@ class RealTrader:
                             f"  [{label} {s.ts:%H:%M}] {how}"
                             + "".join(f"\n{l}" for l in (getattr(s, "reason", "") or "").splitlines() if "🇺🇸" in l))
                 logging.info("실전 매수 주문 %s %s %s주 (주문 %s)", label, name, qty, no)
+                self._skip_note(skipped, "먼저 온 신호를 건너뜀")
                 return
             except Exception as exc:
                 logging.exception("실전 매수 실패 %s", name)
                 self.notify(f"⚠️ 실전 매수 실패 {name}({code}) [{label}] — {exc}"[:500])
                 return
+        self._skip_note(skipped)
 
     # ------------------------------------------------------------ 체결 확인·매도
     def tick(self, now: datetime) -> None:
