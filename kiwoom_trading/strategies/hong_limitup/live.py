@@ -111,7 +111,8 @@ class HongAccount:
             note = self._today_note()
             for l in self.books.values():
                 l.mark_reported(note)
-            self.notify(self.summary())
+            sink = getattr(self, "summary_sink", None)   # 15:42 가상 장부 마감 한 통으로 묶음 (run_intraday, 2026-10-27 사용자)
+            (sink.append if sink is not None else self.notify)(self.summary())
 
     def _watch(self, now: datetime, value_top) -> None:
         for r in value_top:

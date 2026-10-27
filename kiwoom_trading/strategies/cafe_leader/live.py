@@ -152,7 +152,8 @@ class CafeLeaderWatcher:
         if tm >= REPORT_AT and not self.reported:
             self.reported = True
             self.ledger.mark_reported(self._note())
-            self.notify(self.summary())
+            sink = getattr(self, "summary_sink", None)   # 15:42 가상 장부 마감 한 통으로 묶음 (run_intraday, 2026-10-27 사용자)
+            (sink.append if sink is not None else self.notify)(self.summary())
 
     def leaders(self, value_top) -> dict[str, tuple[str, int, float]]:
         """지금 테마 대장 → {code: (테마, +4%↑ 종목 수, 등락률)} (지금 대금 상위 200 안 종목으로 판단)."""
