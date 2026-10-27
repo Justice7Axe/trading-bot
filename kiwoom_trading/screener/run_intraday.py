@@ -60,6 +60,7 @@ from kiwoom_trading.screener.playbook_card import build_card
 from kiwoom_trading.common import us_market
 from kiwoom_trading.strategies.jeonhwang.live import JeonhwangAccount, load_jh_context
 from kiwoom_trading.strategies.hong_limitup.live import HONG_KIND, HongAccount, load_prev_limitups
+from kiwoom_trading.execution.experiment_report import build as build_experiment_report
 from kiwoom_trading.strategies.cafe_leader.live import KIND as CAFE_KIND, STOP as CAFE_STOP, CafeLeaderWatcher, load_cafe_context
 from kiwoom_trading.strategies.hong_styles.live import HongStylesAccount, load_hs_context
 from kiwoom_trading.screener.market_regime import MarketRegime
@@ -349,6 +350,9 @@ class EarlyRunner:
 # 거래대금 상위 200 1분 수집·시장 분위기 판정·수급 기록은 그대로 돈다. 다시 켜려면 True.
 DISCOVERY = False
 
+LEDGER_SINK: list[str] = []          # 15:40 가상 장부 요약을 모았다가 LEDGER_DIGEST_AT 에 한 통으로
+LEDGER_DIGEST_AT = dtime(15, 42)
+
 
 def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, telegram: bool,
              watcher: Optional[SignalWatcher] = None, early: Optional[EarlyRunner] = None,
@@ -388,6 +392,17 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
             strong.tick(now)           # 📡 강세 종목 10:00·13:30·15:20·19:50 (알림만)
         except Exception:
             logging.exception("📡 강세 종목 실패")
+    if now.time() >= LEDGER_DIGEST_AT:   # 📒 가상 장부 마감 요약 + 🧪 실험 모의 매매를 한 통으로 (2026-10-27 사용자 '5통 → 1통')
+        try:
+            store.conn.execute("CREATE TABLE IF NOT EXISTS digest_sent (date DATE PRIMARY KEY)")
+            if not store.conn.execute("SELECT count(*) FROM digest_sent WHERE date = ?", [now.date()]).fetchone()[0]:
+                parts = list(LEDGER_SINK) + [build_experiment_report(store.conn, now.date())]
+                LEDGER_SINK.clear()
+                if telegram:
+                    send_telegram_message(_tag(f"📒 가상 장부 마감 {now:%m-%d}\n\n" + "\n\n".join(parts)))
+                store.conn.execute("INSERT INTO digest_sent VALUES (?)", [now.date()])
+        except Exception:
+            logging.exception("가상 장부 마감 묶음 실패")
     for label, book in books:      # 매매법별 가상 장부 (strategies/*/live.py) — tick(now, value_top) 하나로 돈다 (docs/architecture.md)
         try:
             book.tick(now, value_top)
@@ -658,8 +673,8 @@ def main() -> int:
     small: Optional[SmallAccount] = None
     if not args.once:
         try:   # 💰 10만 원 가상 계좌 (⑥·②·⑤ 먼저 온 신호에 전액, 주문 없음)
-            small = SmallAccount(store, market, now.date(), notify=None if args.no_telegram else send_telegram_message)
-            logging.info("10만 원 계좌: 잔고 %s원, 보유 %s", f"{small.cash():,.0f}", small.open_trade()[3] if small.open_trade() else "없음")
+            small = None   # 💰 10만 원 가상 계좌 끔 (2026-10-27 사용자 — 실전 계좌와 하는 일이 같음). 기록(ledger)은 남아 있음
+            logging.info("10만 원 가상 계좌: 꺼짐")
         except Exception:
             logging.exception("10만 원 계좌 준비 실패")
     jh: Optional[JeonhwangAccount] = None
@@ -712,6 +727,9 @@ def main() -> int:
             logging.exception("홍인기 상따 밖 장부 준비 실패")
     books = tuple((label, b) for label, b in (("📘 전황 계좌", jh), ("📕 홍인기 계좌", hong), ("☕ 카페 테마 대장", cafe),
                                               ("📕 홍인기 상따 밖 장부", hstyles)) if b is not None)
+    for b in (jh, hong, cafe):      # 15:40 마감 요약은 따로 보내지 않고 LEDGER_SINK 에 모아 15:42 한 통으로 (📕 상따 밖은 19:58 이라 따로)
+        if b is not None:
+            b.summary_sink = LEDGER_SINK
     strong: Optional[StrongListWatcher] = None
     if not args.once:   # 📡 오늘의 강세 종목 — 대금·상승률 상위 (2026-10-26 사용자, 매수 없음)
         strong = StrongListWatcher(store, market, now.date(), screener.names, notify=None)   # 2026-10-27 사용자: 실전·모의·가상 매매 대상이 아닌 포착은 알림 안 함 (기록·로그만)

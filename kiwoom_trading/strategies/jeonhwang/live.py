@@ -135,7 +135,8 @@ class JeonhwangAccount:
         if tm >= REPORT_AT and not self.reported:
             self.reported = True
             self._mark()
-            self.notify(self.summary())
+            sink = getattr(self, "summary_sink", None)   # 15:42 가상 장부 마감 한 통으로 묶음 (run_intraday, 2026-10-27 사용자)
+            (sink.append if sink is not None else self.notify)(self.summary())
 
     def _buy(self, now: datetime, value_top) -> str:
         if self.ctx.zone != 1:
