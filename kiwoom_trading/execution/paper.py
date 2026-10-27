@@ -54,7 +54,7 @@ from kiwoom_trading.strategies.danswer.rebreak import KIND as REBREAK_KIND
 from kiwoom_trading.strategies.danswer.close import KIND as DANSWER_KIND
 from kiwoom_trading.strategies.resistance_retest.live import RETEST_KIND, RETEST_TP
 from kiwoom_trading.strategies.regime_plays.live import BLOCK_KIND, NEWHIGH_KIND, UP_BUDGET, UP_HALF_TP, UP_KIND, UP_TOP_N, UP_TRAIL
-from kiwoom_trading.strategies.premarket_reclaim.live import HALF_R as RECLAIM_HALF_R, KIND as RECLAIM_KIND, RISK_MAX as RECLAIM_RISK_MAX, TRAIL as RECLAIM_TRAIL
+from kiwoom_trading.strategies.premarket_reclaim.live import HALF_R as RECLAIM_HALF_R, KIND as RECLAIM_KIND, TRAIL as RECLAIM_TRAIL
 from kiwoom_trading.strategies.trend_hold.live import BUDGET as TREND_BUDGET, BUY_END as TREND_BUY_END, KIND as TREND_KIND, MAX_HOLD as TREND_MAX, TREND_POOL
 from kiwoom_trading.screener.market_regime import BIGCAP_MAX_WHEN_DOWN, CHECKS, CONSERVATIVE_LOSS_LIMIT, UP_ONLY_KINDS, WINDOW_MIN
 from kiwoom_trading.strategies.leader_shape.live import KIND as LEADER_KIND, big_red_exit
@@ -419,9 +419,8 @@ class PaperTrader:
             price = q.price if q else None
             if not price:
                 reason = "시세 조회 실패"
-            elif t.kind == RECLAIM_KIND and (not s.stop or price <= s.stop or price > s.stop * (1 + RECLAIM_RISK_MAX)):
-                reason = (f"손절선 {s.stop:,.0f}원까지 {price / s.stop - 1:.1%} — {RECLAIM_RISK_MAX:.1%} 넘게 멀어 손익비가 나쁨 (2026-10-27 B)"
-                          if s.stop and price > s.stop else "손절선 아래")
+            elif t.kind == RECLAIM_KIND and (not s.stop or price <= s.stop):
+                reason = "이미 흔들기 저가(손절선) 아래"
             elif price > s.price * (1 + MAX_CHASE):
                 reason = f"현재가 {price:,}원이 신호가보다 {price / s.price - 1:+.1%} — 추격 안 함"
         if reason is None:
