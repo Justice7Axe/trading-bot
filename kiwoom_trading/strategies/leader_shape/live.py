@@ -34,15 +34,18 @@ KIND = "주도주 모양"
 
 @dataclass(frozen=True)
 class LeaderShapeConfig:
-    start: time = time(9, 30)
-    end: time = time(10, 30)
+    # 2026-10-28 사용자 '바꿔줘': 09:30~10:30·신고가 5번 → 09:10~09:20·신고가 2번·시가 대비 +2~5% (늦게 사서 이미 +5.8% 오른 뒤였음).
+    # 1년(early.py) 강한 상승장 + 전날 외인·기관 둘 다 순매수 141건 +0.98%, 앞 +1.30/뒤 +0.71 ★ — 290조합 중 1개라 우연일 수 있어 실험으로 계속 봄.
+    start: time = time(9, 10)
+    end: time = time(9, 20)
     max_rank: int = 100
     recheck_minutes: int = 2        # 같은 종목 1분봉은 2분에 한 번만 다시 받는다 (100종목 × 매분이면 1분 주기가 밀림)
     min_eff: float = 0.15
     min_from_open: float = 0.02
     max_gap: float = 0.04
     min_vwap_share: float = 0.6
-    min_new_highs: int = 5
+    min_new_highs: int = 2
+    max_from_open: float = 0.05     # 이미 +5% 넘게 오른 종목은 안 산다 (일찍 사기)
     max_pull: float = 3.0
     stop_lookback: int = 10
     stop_buffer: float = 0.005
@@ -97,6 +100,7 @@ def failed(f: dict[str, float], rank: int, cfg: LeaderShapeConfig) -> Optional[s
         (rank <= cfg.max_rank, f"대금 {rank}위"),
         (f["gap"] <= cfg.max_gap, f"갭 {f['gap']:+.1%}"),
         (f["from_open"] >= cfg.min_from_open, f"시가 대비 {f['from_open']:+.1%}"),
+        (f["from_open"] <= cfg.max_from_open, f"시가 대비 {f['from_open']:+.1%} — 이미 많이 오름"),
         (f["eff"] >= cfg.min_eff, f"매끄러움 {f['eff']:.2f}"),
         (f["vwap_share"] >= cfg.min_vwap_share, f"VWAP 위 {f['vwap_share']:.0%}"),
         (f["new_highs"] >= cfg.min_new_highs, f"신고가 {f['new_highs']}번"),
@@ -162,7 +166,7 @@ class LeaderShapeWatcher:
             sig_ts = bars[-1]["ts"]
             stop = stop_price(f["price"], f["low10"], cfg)
             reason = (f"대금 {item.rank}위 · 시가 대비 {f['from_open']:+.1%}(갭 {f['gap']:+.1%}) · 매끄러움 {f['eff']:.2f} · "
-                      f"VWAP 위 {f['vwap_share']:.0%} · 신고가 {f['new_highs']}번 · 눌림 {f['pull']:.1f}배 — 매도: 큰 음봉(몸통 3배·대금 2배) 또는 손절, 남으면 15:19")
+                      f"VWAP 위 {f['vwap_share']:.0%} · 신고가 {f['new_highs']}번 · 눌림 {f['pull']:.1f}배 — 매도: 손절(직전 10분 저가 −0.5%), 못 닿으면 다음 날 09:00")
             out.append((item.code, item.name, KIND, Signal(sig_ts, KIND, float(f["price"]), float(f["low10"]), float(stop), reason)))
         return out
 

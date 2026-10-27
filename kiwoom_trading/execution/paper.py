@@ -71,8 +71,8 @@ MAX_POSITIONS = 10            # 키움 제한이 아니라 우리 규칙. 모의
 # 규칙상 이 신호는 매매 대상이 아님(알림만·시장 상황상 쉼·수급 조건 등) → 알림 없이 기록만. 그 밖의 건너뜀(잔고·보유 한도·추격·시세)은 알림.
 RULE_SKIPS = ("매수 시간 아님", "시장 분위기 판정", "강한 하락장", "하락 흐름 보통 날", "눌림 돌파는", "[디앤서]", "강한 상승장 아님",
               "전날 외인", "이미 보유 중")
-NEXT_DAY_KINDS = (RETEST_KIND, UP_KIND, BLOCK_KIND, NEWHIGH_KIND, CONTRA_KIND, WEAK_KIND, REBREAK_KIND, DANSWER_KIND, RECLAIM_KIND, CAFE_KIND)   # '다음날' 매도: 익절가 / 손절가 / 다음 날 09:00 (2026-10-25 시장 상황별 매매표)
-NEXT_DAY_TP = {CAFE_KIND: None, RECLAIM_KIND: None, UP_KIND: None, NEWHIGH_KIND: None, WEAK_KIND: WEAK_TP, REBREAK_KIND: None, DANSWER_KIND: None}   # '다음날' 익절가 — 기본 +7%. 📈 상승장 장 초·🏆 주도주 신고가·🌙 종가 재돌파·🧭 디앤서 종가는 익절 없음, 약세장 인버스 +5% (2026-10-25)
+NEXT_DAY_KINDS = (RETEST_KIND, UP_KIND, BLOCK_KIND, NEWHIGH_KIND, CONTRA_KIND, WEAK_KIND, REBREAK_KIND, DANSWER_KIND, RECLAIM_KIND, CAFE_KIND, LEADER_KIND)   # '다음날' 매도: 익절가 / 손절가 / 다음 날 09:00 (2026-10-25 시장 상황별 매매표)
+NEXT_DAY_TP = {LEADER_KIND: None, CAFE_KIND: None, RECLAIM_KIND: None, UP_KIND: None, NEWHIGH_KIND: None, WEAK_KIND: WEAK_TP, REBREAK_KIND: None, DANSWER_KIND: None}   # '다음날' 익절가 — 기본 +7%. 📈 상승장 장 초·🏆 주도주 신고가·🌙 종가 재돌파·🧭 디앤서 종가는 익절 없음, 약세장 인버스 +5% (2026-10-25)
 OVERNIGHT_VIRTUAL = (REBREAK_KIND,)   # NXT 애프터장에 가상으로 사서 밤을 넘기는 신호 (모의 서버는 애프터장 주문 불가)
 KIND_BUDGET = {UP_KIND: UP_BUDGET, TREND_KIND: TREND_BUDGET}   # 📈 상승장 장 초: 종목당 25만 원, 보유 한도(10종목) 예외로 40종목까지 (2026-10-25 사용자)
 KIND_LIMIT = {PULLBACK_KIND: 2}  # 눌림 돌파는 장 초부터 자주 나와 자리를 차지 → 동시 2종목까지 (1년 −0.34%, 10-19 유일한 마이너스 −0.08%)
