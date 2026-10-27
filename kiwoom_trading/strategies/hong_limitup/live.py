@@ -39,6 +39,16 @@ CREATE TABLE IF NOT EXISTS hg_events (     -- 상한가 풀림마다 (산 것·�
 """
 
 
+SPAC_WORDS = ("스팩", "기업인수목적", "SPAC")
+
+
+def is_plain_stock(code: str, name: str) -> bool:
+    """백테스트 대상과 같은 보통주만 — 스팩(기업인수목적회사)·우선주(끝자리 5·7·9·K) 제외.
+    2026-10-27 실전에서 에스케이증권제14호기업인수목적(스팩)을 상한가 풀림으로 샀다 — 1년 백테스트(종목 목록에 스팩 없음)에서 한 번도 본 적 없는 종류.
+    대금 상위 순위에는 스팩·ETF 도 들어오므로 여기서 거른다."""
+    return code[-1] not in "579K" and not any(w in (name or "") for w in SPAC_WORDS)
+
+
 def load_prev_limitups(conn, today: date) -> set[str]:
     """전 거래일 상한가(종가 기준 +29%↑) 종목 — 일봉 DB 에서. 9-14 이후 일봉 종가는 애프터 종가라 +29% 로 넉넉히 본다."""
     rows = conn.execute("""
@@ -108,6 +118,8 @@ class HongAccount:
             if r.change_rate is None or r.price is None or r.change_rate < WATCH_CHG:
                 continue
             code = r.code
+            if not is_plain_stock(code, r.name):
+                continue
             self.names[code] = r.name
             if code not in self.limits:
                 try:
