@@ -457,7 +457,7 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
         trader.lead_now = lead_now
     own_msgs: list[str] = []  # 자기 알림 문구가 있는 판정(🧭·🌙)은 🎯 묶음과 따로 보낸다
     own_ids: set = set()
-    for label, w in (("인버스 갭", inverse), ("장 초 공통점", nine), ("대형주 수급", bigcap), ("주도주 모양", leader), ("눌림 돌파", pullback), ("햄버거", burger), ("역행 강세 종가", contra), ("저항 돌파", retest), ("상승장 장 초", up), ("막힌 고점 돌파", block), ("주도주 신고가", newhigh), ("주도주 추세", trend), ("약세장 인버스", weak_inv), ("[디앤서] 종가 재돌파", rebreak), ("[디앤서] 종가 체크리스트", danswer), ("시초 회복", reclaim)):
+    for label, w in (("인버스 갭", inverse), ("장 초 공통점", nine), ("대형주 수급", bigcap), ("주도주 모양", leader), ("눌림 돌파", pullback), ("햄버거", burger), ("역행 강세 종가", contra), ("저항 돌파", retest), ("상승장 장 초", up), ("막힌 고점 돌파", block), ("주도주 신고가", newhigh), ("주도주 추세", trend), ("약세장 인버스", weak_inv), ("[디앤서] 종가 재돌파", rebreak), ("[디앤서] 종가 체크리스트", danswer), ("시가 탈환", reclaim)):
         if w is not None and hasattr(w, "cache"):
             w.cache = shared_bars
         if w is None:
@@ -620,8 +620,8 @@ def main() -> int:
         block = BlockedHighWatcher(market, client, bcands, regime=regime, done={c for c, _, k in keys if k == BLOCK_KIND})
         logging.info("막힌 고점 돌파 감시 %s종목", len(bcands))
         newhigh = NewHighWatcher(market, ncands, screener.hist.keys(), regime=regime, done={c for c, _, k in keys if k == NEWHIGH_KIND})
-        reclaim = ReclaimWatcher(market, client, now.date(), rcands, screener.names, done={c for c, _, k in keys if k == RECLAIM_KIND})   # 🔁 시초 흔들기 뒤 시가 회복 (모의)
-        logging.info("시초 회복 감시 후보 %s종목 (전날 대금 200위)", len(rcands))
+        reclaim = ReclaimWatcher(market, client, now.date(), rcands, screener.names, done={c for c, _, k in keys if k == RECLAIM_KIND})   # 🔁 시가 탈환 — 시초 흔들기 뒤 시가 회복 (모의)
+        logging.info("시가 탈환 감시 후보 %s종목 (전날 대금 200위)", len(rcands))
         logging.info("주도주 신고가 감시 %s종목 (전날 대금 상위 200, 52주 고가)", len(ncands))
         trend = TrendHoldWatcher(market, tpicks, tday, done=any(k == TREND_KIND for _, _, k in keys))   # ⑦ 09:00 시가 매수
         if trader is not None:

@@ -47,7 +47,7 @@ PLAYS = {   # 종류 → (이름, 익절, 손절)
     WEAK_KIND: ("5️⃣ 약세장 인버스", WEAK_TP, WEAK_STOP),
     HONG_KIND: ("📕 홍인기 상한가 풀림", None, None),
     UP_KIND: ("1️⃣ 상승장 장 초", None, UP_STOP),     # 2026-10-27 사용자 '1 을 실전에도'
-    RECLAIM_KIND: ("🔁 시초 회복", None, None),        # 2026-10-27 사용자 '모의·실전 모두' — 손절·익절은 split_exit
+    RECLAIM_KIND: ("🔁 시가 탈환", None, None),        # 2026-10-27 사용자 '모의·실전 모두' — 손절·익절은 split_exit
     CAFE_KIND: ("☕ 카페 테마 대장", None, None),
 }
 
