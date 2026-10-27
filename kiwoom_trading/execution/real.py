@@ -28,7 +28,7 @@ from typing import Any, Callable, Optional
 from kiwoom_trading.ingestion.collectors.daily_backfill import KiwoomDailyClient, _to_int
 from kiwoom_trading.strategies.hong_limitup.live import HONG_KIND
 from kiwoom_trading.strategies.inverse.live import CODE as INVERSE_CODE, WEAK_KIND, WEAK_STOP, WEAK_TP
-from kiwoom_trading.strategies.regime_plays.live import NEWHIGH_KIND, NEWHIGH_STOP, UP_KIND, UP_STOP
+from kiwoom_trading.strategies.regime_plays.live import NEWHIGH_KIND, NEWHIGH_STOP, UP_HALF_TP, UP_KIND, UP_STOP, UP_TRAIL
 from kiwoom_trading.strategies.resistance_retest.live import RETEST_KIND, RETEST_STOP, RETEST_TP
 
 ENV_FLAG = "KIWOOM_REAL_TRADING"
@@ -67,6 +67,9 @@ CREATE TABLE IF NOT EXISTS real_trades (    -- 🔴 실전 매매 (키움 실계
 );
 ALTER TABLE real_trades ADD COLUMN IF NOT EXISTS kind VARCHAR;
 ALTER TABLE real_trades ADD COLUMN IF NOT EXISTS name VARCHAR;
+ALTER TABLE real_trades ADD COLUMN IF NOT EXISTS part_qty INTEGER;     -- 1️⃣ +7% 에 먼저 판 절반 수량
+ALTER TABLE real_trades ADD COLUMN IF NOT EXISTS part_price DOUBLE;
+ALTER TABLE real_trades ADD COLUMN IF NOT EXISTS peak DOUBLE;           -- 매수 뒤 가장 높은 값 (트레일링용)
 CREATE TABLE IF NOT EXISTS real_liquidations (date DATE, code VARCHAR, name VARCHAR, qty INTEGER, order_no VARCHAR, ts TIMESTAMP, note VARCHAR);
 """
 
@@ -245,7 +248,9 @@ class RealTrader:
                 self.conn.execute("""INSERT OR REPLACE INTO real_trades (id, date, code, name, kind, qty, buy_order_no, buy_ts, buy_price, status)
                                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ordered')""",
                                   [tid, self.today, code, name, s.kind, qty, no, now.replace(tzinfo=None), price])
-                how = (f"익절 +{tp:.0%} / 손절 −{sl:.0%}, 못 닿으면 다음 날 09:00 매도" if tp
+                how = (f"+{UP_HALF_TP:.0%} 에 절반 익절 → 남은 절반 고점 −{UP_TRAIL:.0%} 트레일링 / 처음 −{sl:.0%} 손절, 못 닿으면 다음 날 09:00 매도"
+                       if s.kind == UP_KIND else
+                       f"익절 +{tp:.0%} / 손절 −{sl:.0%}, 못 닿으면 다음 날 09:00 매도" if tp
                        else f"장중 익절 없이 다음 날 09:00 시가 매도 (−{sl:.0%} 손절)" if sl
                        else "익절·손절 없이 다음 날 09:00 시가 매도")
                 self.notify(f"🔴 실전 매수 주문 {name}({code}) {qty}주 × 약 {price:,.0f}원 = {qty * price:,.0f}원 (주문 {no})\n"
@@ -274,12 +279,14 @@ class RealTrader:
                     self._set(tid, buy_price=px, status="open")
                     self.notify(f"🔴 실전 매수 체결 {name} {qty}주 × {px:,.0f}원 [{label}] — "
                                 + (f"손절 {px * (1 - sl):,.0f}원" if sl else "손절 없음")
-                                + (f" · 익절 {px * (1 + tp):,.0f}원" if tp else " · 장중 익절 없이 다음 날 09:00 시가 매도"))
+                                + (f" · {px * (1 + UP_HALF_TP):,.0f}원에 절반 익절, 남은 절반 트레일링" if kind == UP_KIND
+                                   else f" · 익절 {px * (1 + tp):,.0f}원" if tp else " · 장중 익절 없이 다음 날 09:00 시가 매도"))
                 return
+            part, ppx, peak = self.conn.execute("SELECT coalesce(part_qty, 0), part_price, peak FROM real_trades WHERE id = ?", [tid]).fetchone()
             if status == "selling":
                 px = self.client.fill_price(sell_no, code)
                 if px:
-                    pnl = qty * (px - buy_price) - qty * buy_price * _cost(code)
+                    pnl = (qty - part) * (px - buy_price) + part * ((ppx or px) - buy_price) - qty * buy_price * _cost(code)
                     self._set(tid, sell_price=px, pnl=pnl, status="closed")
                     self.notify(f"🔴 실전 매도 체결 {name} {qty}주 × {px:,.0f}원 [{label}] — {px / buy_price - 1 - _cost(code):+.2%} ({pnl:+,.0f}원)\n"
                                 f"  실전 누적 실현 손익 {self.realized():+,.0f}원")
@@ -291,21 +298,42 @@ class RealTrader:
                 reason = "다음 날 시초 매도"
             elif tm < LAST:
                 q = self.market.quote(code, integrated=False)
-                if q and q.price:
+                if q and q.price and kind == UP_KIND:      # 1️⃣: +7% 절반 익절 → 남은 절반 고점 −4% 트레일링 (2026-10-27 사용자 'B 방식')
+                    peak = max(peak or buy_price, float(q.price))
+                    self._set(tid, peak=peak)
+                    if not part and q.price >= buy_price * (1 + UP_HALF_TP):
+                        if qty < 2:
+                            reason = f"익절 +{UP_HALF_TP:.0%} (1주라 전부)"
+                        else:
+                            half = qty // 2
+                            self.client.allowed.add(code)
+                            no = self.client.market_order("sell", code, half)
+                            self._set(tid, part_qty=half, part_price=float(q.price))
+                            self.notify(f"🔴 실전 절반 익절 {name}({code}) {half}주 × 약 {q.price:,.0f}원 (+{q.price / buy_price - 1:.1%}, 주문 {no}) "
+                                        f"— 남은 {qty - half}주는 고점 −{UP_TRAIL:.0%} 트레일링(본전 아래로 안 내림), 못 닿으면 다음 날 09:00")
+                            logging.info("실전 절반 익절 %s %s주", name, half)
+                            return
+                    elif part:
+                        stop = max(buy_price * (1 - sl), peak * (1 - UP_TRAIL), buy_price)
+                        if q.price <= stop:
+                            reason = f"트레일링 고점 −{UP_TRAIL:.0%} (절반 익절 뒤)"
+                    elif q.price <= buy_price * (1 - sl):
+                        reason = f"손절 −{sl:.0%}"
+                elif q and q.price:
                     if sl and q.price <= buy_price * (1 - sl):
                         reason = f"손절 −{sl:.0%}"
                     elif tp and q.price >= buy_price * (1 + tp):
                         reason = f"익절 +{tp:.0%}"
             if reason:
                 held = self.client.holding_qty(code)
-                sell_qty = min(qty, held)
+                sell_qty = min(qty - part, held)
                 if sell_qty < 1:
                     self._set(tid, status="failed", note=f"팔 수량 없음 (계좌 {held}주)")
                     self.notify(f"⚠️ 실전 매도 못 함 {name}({code}) — 계좌 매도 가능 {held}주 (직접 확인 필요)")
                     return
                 self.client.allowed.add(code)
                 no = self.client.market_order("sell", code, sell_qty)
-                self._set(tid, sell_order_no=no, sell_ts=now.replace(tzinfo=None), reason=reason, status="selling", qty=sell_qty)
+                self._set(tid, sell_order_no=no, sell_ts=now.replace(tzinfo=None), reason=reason, status="selling", qty=sell_qty + part)
                 self.notify(f"🔴 실전 매도 주문 {name}({code}) {sell_qty}주 [{label}] — {reason} (주문 {no})")
                 logging.info("실전 매도 주문 %s %s주 %s", name, sell_qty, reason)
         except Exception as exc:
