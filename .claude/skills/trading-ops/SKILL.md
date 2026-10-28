@@ -43,6 +43,7 @@ description: Ellie trading 운영 — 일일 일봉 업데이트/리포트 스�
 - `data/minute_history.duckdb`: 통합(AL) 1분봉 1년 백필(날짜별 대금 상위 **500** + 다음 거래일, 2026-10-25 200 → 500: 키움 1분봉은 약 1년치만 주므로 넓게 모아 둠), 평일 20:45 `EllieTrading_MinuteBackfill`(`--top 500 --since 2025-10-15`)가 이어 받음. 07:30~20:40 에는 멈춤. 500 으로 늘린 몫 약 8만 건 ≈ 55시간(평일 밤 4~5번 + 주말), DB 2.5GB → 약 6GB. 매일 늘어나는 몫 약 600건
 - `data/daily_regular.duckdb`: **정규장 일봉** (code, date, open·high·low·close·volume·value, bars, has_after). 2026-09-14 NXT 전 종목 확대부터 키움 일봉(ka10081)·일별(ka10086)이 통합(애프터 포함) 값을 줘서 daily_ohlcv 종가 = 20:00 애프터 종가가 됐다 → 1분봉 09:00~15:30 봉으로 정규장 값을 따로 만든다. 1분봉 백필(`EllieTrading_MinuteBackfill`)이 끝날 때 자동(`ingestion/collectors/daily_regular.py`, 수동: `python -m kiwoom_trading.ingestion.collectors.daily_regular [--since 2025-10-15 --all]`). 1분봉 있는 종목(대금 상위 500)만, 가격은 1분봉 받은 날 기준. daily_ohlcv 는 그대로(실전 매매가 쓰는 중)
 - `data/reports/`: capture_review_YYYYMMDD.csv (포착 복기)
+- **장중 분석은 `data/screener_snapshot.duckdb`(스캐너가 10분마다 만드는 사본, `ScreenerStore.snapshot`, 2026-10-28)를 read_only 로 연다** — 본 DB 는 스캐너가 잠가 복사도 안 됨.
 - DuckDB 는 프로세스 간 잠금이 걸린다. DuckDB UI·DBeaver 를 열어 두면 업데이트가 5분 간격으로 최대 6회 재시도한다.
 
 ## 키움 REST 메모

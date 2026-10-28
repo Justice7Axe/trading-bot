@@ -388,6 +388,7 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
     store.save_ranks(now, "search_1m", search_1m)
     store.save_ranks(now, "search_day", search_day)
     store.save_ranks(now, "value_krx", value_top)
+    store.snapshot()                   # 10분마다 DB 사본 — 장중에도 다른 프로그램이 분석 (본 DB 는 잠김)
     if strong is not None:
         try:
             strong.tick(now)           # 📡 강세 종목 10:00·13:30·15:20·19:50 (알림만)

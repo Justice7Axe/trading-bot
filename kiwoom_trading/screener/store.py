@@ -5,7 +5,9 @@
 - detections: 포착 기록 (같은 날 같은 모드·종목은 1회만 알림)
 """
 import json
+import logging
 import os
+import time as _time
 from datetime import date, datetime
 from typing import Optional
 
@@ -177,6 +179,29 @@ class ScreenerStore:
 
     def close(self) -> None:
         self.conn.close()
+
+    def snapshot(self, every_sec: int = 600) -> None:
+        """10분마다 DB 사본(screener_snapshot.duckdb)을 만든다 — 스캐너가 본 DB 를 잠가도 장중에 분석할 수 있게 (2026-10-28 사용자 '언제든 분석').
+        읽는 쪽: duckdb.connect('data/screener_snapshot.duckdb', read_only=True). 사본을 열어 두면 그동안은 새 사본으로 못 바꾼다."""
+        now = _time.monotonic()
+        if now - getattr(self, "_snap_at", -1e9) < every_sec:
+            return
+        self._snap_at = now
+        final = os.path.join(os.path.dirname(self.db_path), "screener_snapshot.duckdb")
+        tmp = final + ".tmp"
+        try:
+            for p in (tmp, tmp + ".wal"):
+                if os.path.exists(p):
+                    os.remove(p)
+            db = self.conn.execute("SELECT current_database()").fetchone()[0]
+            self.conn.execute(f"ATTACH '{tmp}' AS snap_copy")
+            try:
+                self.conn.execute(f'COPY FROM DATABASE "{db}" TO snap_copy')
+            finally:
+                self.conn.execute("DETACH snap_copy")
+            os.replace(tmp, final)
+        except Exception:
+            logging.warning("DB 사본 만들기 실패 (다음 차례에 다시)", exc_info=True)
 
     def save_ranks(self, ts: datetime, source: str, items: list[RankItem]) -> None:
         if items:
