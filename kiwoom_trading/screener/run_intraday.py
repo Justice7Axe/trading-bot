@@ -64,6 +64,7 @@ from kiwoom_trading.strategies.hong_limitup.live import HONG_KIND, HongAccount, 
 from kiwoom_trading.execution.experiment_report import build as build_experiment_report
 from kiwoom_trading.strategies.cafe_leader.live import KIND as CAFE_KIND, STOP as CAFE_STOP, CafeLeaderWatcher, load_cafe_context
 from kiwoom_trading.strategies.hong_styles.live import HongStylesAccount, load_hs_context
+from kiwoom_trading.strategies.event_scenario.live import EventScenarioBooks, load_event_context
 from kiwoom_trading.screener.market_regime import MarketRegime
 from kiwoom_trading.screener.surge_groups import SurgeGroups
 from kiwoom_trading.strategies.leader_shape.live import KIND as LEADER_KIND, LeaderShapeWatcher
@@ -619,6 +620,7 @@ def main() -> int:
     hlim: set = set()
     cctx = None
     hsctx = None
+    ectx = None
     keys = store.signal_keys(now.date())
     up = UpOpenWatcher(market, screener.hist.keys(), regime=regime, done=any(k == UP_KIND for _, _, k in keys))
     us_ov = us_market.fetch(now.date())   # 🇺🇸 간밤 미국 지수 (2026-10-27 사용자)
@@ -652,6 +654,7 @@ def main() -> int:
             hlim = load_prev_limitups(dconn, now.date())
             cctx = load_cafe_context(dconn, now.date())
             hsctx = load_hs_context(dconn, now.date())
+            ectx = load_event_context(dconn, now.date())
         finally:
             dconn.close()
         retest = RetestWatcher(market, cands, regime=regime,
@@ -751,9 +754,16 @@ def main() -> int:
             logging.info("홍인기 상따 밖 장부: 대형주 %s종목(60일 고가) · 시총 5위 %s", len(hsctx.big30), ", ".join(hsctx.big5.values()))
         except Exception:
             logging.exception("홍인기 상따 밖 장부 준비 실패")
+    events: Optional[EventScenarioBooks] = None
+    if not args.once and ectx is not None:
+        try:   # 📅 일정 시나리오 (DART 공시 → 무상 권리락·무상증자·자사주 신탁·고배당) 가상 장부 4개 (2026-10-29 사용자, 주문 없음)
+            events = EventScenarioBooks(store, market, now.date(), ectx, notify=None if args.no_telegram else send_telegram_message)
+            logging.info("일정 가상 장부: 전 거래일 %s, 보유 %s건", events.prev, sum(len(b.open_trades()) for b in events.books.values()))
+        except Exception:
+            logging.exception("일정 가상 장부 준비 실패")
     books = tuple((label, b) for label, b in (("📘 전황 계좌", jh), ("📕 홍인기 계좌", hong), ("☕ 카페 테마 대장", cafe),
-                                              ("📕 홍인기 상따 밖 장부", hstyles)) if b is not None)
-    for b in (jh, hong, cafe):      # 15:40 마감 요약은 따로 보내지 않고 LEDGER_SINK 에 모아 15:42 한 통으로 (📕 상따 밖은 19:58 이라 따로)
+                                              ("📕 홍인기 상따 밖 장부", hstyles), ("📅 일정 시나리오", events)) if b is not None)
+    for b in (jh, hong, cafe, events):      # 15:40 마감 요약은 따로 보내지 않고 LEDGER_SINK 에 모아 15:42 한 통으로 (📕 상따 밖은 19:58 이라 따로)
         if b is not None:
             b.summary_sink = LEDGER_SINK
     strong: Optional[StrongListWatcher] = None

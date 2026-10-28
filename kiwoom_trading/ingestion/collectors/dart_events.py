@@ -54,6 +54,11 @@ def relabel(c):
 
 def con():
     c = duckdb.connect(DB)
+    con_schema(c)
+    return c
+
+
+def con_schema(c):
     c.execute("""CREATE TABLE IF NOT EXISTS disclosures(
         rcept_no VARCHAR PRIMARY KEY, rcept_dt DATE, code VARCHAR, corp_code VARCHAR, corp_name VARCHAR,
         corp_cls VARCHAR, title VARCHAR, kind VARCHAR, fixed BOOLEAN, flr_nm VARCHAR, rm VARCHAR)""")
@@ -81,6 +86,26 @@ def months(a, b):
         d = n
 
 
+def fetch_rows(s, e, ty):
+    """s~e 접수 공시 목록 (상장 종목만) → disclosures 행들."""
+    page, total, rows = 1, 1, []
+    while page <= total:
+        j = get("list.json", bgn_de=s.strftime("%Y%m%d"), end_de=e.strftime("%Y%m%d"),
+                pblntf_ty=ty, page_no=page, page_count=100).json()
+        if j.get("status") == "013": break                   # 자료 없음
+        if j.get("status") != "000": raise RuntimeError(f"DART 오류 {j.get('status')} {j.get('message')}")
+        total = j["total_page"]
+        for x in j["list"]:
+            if not x.get("stock_code"): continue
+            t = x["report_nm"].strip()
+            rows.append((x["rcept_no"], datetime.strptime(x["rcept_dt"], "%Y%m%d").date(), x["stock_code"],
+                         x["corp_code"], x["corp_name"], x["corp_cls"], t, kind_of(t),
+                         bool(re.search(r"\[기재정정\]|\[첨부정정\]|정정", t)), x["flr_nm"], x.get("rm", "")))
+        page += 1
+        time.sleep(0.6)
+    return rows
+
+
 def run_list(a, b):
     c = con()
     done = {(m, t) for m, t in c.execute("SELECT month, ty FROM list_done").fetchall()}
@@ -89,26 +114,34 @@ def run_list(a, b):
         for ty in ("B", "I"):
             m = s.strftime("%Y%m")
             if (m, ty) in done and e < today - timedelta(days=3): continue
-            page, total, rows = 1, 1, []
-            while page <= total:
-                j = get("list.json", bgn_de=s.strftime("%Y%m%d"), end_de=e.strftime("%Y%m%d"),
-                        pblntf_ty=ty, page_no=page, page_count=100).json()
-                if j.get("status") == "013": break                   # 자료 없음
-                if j.get("status") != "000": raise SystemExit(f"DART 오류 {j.get('status')} {j.get('message')}")
-                total = j["total_page"]
-                for x in j["list"]:
-                    if not x.get("stock_code"): continue
-                    t = x["report_nm"].strip()
-                    rows.append((x["rcept_no"], datetime.strptime(x["rcept_dt"], "%Y%m%d").date(), x["stock_code"],
-                                 x["corp_code"], x["corp_name"], x["corp_cls"], t, kind_of(t),
-                                 bool(re.search(r"\[기재정정\]|\[첨부정정\]|정정", t)), x["flr_nm"], x.get("rm", "")))
-                page += 1
-                time.sleep(0.15)
+            rows = fetch_rows(s, e, ty)
             if rows:
                 c.executemany("INSERT OR IGNORE INTO disclosures VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows)
             c.execute("INSERT OR IGNORE INTO list_done VALUES (?,?)", [m, ty])
             n = sum(1 for r in rows if r[7])
             print(f"{m} {ty}: {len(rows)}건 (사건 {n})", flush=True)
+
+
+def fetch_recent(a, b, kinds, db=None):
+    """장중 스캐너용 (📅 일정 가상 장부): a~b 접수 목록을 받아 쌓고, kinds 사건의 원문을 받아 규모를 뽑는다.
+    DB 는 잠깐만 열고 닫는다 (백테스트가 복사할 수 있게). 반환 = 받은 원문 수."""
+    from kiwoom_trading.strategies.event_scenario.parse import upsert_details
+    rows = fetch_rows(a, b, "B") + fetch_rows(a, b, "I")
+    c = duckdb.connect(db or DB)
+    try:
+        con_schema(c)
+        if rows:
+            c.executemany("INSERT OR IGNORE INTO disclosures VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows)
+        todo = [r for (r,) in c.execute(f"""SELECT d.rcept_no FROM disclosures d LEFT JOIN documents x USING(rcept_no)
+            WHERE d.kind IN ({','.join("'" + k + "'" for k in kinds)}) AND d.rcept_dt >= ? AND NOT d.fixed
+              AND d.title NOT LIKE '%자회사%' AND x.rcept_no IS NULL""", [a]).fetchall()]
+        for r in todo:
+            c.execute("INSERT OR REPLACE INTO documents VALUES (?,?,?)", [r, doc_text(r), datetime.now()])
+            time.sleep(0.6)
+        upsert_details(c, todo)
+        return len(todo)
+    finally:
+        c.close()
 
 
 def doc_text(rcept_no):

@@ -103,24 +103,40 @@ COLS = ["op", "op_yoy", "op_turn", "sales_yoy", "due", "ratio", "pre_owned", "am
         "dps", "yield_pct", "record", "div_type", "per_share", "listing"]
 
 
-def build():
-    c = duckdb.connect(DB)
-    rows = c.execute("""SELECT d.rcept_no, d.kind, x.text FROM disclosures d JOIN documents x USING(rcept_no)
-                        WHERE x.text IS NOT NULL""").fetchall()
+DDL = """CREATE TABLE IF NOT EXISTS event_details(rcept_no VARCHAR PRIMARY KEY, op DOUBLE, op_yoy DOUBLE, op_turn VARCHAR, sales_yoy DOUBLE,
+         due DATE, ratio DOUBLE, pre_owned BOOLEAN, amount DOUBLE, shares DOUBLE, dps DOUBLE, yield_pct DOUBLE,
+         record DATE, div_type VARCHAR, per_share DOUBLE, listing DATE)"""
+
+
+def _rows(c, where="", args=()):
     out = []
-    for r, k, text in rows:
+    for r, k, text in c.execute(f"""SELECT d.rcept_no, d.kind, x.text FROM disclosures d JOIN documents x USING(rcept_no)
+                                    WHERE x.text IS NOT NULL {where}""", list(args)).fetchall():
         try:
             p = parse(k, text)
         except Exception as e:
             print("파싱 실패", r, k, e); p = {}
         out.append([r] + [p.get(k2) for k2 in COLS])
+    return out
+
+
+def upsert_details(c, rcepts):
+    """새로 받은 원문만 규모를 뽑아 넣는다 (장중 스캐너)."""
+    c.execute(DDL)
+    if not rcepts: return
+    rows = _rows(c, f"AND d.rcept_no IN ({','.join('?' * len(rcepts))})", rcepts)
+    c.executemany(f"INSERT OR REPLACE INTO event_details VALUES ({','.join('?' * (len(COLS) + 1))})", rows)
+
+
+def build():
+    c = duckdb.connect(DB)
+    out = _rows(c)
     c.execute("DROP TABLE IF EXISTS event_details")
-    c.execute("""CREATE TABLE event_details(rcept_no VARCHAR PRIMARY KEY, op DOUBLE, op_yoy DOUBLE, op_turn VARCHAR, sales_yoy DOUBLE,
-                 due DATE, ratio DOUBLE, pre_owned BOOLEAN, amount DOUBLE, shares DOUBLE, dps DOUBLE, yield_pct DOUBLE,
-                 record DATE, div_type VARCHAR, per_share DOUBLE, listing DATE)""")
+    c.execute(DDL)
     c.executemany(f"INSERT INTO event_details VALUES ({','.join('?' * (len(COLS) + 1))})", out)
     print(c.sql("""SELECT d.kind, count(*) n, count(op) op, count(op_yoy) yoy, count(due) due, count(ratio) ratio, count(amount) amt,
-                   count(dps) dps, count(record) rec FROM event_details e JOIN disclosures d USING(rcept_no) GROUP BY 1 ORDER BY 2 DESC"""))
+                   count(dps) dps, count(yield_pct) yld, count(record) rec, count(per_share) ps
+                   FROM event_details e JOIN disclosures d USING(rcept_no) GROUP BY 1 ORDER BY 2 DESC"""))
 
 
 if __name__ == "__main__":
