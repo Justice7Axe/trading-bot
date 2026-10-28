@@ -8,6 +8,8 @@
 규칙:
 - 들고 있는 종목이 없고 오늘 아직 안 샀으면, 신호가 온 순서대로 첫 신호를 시장가로 산다 (정규장 09:00~15:19).
   금액 = min(시드 10만 원 + 실전 실현 손익, 계좌 주문 가능 금액, 주문 상한 20만 원). 1주도 못 사면 다음 신호. 신호가 +1% 넘게 오른 뒤면 추격 안 함.
+  2026-10-28 사용자 'B': 1️⃣ 상승장 장 초는 하루 1종목 대신 UP_SLOTS(4)종목까지, 종목당 (시드+손익)/4. 1️⃣ 을 산 날 다른 신호는 안 산다.
+  같은 날 '증거금 문제 해소': 매수는 현재가 +1% 지정가 (시장가는 상한가 기준 증거금이라 덜 샀음), 2분 안에 다 안 채워지면 남은 수량 취소.
 - 📕 신호 = 홍인기 가상 장부 '수급 없이' 매수 판단 (첫 상한가 · 5분↑ 잠김 뒤 풀림, hong_account.py). 지금가가 상한가면(다시 잠김) 안 산다.
 - 매도 (체결가 기준, 1분마다 현재가 확인): 6️⃣ 익절 없음 · −4% / 2️⃣ +7% · −5% / 5️⃣ +5% · −3% / 📕 익절·손절 없음 (1년: 손절 넣으면 나빠짐,
   전부 다음 날 09:00 870건 건당 +1.93%, 호가 2칸 미끄러짐 포함),
@@ -39,6 +41,9 @@ LIQUIDATE_ENV = "KIWOOM_REAL_LIQUIDATE_DATE"
 SEED = 100_000
 REAL_MAX_ORDER = 200_000
 MAX_CHASE = 0.01
+UP_SLOTS = 4                  # 2026-10-28 사용자 'B': 강한 상승장 날 1️⃣ 은 시드를 4로 나눠 여러 종목 (다른 신호는 하루 1종목 그대로)
+LIMIT_UP = 0.01               # 2026-10-28 사용자 '증거금 문제 해소': 매수는 시장가(상한가 기준 증거금) 대신 현재가 +1% 지정가
+FILL_WAIT_SEC = 120           # 지정가가 2분 안에 다 안 채워지면 남은 수량 취소
 ETF_CODES = {INVERSE_CODE}
 OPEN, LAST, CLOSE = time(9, 0), time(15, 19), time(15, 30)
 PLAYS = {   # 종류 → (이름, 익절, 손절)
@@ -95,6 +100,13 @@ def _cost(code: str) -> float:
     return 0.0005 if code in ETF_CODES else 0.0025
 
 
+def tick_up(price: float) -> int:
+    """KRX 호가 단위로 올림."""
+    unit = 1 if price < 2_000 else 5 if price < 5_000 else 10 if price < 20_000 else 50 if price < 50_000 \
+        else 100 if price < 200_000 else 500 if price < 500_000 else 1_000
+    return int(-(-price // unit) * unit)
+
+
 class RealClient(KiwoomDailyClient):
     """실서버(api.kiwoom.com) 계좌·주문. allowed 에 없는 종목은 주문하지 않는다."""
 
@@ -119,9 +131,10 @@ class RealClient(KiwoomDailyClient):
     def holding_qty(self, code: str) -> int:
         return next((q for c, _, q in self.holdings() if c == code), 0)
 
-    def _order(self, api: str, code: str, qty: int) -> str:
+    def _order(self, api: str, code: str, qty: int, limit: Optional[int] = None) -> str:
         payload, _, _ = self._post("/api/dostk/ordr", api, {"dmst_stex_tp": "KRX", "stk_cd": code, "ord_qty": str(qty),
-                                                            "ord_uv": "", "trde_tp": "3", "cond_uv": ""})
+                                                            "ord_uv": str(limit) if limit else "", "trde_tp": "0" if limit else "3",
+                                                            "cond_uv": ""})
         no = str(payload.get("ord_no") or "")
         if not no:
             raise RuntimeError(f"주문 거부: {payload.get('return_code')} {payload.get('return_msg')}")
@@ -136,14 +149,29 @@ class RealClient(KiwoomDailyClient):
             raise RuntimeError(f"실전 주문 허용 종목이 아님: {code}")
         return self._order({"buy": "kt10000", "sell": "kt10001"}[side], code, qty)
 
-    def fill_price(self, order_no: str, code: str) -> Optional[float]:
+    def limit_buy(self, code: str, qty: int, price: int) -> str:
+        """지정가 매수 — 증거금이 주문 가격 기준이라 시장가(상한가 기준)보다 많이 살 수 있다."""
+        if code not in self.allowed:
+            raise RuntimeError(f"실전 주문 허용 종목이 아님: {code}")
+        return self._order("kt10000", code, qty, limit=price)
+
+    def cancel(self, order_no: str, code: str) -> str:
+        """남은 수량 전부 취소."""
+        payload, _, _ = self._post("/api/dostk/ordr", "kt10003", {"dmst_stex_tp": "KRX", "orig_ord_no": order_no, "stk_cd": code, "cncl_qty": "0"})
+        return str(payload.get("ord_no") or "")
+
+    def fill_info(self, order_no: str, code: str) -> tuple[int, Optional[float]]:
+        """(체결 수량, 평균 체결가)."""
         payload, _, _ = self._post("/api/dostk/acnt", "ka10076", {"stk_cd": code, "qry_tp": "1", "sell_tp": "0", "ord_no": "", "stex_tp": "0"})
         qty = amount = 0
         for row in payload.get("cntr") or []:
             if str(row.get("ord_no") or "").lstrip("0") == order_no.lstrip("0"):
                 q, p = _to_int(row.get("cntr_qty")) or 0, _to_int(row.get("cntr_pric")) or 0
                 qty, amount = qty + q, amount + q * p
-        return amount / qty if qty else None
+        return qty, (amount / qty if qty else None)
+
+    def fill_price(self, order_no: str, code: str) -> Optional[float]:
+        return self.fill_info(order_no, code)[1]
 
 
 def build_real_client() -> RealClient:
@@ -159,9 +187,9 @@ class RealTrader:
         self.notify = notify or (lambda text: None)
         self.kinds = tuple(kinds or PLAYS)
         self.conn.execute(SCHEMA)
-        t = self.active()                       # 들고 있는 종목은 팔 수 있게 허용
-        if t and hasattr(self.client, "allowed"):
-            self.client.allowed.add(t[2])
+        for t in self.actives():                # 들고 있는 종목은 팔 수 있게 허용
+            if hasattr(self.client, "allowed"):
+                self.client.allowed.add(t[2])
 
     # ------------------------------------------------------------ 한 번 전체 정리
     def liquidate_once(self, now: datetime) -> None:
@@ -197,13 +225,20 @@ class RealTrader:
     def realized(self) -> float:
         return self.conn.execute("SELECT coalesce(sum(pnl), 0) FROM real_trades WHERE status = 'closed'").fetchone()[0] or 0
 
+    def actives(self) -> list[tuple]:
+        return self.conn.execute("""SELECT id, date, code, coalesce(name, code), coalesce(kind, ?), qty, buy_order_no, buy_price, sell_order_no, status, buy_ts
+                                    FROM real_trades WHERE status IN ('ordered', 'open', 'selling') ORDER BY buy_ts""",
+                                 [WEAK_KIND]).fetchall()
+
     def active(self) -> Optional[tuple]:
-        return self.conn.execute("""SELECT id, date, code, coalesce(name, code), coalesce(kind, ?), qty, buy_order_no, buy_price, sell_order_no, status
-                                    FROM real_trades WHERE status IN ('ordered', 'open', 'selling') ORDER BY buy_ts LIMIT 1""",
-                                 [WEAK_KIND]).fetchone()
+        a = self.actives()
+        return a[0] if a else None
+
+    def today_kinds(self) -> list[str]:
+        return [k for (k,) in self.conn.execute("SELECT coalesce(kind, '') FROM real_trades WHERE date = ? AND status <> 'failed'", [self.today]).fetchall()]
 
     def bought_today(self) -> bool:
-        return bool(self.conn.execute("SELECT count(*) FROM real_trades WHERE date = ? AND status <> 'failed'", [self.today]).fetchone()[0])
+        return bool(self.today_kinds())
 
     def _set(self, tid: str, **kw) -> None:
         cols = ", ".join(f"{k} = ?" for k in kw)
@@ -220,10 +255,18 @@ class RealTrader:
         cands = sorted((x for x in items if x[3].kind in self.kinds), key=lambda x: x[3].ts)
         if not cands or not (OPEN <= now.time() < LAST):
             return
-        if self.active() or self.bought_today():
-            t = self.active()
-            why = f"실전은 하루 1종목 — 오늘 이미 {t[3] if t else '매수함'}"
-            return self._skip_note([f"{n}({c}) [{PLAYS[s.kind][0]} {s.ts:%H:%M}] 포착: {(s.reason or '')[:120]}" for c, n, _, s in cands], why)
+        held, kinds_today = self.actives(), self.today_kinds()
+        up_only = bool(held or kinds_today)     # 이미 샀으면 1️⃣ 칸이 남았을 때 1️⃣ 만 더 산다 (B, 2026-10-28)
+        if up_only:
+            n_up = sum(k == UP_KIND for k in kinds_today)
+            can_more = all(t[4] == UP_KIND for t in held) and all(k == UP_KIND for k in kinds_today) and n_up < UP_SLOTS
+            names = ", ".join(t[3] for t in held) or "매수함"
+            why = f"실전은 하루 1종목 — 오늘 이미 {names}" + (f" (1️⃣ 만 {UP_SLOTS}종목까지)" if can_more else "")
+            self._skip_note([f"{n}({c}) [{PLAYS[s.kind][0]} {s.ts:%H:%M}] 포착: {(s.reason or '')[:120]}"
+                             for c, n, _, s in cands if not (can_more and s.kind == UP_KIND)], why)
+            cands = [x for x in cands if can_more and x[3].kind == UP_KIND]
+            if not cands:
+                return
         skipped = []
         try:
             cash = self.client.cash()
@@ -231,9 +274,16 @@ class RealTrader:
             logging.exception("실전: 예수금 조회 실패")
             self.notify(f"⚠️ 실전 예수금 조회 실패 — {exc}"[:400])
             return
-        budget = min(SEED + self.realized(), cash, REAL_MAX_ORDER)
+        equity = SEED + self.realized()
+        n_up = sum(k == UP_KIND for k in kinds_today)
         for code, name, _source, s in cands:
             label, tp, sl = PLAYS[s.kind]
+            if up_only and (s.kind != UP_KIND or n_up >= UP_SLOTS):
+                skipped.append(f"{name}({code}) [{label} {s.ts:%H:%M}] 포착: {(s.reason or '')[:120]}")
+                continue
+            if any(t[2] == code for t in held):
+                continue
+            budget = min(equity / UP_SLOTS if s.kind == UP_KIND else equity, cash, REAL_MAX_ORDER)
             try:
                 q = self.market.quote(code, integrated=False)
                 price = float(q.price) if q and q.price else None
@@ -245,20 +295,21 @@ class RealTrader:
                 if price > s.price * (1 + MAX_CHASE):
                     skipped.append(f"{name}({code}) [{label} {s.ts:%H:%M}] 신호가보다 {price / s.price - 1:+.1%} — 추격 안 함 · 포착: {(s.reason or '')[:120]}")
                     continue
-                qty = int(budget // price)
+                limit = tick_up(price * (1 + LIMIT_UP))   # 현재가 +1% 지정가 — 증거금이 이 가격 기준 (시장가는 상한가 기준이라 덜 삼, 2026-10-28)
+                qty = int(budget // limit)
                 if qty < 1:
-                    skipped.append(f"{name}({code}) [{label} {s.ts:%H:%M}] 1주 {price:,.0f}원 > 쓸 수 있는 돈 {budget:,.0f}원 · 포착: {(s.reason or '')[:120]}")
+                    skipped.append(f"{name}({code}) [{label} {s.ts:%H:%M}] 1주 {limit:,.0f}원 > 쓸 수 있는 돈 {budget:,.0f}원 · 포착: {(s.reason or '')[:120]}")
                     continue
                 self.client.allowed.add(code)
                 try:
-                    no = self.client.market_order("buy", code, qty)
-                except RuntimeError as exc:   # 시장가는 상한가 기준 증거금 → '[2000](855056:매수증거금이 부족합니다. 46주 매수가능)' (2026-10-26)
+                    no = self.client.limit_buy(code, qty, limit)
+                except RuntimeError as exc:   # '[2000](855056:매수증거금이 부족합니다. 46주 매수가능)' (2026-10-26)
                     m = re.search(r"(\d+)주 매수가능", str(exc))
                     if not m or not 0 < int(m.group(1)) < qty:
                         raise
                     logging.info("실전: %s %s주 증거금 부족 → %s주로 다시 주문", name, qty, m.group(1))
                     qty = int(m.group(1))
-                    no = self.client.market_order("buy", code, qty)
+                    no = self.client.limit_buy(code, qty, limit)
                 tid = f"{now:%Y%m%d}-{code}"
                 self.conn.execute("""INSERT OR REPLACE INTO real_trades (id, date, code, name, kind, qty, buy_order_no, buy_ts, buy_price, status, stop_px)
                                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ordered', ?)""",
@@ -269,31 +320,52 @@ class RealTrader:
                        f"익절 +{tp:.0%} / 손절 −{sl:.0%}, 못 닿으면 다음 날 09:00 매도" if tp
                        else f"장중 익절 없이 다음 날 09:00 시가 매도 (−{sl:.0%} 손절)" if sl
                        else "익절·손절 없이 다음 날 09:00 시가 매도")
-                self.notify(f"🔴 실전 매수 주문 {name}({code}) {qty}주 × 약 {price:,.0f}원 = {qty * price:,.0f}원 (주문 {no})\n"
+                self.notify(f"🔴 실전 매수 주문 {name}({code}) {qty}주 × 약 {price:,.0f}원 = {qty * price:,.0f}원 (지정가 {limit:,}원, 주문 {no})\n"
                             f"  [{label} {s.ts:%H:%M}] {how}"
+                            + (f"\n  1️⃣ {n_up + 1}/{UP_SLOTS}종목 (종목당 시드의 1/{UP_SLOTS})" if s.kind == UP_KIND else "")
                             + "".join(f"\n{l}" for l in (getattr(s, "reason", "") or "").splitlines() if "🇺🇸" in l))
-                logging.info("실전 매수 주문 %s %s %s주 (주문 %s)", label, name, qty, no)
-                self._skip_note(skipped, "먼저 온 신호를 건너뜀")
-                return
+                logging.info("실전 매수 주문 %s %s %s주 지정가 %s (주문 %s)", label, name, qty, limit, no)
+                if s.kind != UP_KIND:
+                    self._skip_note(skipped, "먼저 온 신호를 건너뜀")
+                    return
+                up_only, n_up, cash = True, n_up + 1, cash - qty * limit
+                held.append((tid, self.today, code))
             except Exception as exc:
                 logging.exception("실전 매수 실패 %s", name)
                 self.notify(f"⚠️ 실전 매수 실패 {name}({code}) [{label}] — {exc}"[:500])
                 return
-        self._skip_note(skipped)
+        self._skip_note(skipped, "1️⃣ 칸이 찼거나 먼저 온 1️⃣ 를 삼" if up_only else "")
 
     # ------------------------------------------------------------ 체결 확인·매도
     def tick(self, now: datetime) -> None:
         self.liquidate_once(now)
-        t = self.active()
-        if not t:
-            return
-        tid, d, code, name, kind, qty, buy_no, buy_price, sell_no, status = t
+        for t in self.actives():   # 1️⃣ 은 여러 종목일 수 있다 (2026-10-28 B)
+            self._tick_one(now, t)
+
+    def _tick_one(self, now: datetime, t: tuple) -> None:
+        tid, d, code, name, kind, qty, buy_no, buy_price, sell_no, status, buy_ts = t
         label, tp, sl = PLAYS.get(kind, PLAYS[WEAK_KIND])
         tm = now.time()
         try:
             if status == "ordered":
-                px = self.client.fill_price(buy_no, code)
-                if px:
+                got, px = self.client.fill_info(buy_no, code)
+                waited = (now.replace(tzinfo=None) - buy_ts).total_seconds() if buy_ts else 0
+                if got and got < qty and waited < FILL_WAIT_SEC:
+                    return                                   # 지정가 일부만 체결 — 조금 더 기다림
+                if got < qty and waited >= FILL_WAIT_SEC:    # 2분 지나도 다 안 채워짐 → 남은 수량 취소
+                    try:
+                        self.client.cancel(buy_no, code)
+                    except Exception:
+                        logging.exception("실전 매수 남은 수량 취소 실패 %s", name)
+                    got, px = self.client.fill_info(buy_no, code)
+                    if not got:
+                        self._set(tid, status="failed", note=f"지정가 {FILL_WAIT_SEC // 60}분 미체결 → 취소")
+                        self.notify(f"⏭ 실전 매수 취소 {name}({code}) [{label}] — 지정가 {FILL_WAIT_SEC // 60}분 안에 체결 안 됨 (가격이 +1% 넘게 오름)")
+                        return
+                    self.notify(f"🔴 실전 매수 일부만 체결 {name} {got}/{qty}주 — 남은 수량 취소")
+                    qty = got
+                    self._set(tid, qty=got)
+                if px and got >= qty:
                     self._set(tid, buy_price=px, status="open")
                     self.notify(f"🔴 실전 매수 체결 {name} {qty}주 × {px:,.0f}원 [{label}] — "
                                 + (f"손절 {px * (1 - sl):,.0f}원" if sl else "손절 없음")
