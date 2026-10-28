@@ -53,7 +53,7 @@ from kiwoom_trading.strategies.contra_close.live import KIND as CONTRA_KIND
 from kiwoom_trading.strategies.danswer.rebreak import KIND as REBREAK_KIND
 from kiwoom_trading.strategies.danswer.close import KIND as DANSWER_KIND
 from kiwoom_trading.strategies.resistance_retest.live import RETEST_KIND, RETEST_TP
-from kiwoom_trading.strategies.regime_plays.live import BLOCK_KIND, NEWHIGH_KIND, UP_BUDGET, UP_HALF_TP, UP_KIND, UP_TOP_N, UP_TRAIL
+from kiwoom_trading.strategies.regime_plays.live import BLOCK_KIND, NEWHIGH_KIND, UP_BUDGET, UP_HALF_TP, UP_KIND, UP_MAX_PREV_GAIN, UP_TOP_N, UP_TRAIL
 from kiwoom_trading.strategies.cafe_leader.live import HALF_TP as CAFE_HALF_TP, KIND as CAFE_KIND, STOP as CAFE_STOP
 from kiwoom_trading.strategies.premarket_reclaim.live import HALF_R as RECLAIM_HALF_R, KIND as RECLAIM_KIND, TRAIL as RECLAIM_TRAIL
 from kiwoom_trading.strategies.trend_hold.live import BUDGET as TREND_BUDGET, BUY_END as TREND_BUY_END, KIND as TREND_KIND, MAX_HOLD as TREND_MAX, TREND_POOL
@@ -70,7 +70,7 @@ LEAD_MULT, NONLEAD_MULT = 2.0, 0.5   # 🏆 주도주 신고가 금액: 테마 �
 MAX_POSITIONS = 10            # 키움 제한이 아니라 우리 규칙. 모의 계좌 약 1천만 원 ÷ 종목당 100만 원 (2026-10-20, 10-19 복기: 5종목 한도로 신호 85건 건너뜀)
 # 규칙상 이 신호는 매매 대상이 아님(알림만·시장 상황상 쉼·수급 조건 등) → 알림 없이 기록만. 그 밖의 건너뜀(잔고·보유 한도·추격·시세)은 알림.
 RULE_SKIPS = ("매수 시간 아님", "시장 분위기 판정", "강한 하락장", "하락 흐름 보통 날", "눌림 돌파는", "[디앤서]", "강한 상승장 아님",
-              "전날 외인", "이미 보유 중")
+              "전날 외인", "이미 보유 중", "전일 대비")
 NEXT_DAY_KINDS = (RETEST_KIND, UP_KIND, BLOCK_KIND, NEWHIGH_KIND, CONTRA_KIND, WEAK_KIND, REBREAK_KIND, DANSWER_KIND, RECLAIM_KIND, CAFE_KIND, LEADER_KIND)   # '다음날' 매도: 익절가 / 손절가 / 다음 날 09:00 (2026-10-25 시장 상황별 매매표)
 NEXT_DAY_TP = {LEADER_KIND: None, CAFE_KIND: None, RECLAIM_KIND: None, UP_KIND: None, NEWHIGH_KIND: None, WEAK_KIND: WEAK_TP, REBREAK_KIND: None, DANSWER_KIND: None}   # '다음날' 익절가 — 기본 +7%. 📈 상승장 장 초·🏆 주도주 신고가·🌙 종가 재돌파·🧭 디앤서 종가는 익절 없음, 약세장 인버스 +5% (2026-10-25)
 OVERNIGHT_VIRTUAL = (REBREAK_KIND,)   # NXT 애프터장에 가상으로 사서 밤을 넘기는 신호 (모의 서버는 애프터장 주문 불가)
@@ -205,6 +205,12 @@ def _next_day_how(tp: Optional[float], stop: Optional[float], kind: str = "") ->
                 f"못 닿으면 다음 날 09:00 매도")
     tp_txt = f"+{tp:.0%} 익절" if tp is not None else "익절 없음"
     return f"{tp_txt} / 손절 {stop:,.0f}원, 못 닿으면 다음 날 09:00 매도" if stop else f"{tp_txt}, 손절 없이 다음 날 09:00 매도"
+
+
+def _prev_gain(q) -> float:
+    """전일 종가 대비 지금 등락 (기준가 없으면 0)."""
+    base = getattr(q, "base_price", None) if q else None
+    return (q.price / base - 1) if base and q.price else 0.0
 
 
 def _flow_txt(x: Optional[int]) -> str:
@@ -437,7 +443,9 @@ class PaperTrader:
                 reason = "시세 조회 실패"
             elif t.kind == RECLAIM_KIND and (not s.stop or price <= s.stop):
                 reason = "이미 흔들기 저가(손절선) 아래"
-            elif price > s.price * (1 + MAX_CHASE):
+            elif t.kind == UP_KIND and _prev_gain(q) > UP_MAX_PREV_GAIN:   # 1️⃣: 신호가 대비 추격 제한 대신 전일 대비 +15% 넘게 오른 것만 안 삼 (2026-10-28)
+                reason = f"전일 대비 {_prev_gain(q):+.1%} — 이미 많이 오름 ({UP_KIND}는 +{UP_MAX_PREV_GAIN:.0%}까지)"
+            elif t.kind != UP_KIND and price > s.price * (1 + MAX_CHASE):
                 reason = f"현재가 {price:,}원이 신호가보다 {price / s.price - 1:+.1%} — 추격 안 함"
         if reason is None:
             factor, why = self._nada_factor(t) if t.kind != TREND_KIND else (1.0, "")   # ⑦ 은 정한 금액 그대로 (사용자 2026-10-25)
@@ -503,7 +511,8 @@ class PaperTrader:
         if not price:
             q = self.market.quote(t.code, integrated=False)
             price = q.price if q else None
-            if not price or price > s.price * (1 + MAX_CHASE) or (t.kind == RECLAIM_KIND and (not s.stop or price <= s.stop)):
+            chase = _prev_gain(q) > UP_MAX_PREV_GAIN if t.kind == UP_KIND else price and price > s.price * (1 + MAX_CHASE)
+            if not price or chase or (t.kind == RECLAIM_KIND and (not s.stop or price <= s.stop)):
                 return False
         if not t.qty:
             t.qty = order_qty(price, int(KIND_BUDGET.get(t.kind, BUDGET_PER_STOCK)))

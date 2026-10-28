@@ -33,7 +33,7 @@ from kiwoom_trading.strategies.inverse.live import CODE as INVERSE_CODE, WEAK_KI
 from kiwoom_trading.execution import split_exit
 from kiwoom_trading.strategies.cafe_leader.live import KIND as CAFE_KIND
 from kiwoom_trading.strategies.premarket_reclaim.live import KIND as RECLAIM_KIND
-from kiwoom_trading.strategies.regime_plays.live import NEWHIGH_KIND, NEWHIGH_STOP, UP_HALF_TP, UP_KIND, UP_STOP, UP_TRAIL
+from kiwoom_trading.strategies.regime_plays.live import NEWHIGH_KIND, NEWHIGH_STOP, UP_HALF_TP, UP_KIND, UP_MAX_PREV_GAIN, UP_STOP, UP_TRAIL
 from kiwoom_trading.strategies.resistance_retest.live import RETEST_KIND, RETEST_STOP, RETEST_TP
 
 ENV_FLAG = "KIWOOM_REAL_TRADING"
@@ -292,7 +292,11 @@ class RealTrader:
                 if s.kind == HONG_KIND and s.level and price >= s.level:
                     logging.info("실전: %s 다시 상한가 %s — 풀림 아님, 안 삼", name, s.level)
                     continue
-                if price > s.price * (1 + MAX_CHASE):
+                base = float(getattr(q, "base_price", 0) or 0)
+                if s.kind == UP_KIND and base and price > base * (1 + UP_MAX_PREV_GAIN):
+                    skipped.append(f"{name}({code}) [{label} {s.ts:%H:%M}] 전일 대비 {price / base - 1:+.1%} — 이미 많이 오름 · 포착: {(s.reason or '')[:120]}")
+                    continue
+                if s.kind != UP_KIND and price > s.price * (1 + MAX_CHASE):   # 1️⃣ 은 신호가 대비 추격 제한 없음 (2026-10-28)
                     skipped.append(f"{name}({code}) [{label} {s.ts:%H:%M}] 신호가보다 {price / s.price - 1:+.1%} — 추격 안 함 · 포착: {(s.reason or '')[:120]}")
                     continue
                 limit = tick_up(price * (1 + LIMIT_UP))   # 현재가 +1% 지정가 — 증거금이 이 가격 기준 (시장가는 상한가 기준이라 덜 삼, 2026-10-28)
@@ -334,7 +338,7 @@ class RealTrader:
                 logging.exception("실전 매수 실패 %s", name)
                 self.notify(f"⚠️ 실전 매수 실패 {name}({code}) [{label}] — {exc}"[:500])
                 return
-        self._skip_note(skipped, "1️⃣ 칸이 찼거나 먼저 온 1️⃣ 를 삼" if up_only else "")
+        self._skip_note(skipped, "1️⃣ 칸이 찼거나 조건에 걸림" if up_only else "")
 
     # ------------------------------------------------------------ 체결 확인·매도
     def tick(self, now: datetime) -> None:
