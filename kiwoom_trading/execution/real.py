@@ -45,6 +45,7 @@ UP_SLOTS = 4                  # 2026-10-28 사용자 'B': 강한 상승장 날 1
 LIMIT_UP = 0.01               # 2026-10-28 사용자 '증거금 문제 해소': 매수는 시장가(상한가 기준 증거금) 대신 현재가 +1% 지정가
 FILL_WAIT_SEC = 120           # 지정가가 2분 안에 다 안 채워지면 남은 수량 취소
 ETF_CODES = {INVERSE_CODE}
+REAL_OFF = (RECLAIM_KIND,)    # 2026-10-29 사용자 '권장대로': 🔁 은 09:0x 에 먼저 와 하루 1칸을 차지 → 6️⃣·📕 를 못 삼 (1년 시드 10만 34만 → 562만, research/account_alloc)
 OPEN, LAST, CLOSE = time(9, 0), time(15, 19), time(15, 30)
 PLAYS = {   # 종류 → (이름, 익절, 손절)
     NEWHIGH_KIND: ("6️⃣ 주도주 신고가", None, NEWHIGH_STOP),
@@ -185,7 +186,7 @@ class RealTrader:
         self.conn = store.conn
         self.today = today
         self.notify = notify or (lambda text: None)
-        self.kinds = tuple(kinds or PLAYS)
+        self.kinds = tuple(k for k in (kinds or PLAYS) if k not in REAL_OFF)
         self.conn.execute(SCHEMA)
         for t in self.actives():                # 들고 있는 종목은 팔 수 있게 허용
             if hasattr(self.client, "allowed"):

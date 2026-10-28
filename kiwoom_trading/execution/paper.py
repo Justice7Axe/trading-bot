@@ -70,7 +70,8 @@ LEAD_MULT, NONLEAD_MULT = 2.0, 0.5   # 🏆 주도주 신고가 금액: 테마 �
 MAX_POSITIONS = 10            # 키움 제한이 아니라 우리 규칙. 모의 계좌 약 1천만 원 ÷ 종목당 100만 원 (2026-10-20, 10-19 복기: 5종목 한도로 신호 85건 건너뜀)
 # 규칙상 이 신호는 매매 대상이 아님(알림만·시장 상황상 쉼·수급 조건 등) → 알림 없이 기록만. 그 밖의 건너뜀(잔고·보유 한도·추격·시세)은 알림.
 RULE_SKIPS = ("매수 시간 아님", "시장 분위기 판정", "강한 하락장", "하락 흐름 보통 날", "눌림 돌파는", "[디앤서]", "강한 상승장 아님",
-              "전날 외인", "이미 보유 중", "전일 대비")
+              "전날 외인", "이미 보유 중", "전일 대비", "모의 안 삼")
+MOCK_OFF = (RECLAIM_KIND, BLOCK_KIND)   # 2026-10-29 사용자 '권장대로': 🔁·3️⃣ 는 건당 수익이 작은데 아침 현금을 먼저 차지해 6️⃣·1️⃣ 를 못 삼 → 모의에서 뺌 (1년 1천만 7,837만 → 2.2억, 앞·뒤 반기 모두 개선, research/account_alloc)
 NEXT_DAY_KINDS = (RETEST_KIND, UP_KIND, BLOCK_KIND, NEWHIGH_KIND, CONTRA_KIND, WEAK_KIND, REBREAK_KIND, DANSWER_KIND, RECLAIM_KIND, CAFE_KIND, LEADER_KIND)   # '다음날' 매도: 익절가 / 손절가 / 다음 날 09:00 (2026-10-25 시장 상황별 매매표)
 NEXT_DAY_TP = {LEADER_KIND: None, CAFE_KIND: None, RECLAIM_KIND: None, UP_KIND: None, NEWHIGH_KIND: None, WEAK_KIND: WEAK_TP, REBREAK_KIND: None, DANSWER_KIND: None}   # '다음날' 익절가 — 기본 +7%. 📈 상승장 장 초·🏆 주도주 신고가·🌙 종가 재돌파·🧭 디앤서 종가는 익절 없음, 약세장 인버스 +5% (2026-10-25)
 OVERNIGHT_VIRTUAL = (REBREAK_KIND,)   # NXT 애프터장에 가상으로 사서 밤을 넘기는 신호 (모의 서버는 애프터장 주문 불가)
@@ -376,6 +377,8 @@ class PaperTrader:
         tm = now.time()
         if not (SESSION_OPEN <= tm < LIQUIDATE_AT or PRE[0] <= tm < PRE[1] or AFTER[0] <= tm < AFTER[1]):
             return "매수 시간 아님 (정규장 09:00~15:19, 가상 08:00~08:45·15:30~19:45)"
+        if t.kind in MOCK_OFF:
+            return f"모의 안 삼 — {t.kind}는 아침 현금을 먼저 차지해 건당 수익 큰 매매를 막음 (2026-10-29 계좌 시험)"
         if self.halted:
             return f"하루 손실 한도 -{self._loss_limit():.1%} 도달"
         if not t.virtual and t.kind not in (BIGCAP_KIND, INVERSE_KIND, WEAK_KIND, TREND_KIND, RECLAIM_KIND, CAFE_KIND) and self._before_regime(tm):
