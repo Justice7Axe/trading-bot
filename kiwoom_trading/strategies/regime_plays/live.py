@@ -48,8 +48,8 @@ from kiwoom_trading.screener.intraday_signals import Signal
 
 UP_KIND = "상승장 장 초"
 UP_TOP_N = 40
-UP_STOP = 0.04                   # 처음 손절
-UP_HALF_TP = None               # 2026-10-28 사용자 '옛 방식으로': 익절 없음 · −4% 손절 · 못 닿으면 다음 날 09:00
+UP_STOP = 0.06                   # 손절 (2026-10-28 사용자 '−6%로': 1년 −4% +0.85%·+383만·낙폭 47만 → −6% +0.99%·+461만·56만, 차트 레벨 손절과 차이 없음 — bt_up_chart_exits.py)
+UP_HALF_TP = None               # 2026-10-28 사용자 '옛 방식으로': 익절 없음 · 손절(UP_STOP) · 못 닿으면 다음 날 09:00
 UP_TRAIL = 0.04                 # (UP_HALF_TP 가 있을 때만) 1년 1천만/일: 옛 방식 +412만 vs B(+7% 절반·4% 트레일링) +332만 (bt_up_score.py)
 UP_BUDGET = 250_000
 UP_MAX_PREV_GAIN = 0.15          # 2026-10-28 사용자 '+1% 추격 금지는 단편적': 1️⃣ 은 신호가 대비 추격 제한 대신 전일 대비 +15% 넘게 오른 것만 안 삼 (bt_up_chase2.py)
