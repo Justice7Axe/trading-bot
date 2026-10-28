@@ -82,7 +82,7 @@ for ym in sorted({d.strftime('%Y-%m') for d in days}):
 pre = mh.execute("SELECT count(DISTINCT code) FROM minute_ohlcv WHERE exchange='AL' AND hour(ts)=8").fetchone()[0]
 say(f"  프리마켓(08시) 봉 있는 종목 수(전체 기간): {pre}")
 
-ib = duckdb.connect(cp("investor_backfill.duckdb"), read_only=True)
+ib = duckdb.connect(cp("daily_ohlcv.duckdb")  # investor_daily 매일 쌓임, read_only=True)
 say("== 4. investor_daily (외인·기관 확정치, 원)")
 say(ib.execute("SELECT min(date), max(date), count(*), count(DISTINCT code) FROM investor_daily").fetchall())
 say("  마지막 10일 종목 수: " + str(ib.execute("SELECT date, count(*) FROM investor_daily GROUP BY 1 ORDER BY 1 DESC LIMIT 10").fetchall()))

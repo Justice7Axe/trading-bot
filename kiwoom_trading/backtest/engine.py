@@ -8,7 +8,7 @@
     곱한다 (D일 장중 판단에 D일 종가를 쓰지만 이는 '가격 기준 맞추기'일 뿐이라 미래 정보가 아니다 — 같은 날 기준이 같으면 비율이 같다).
     f 를 못 구하면(1분봉 없음) 그 종목·일은 뺀다.
 - daily_ohlcv.market_cap 은 100% 빈칸 → 시총 = stocks.listed_shares(지금) × 일봉 종가(지금 기준 수정주가) — 둘 다 지금 기준이라 맞다.
-- investor_daily(외인·기관 확정치)는 2026-10-13 까지. 그날 확정치는 장 마감 뒤에 나온다 → 장중 판단에 쓰면 미래 정보 (상한선 표시에만).
+- investor_daily(외인·기관 확정치)는 일봉 DB(daily_ohlcv.duckdb)의 것을 쓴다 — 20:00 일일 업데이트가 매일 쌓음 (예전 investor_backfill.duckdb 는 10-13 에 멈춘 복사본). 그날 확정치는 장 마감 뒤에 나온다 → 장중 판단에 쓰면 미래 정보 (상한선 표시에만).
 - 1분봉: minute_history(전날·그날 대금 상위 약 200~260) + kang_minute(장중 +15%↑ 날·전날 +15%↑ 다음 날, 강창권 세션) 중 봉이 많은 쪽.
 체결: 신호 봉 **다음 봉 시가**. 손절가·익절가 닿으면 그 가격(시가가 이미 넘었으면 시가), 같은 봉이면 손절 먼저. 비용 0.25% (메모리 backtest-exit-rules).
 """
@@ -41,7 +41,7 @@ def _cp(name):
 
 
 DM = duckdb.connect(_cp("daily_ohlcv.duckdb"), read_only=True)
-IB = duckdb.connect(_cp("investor_backfill.duckdb"), read_only=True)
+IB = DM   # 수급도 일봉 DB 의 investor_daily (매일 쌓임)
 IX = duckdb.connect(_cp("index.duckdb"), read_only=True)
 MIN_SRC = [duckdb.connect(_cp("minute_history.duckdb"), read_only=True)]
 try:

@@ -9,13 +9,13 @@
   다음 날 시가가 있고 가격 안 맞는 목록(mismatch)에 없는 종목.
   09:05 / 09:10 / 09:15 / 09:20 각 시각 T 에 그때까지 누적 대금 순위 120위 안이면 한 줄:
     chg 직전 봉 종가 전일 대비, from_open 시가 대비, gap 시가 갭, above 전일 고가 위, vrank 누적 대금 순위, mcap 시총(지금 상장주식 수 × 전일 종가),
-    fr·ins 전날 외인·기관 순매수(investor_backfill), cval 누적 대금, hi_so_far 그때까지 고가,
+    fr·ins 전날 외인·기관 순매수(daily_ohlcv.investor_daily), cval 누적 대금, hi_so_far 그때까지 고가,
     ex[(익절, 손절)] T 봉 시가 매수 → 익절가 닿으면 매도 / 손절가 닿으면 즉시(같은 봉이면 손절 먼저) / 둘 다 아니면 다음 날 시가, 비용 0.25%.
   info[d] = dict(U10, U05, M05, K05z, M0, K1z) — 그 날 판정 값 (U 아닌 날도 담음).
 
 입력 (읽기만): 시장 상황 data/backtest/playbook_rebuilt/regime_feat.pkl·mismatch.pkl (없으면 data/backtest/playbook/ 보존본),
              일봉 스냅샷 data/backtest/playbook/daily_ohlcv_20261025.duckdb, 1분봉 data/minute_history.duckdb,
-             지수 data/index.duckdb, 투자자 data/investor_backfill.duckdb
+             지수 data/index.duckdb, 투자자 data/daily_ohlcv.duckdb(investor_daily)
 출력: data/backtest/playbook_rebuilt/u_cands.pkl  = (rows, info)
 실행: python -m kiwoom_trading.strategies.regime_plays.build_up            (만들고 보존본과 비교)
       python -m kiwoom_trading.strategies.regime_plays.build_up --compare  (비교만)
@@ -34,7 +34,7 @@ import numpy as np
 from kiwoom_trading.backtest.playbook.build_regime import (
     DATA, INDEX_DB, MINUTE_DB, PB, SNAP_DAILY, connect_ro, done_filter, out)
 
-INVESTOR_DB = os.path.join(DATA, "investor_backfill.duckdb")
+INVESTOR_DB = os.path.join(DATA, "daily_ohlcv.duckdb")   # investor_daily 매일 쌓임 (옛 investor_backfill 은 10-13 에 멈춤)
 COST = 0.0025
 TPS = (0.03, 0.05, 0.07, 0.10, None)
 SLS = (0.02, 0.03, 0.04, 0.05)
