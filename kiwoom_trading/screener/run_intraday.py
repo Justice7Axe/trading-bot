@@ -425,6 +425,22 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
             regime.update(now, value_top)    # 강한 하락장 판정 (09:10~10:00) — 판정되면 모의투자가 보수적으로 산다
         except Exception:
             logging.exception("시장 분위기 판정 실패")
+    if up is not None and (real is not None or trader is not None):
+        # 1️⃣ 은 09:10 판정 직후 바로 주문 (2026-10-28: 신호 09:10 → 다른 판정·수급 저장을 다 돈 뒤 실전 주문 09:12:33,
+        # 1년 기준 1분 늦으면 건당 −0.27%p). 실전 먼저, 그다음 모의. 이 분에 다시 check 해도 이미 판정해 빈 목록이다.
+        try:
+            fast = up.check(now, value_top)
+        except Exception:
+            logging.exception("상승장 장 초 판정 실패")
+            fast = []
+        if fast:
+            for code, name, source, s in fast:
+                store.save_signal(screener.today, code, name, s, source, True)
+            logging.info("매수 신호 %s건 (1️⃣ 바로 주문): %s", len(fast), ", ".join(f"{n} {s.ts:%H:%M}" for _, n, _, s in fast))
+            if real is not None:
+                real.on_signals(now, fast)
+            if trader is not None:
+                trader.on_signals(now, fast, {})
     if board is not None:
         board.update(search_1m + value_top)
     if early is not None:
