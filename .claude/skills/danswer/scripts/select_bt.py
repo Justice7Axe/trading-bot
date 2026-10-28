@@ -32,7 +32,7 @@ def _copy(name):
 D = pickle.load(open(os.path.join(S, "dans_bars.pkl"), "rb"))
 R = D["rows"]
 dm = duckdb.connect(_copy("daily_ohlcv.duckdb"), read_only=True)
-ib = duckdb.connect(_copy("investor_backfill.duckdb"), read_only=True)
+ib = duckdb.connect(_copy("daily_ohlcv.duckdb")  # investor_daily 매일 쌓임, read_only=True)
 mh = duckdb.connect(_copy("minute_history.duckdb"), read_only=True)
 sector = dict(dm.execute("SELECT code, sector FROM stocks").fetchall())
 DAYS = sorted({r["date"] for r in R}); HALF = DAYS[len(DAYS) // 2]
