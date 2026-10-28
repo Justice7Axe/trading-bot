@@ -75,6 +75,8 @@ NEXT_DAY_KINDS = (RETEST_KIND, UP_KIND, BLOCK_KIND, NEWHIGH_KIND, CONTRA_KIND, W
 NEXT_DAY_TP = {LEADER_KIND: None, CAFE_KIND: None, RECLAIM_KIND: None, UP_KIND: None, NEWHIGH_KIND: None, WEAK_KIND: WEAK_TP, REBREAK_KIND: None, DANSWER_KIND: None}   # '다음날' 익절가 — 기본 +7%. 📈 상승장 장 초·🏆 주도주 신고가·🌙 종가 재돌파·🧭 디앤서 종가는 익절 없음, 약세장 인버스 +5% (2026-10-25)
 OVERNIGHT_VIRTUAL = (REBREAK_KIND,)   # NXT 애프터장에 가상으로 사서 밤을 넘기는 신호 (모의 서버는 애프터장 주문 불가)
 KIND_BUDGET = {UP_KIND: UP_BUDGET, TREND_KIND: TREND_BUDGET}   # 📈 상승장 장 초: 종목당 25만 원, 보유 한도(10종목) 예외로 40종목까지 (2026-10-25 사용자)
+# 2026-10-28 사용자 "가상 매매는 잔고와 무관하게 포착된 종목 모두": 정규장에 이 이유로 모의를 못 사면 같은 규칙으로 가상 매매 (overflow)
+OVERFLOW_SKIPS = ("주문 가능 금액 부족", "최대 ", "7️⃣ 몫", "하루 손실 한도")
 KIND_LIMIT = {PULLBACK_KIND: 2}  # 눌림 돌파는 장 초부터 자주 나와 자리를 차지 → 동시 2종목까지 (1년 −0.34%, 10-19 유일한 마이너스 −0.08%)
 DAILY_LOSS_LIMIT = 0.03
 NADA_DAY_DD = 0.02            # Nada: 그날 손익 -2% 부터 매수 금액 절반
@@ -260,6 +262,7 @@ class Trade:
     part_qty: int = 0           # '반반' 방식에서 먼저 판 절반 수량
     part_price: Optional[float] = None
     part_order_no: str = ""
+    overflow: bool = False      # 잔고·보유 한도로 모의 계좌가 못 사서 정규장 시세로 가상 매매 (계좌·한도 계산에서 뺌)
 
 
 FIELDS = list(Trade.__dataclass_fields__)
@@ -335,6 +338,15 @@ class PaperTrader:
     def active(self) -> list[Trade]:
         return [t for t in self.trades if t.status in ACTIVE]
 
+    def _held(self) -> list[Trade]:
+        """모의 계좌 몫 보유 (잔고 밖 가상 매매 overflow 는 빼서 보유 한도·⑦ 몫을 막지 않게)."""
+        return [t for t in self.active() if not t.overflow]
+
+    @staticmethod
+    def _nxt(t: Trade) -> bool:
+        """NXT 통합 시세를 쓰는가 (프리·애프터장 가상만, 잔고 밖 가상은 정규장 KRX 시세)."""
+        return t.virtual and not t.overflow
+
     # ------------------------------------------------------------ 매수
     def on_signals(self, now: datetime, items: list[tuple[str, str, str, Signal]],
                    flow: dict[tuple[str, datetime], tuple[float, Optional[float]]]) -> None:
@@ -389,18 +401,18 @@ class PaperTrader:
             if f is not None and i is not None and f < 0 and i < 0:
                 return (f"전날 외인·기관 둘 다 순매도 — {UP_KIND}에서 뺌 (외인 {_flow_txt(f)}, 기관 {_flow_txt(i)}; "
                         "1년 강한 상승장 이런 종목 −0.04%, 나머지 +0.86%)")
-        if any(x.code == t.code and not (t.kind == TREND_KIND and x.status == "selling") for x in self.active()):
+        if any(x.code == t.code and not (t.kind == TREND_KIND and x.status == "selling") for x in self._held()):
             return "이미 보유 중"   # ⑦ 은 09:00 에 파는 중인 같은 종목(전날 '다음날' 매매)은 막지 않는다
         if t.kind == UP_KIND:
-            if sum(1 for x in self.active() if x.kind == UP_KIND) >= UP_TOP_N:
+            if sum(1 for x in self._held() if x.kind == UP_KIND) >= UP_TOP_N:
                 return f"{UP_KIND} 최대 {UP_TOP_N}종목 보유 중"
         elif t.kind == TREND_KIND:
-            if sum(1 for x in self.active() if x.kind == TREND_KIND) >= TREND_MAX:
+            if sum(1 for x in self._held() if x.kind == TREND_KIND) >= TREND_MAX:
                 return f"{TREND_KIND} 최대 {TREND_MAX}종목 보유 중"
-        elif sum(1 for x in self.active() if x.kind not in (UP_KIND, TREND_KIND)) >= MAX_POSITIONS:
+        elif sum(1 for x in self._held() if x.kind not in (UP_KIND, TREND_KIND)) >= MAX_POSITIONS:
             return f"최대 {MAX_POSITIONS}종목 보유 중"
         cap = KIND_LIMIT.get(t.kind)
-        if cap is not None and sum(1 for x in self.active() if x.kind == t.kind) >= cap:
+        if cap is not None and sum(1 for x in self._held() if x.kind == t.kind) >= cap:
             return f"{t.kind} 동시 {cap}종목 보유 중"
         return None
 
@@ -419,7 +431,7 @@ class PaperTrader:
         reason = self._skip_reason(now, t)
         price = None
         if reason is None:
-            q = self.market.quote(t.code, integrated=t.virtual)   # 가상은 NXT 체결까지 반영한 통합 시세
+            q = self.market.quote(t.code, integrated=self._nxt(t))   # 가상은 NXT 체결까지 반영한 통합 시세
             price = q.price if q else None
             if not price:
                 reason = "시세 조회 실패"
@@ -446,6 +458,9 @@ class PaperTrader:
                 reason = (f"주문 가능 금액 부족 ({cash:,}원 중 7️⃣ 몫 {keep:,.0f}원은 남겨 둠 < {t.qty * price:,}원)")
             elif cash < t.qty * price:
                 reason = f"주문 가능 금액 부족 ({cash:,}원 < {t.qty * price:,}원)"
+        if reason and not t.virtual and reason.startswith(OVERFLOW_SKIPS) and session(now.time()) == "real":
+            if self._overflow_buy(now, t, s, reason, price):
+                return
         if reason:
             t.note = reason
             logging.info("모의 매수 건너뜀 %s [%s]: %s — 포착: %s", t.name, t.kind, reason, (s.reason or "")[:200])
@@ -475,6 +490,41 @@ class PaperTrader:
                     f"  [{t.kind} {s.ts:%H:%M}] {how} — {t.source}"
                     + (f"\n  📏 {t.note}" if t.note else "") + f"\n  포착: {(s.reason or '')[:300]}")
 
+    def _overflow_buy(self, now: datetime, t: Trade, s: Signal, reason: str, price: Optional[float]) -> bool:
+        """잔고·보유 한도로 모의 계좌가 못 산 신호 → 같은 금액·매도 규칙으로 가상 매매 (주문 없음, 정규장 KRX 시세)."""
+        if any(x.code == t.code for x in self.active()):
+            return False
+        if reason.startswith("하루 손실 한도"):     # 손실 한도는 규칙 검사보다 먼저 걸리므로, 한도를 빼고 규칙상 대상인지 다시 본다
+            halted, self.halted = self.halted, False
+            again = self._skip_reason(now, t)
+            self.halted = halted
+            if again and not again.startswith(OVERFLOW_SKIPS):
+                return False
+        if not price:
+            q = self.market.quote(t.code, integrated=False)
+            price = q.price if q else None
+            if not price or price > s.price * (1 + MAX_CHASE) or (t.kind == RECLAIM_KIND and (not s.stop or price <= s.stop)):
+                return False
+        if not t.qty:
+            t.qty = order_qty(price, int(KIND_BUDGET.get(t.kind, BUDGET_PER_STOCK)))
+        if not t.qty:
+            return False
+        t.virtual = t.overflow = True
+        t.note = f"모의 못 삼({reason[:80]}) → 잔고 밖 가상"
+        t.status, t.buy_ts, t.buy_price, t.peak = "open", now.replace(tzinfo=None), float(price), float(price)
+        if t.mode == "추적":
+            t.stop = t.buy_price * (1 - STRONG_STOP)
+        self.last_price[t.code] = price
+        how = (f"손절 -{STRONG_STOP:.0%}, +{TRAIL_START:.0%} 뒤 고점 -{TRAIL_GAP:.0%}" if t.mode == "추적"
+               else "손절·익절 없음, 종가가 20일선 아래면 다음 날 09:00 매도" if t.mode == "추세"
+               else _next_day_how(NEXT_DAY_TP.get(t.kind, RETEST_TP), s.stop, t.kind) if t.mode == "다음날"
+               else "손절 없음, 15:19 정리" if not s.stop else f"손절 {s.stop:,.0f}원 ({s.stop / price - 1:+.1%})")
+        logging.info("잔고 밖 가상 매수 %s %s주 × %s (%s)", t.name, t.qty, price, reason)
+        self.notify(f"🟣 가상 매수 {t.name}({t.code}) {t.qty}주 × {price:,}원 = {t.qty * price / 1e4:,.0f}만 원 "
+                    f"(모의 못 삼: {reason[:60]} → 주문 없이 기록)\n"
+                    f"  [{t.kind} {s.ts:%H:%M}] {how} — {t.source}\n  포착: {(s.reason or '')[:300]}")
+        return True
+
     # ------------------------------------------------------------ 보유·매도
     def tick(self, now: datetime, force: bool = False) -> None:
         """보유 종목 가격 확인 → 손절·추적·15:19 정리(가상은 08:49·19:50), 주문 체결 확인, 19:55 리포트. 15초에 한 번만 실행."""
@@ -488,7 +538,7 @@ class PaperTrader:
         if any(t.status in ("ordered", "selling") and not t.virtual for t in self.trades):
             self._reconcile(now)
         if sess:
-            for t in [x for x in self.trades if x.status == "open" and (x.virtual or sess == "real")]:
+            for t in [x for x in self.trades if x.status == "open" and (self._nxt(x) or sess == "real")]:
                 self._watch(now, t, sess)
             self._check_halt()
         if t_now >= REPORT_AT and not self.reported:
@@ -509,7 +559,7 @@ class PaperTrader:
             return self._sell(now, t, "다음 날 시초 매도" if t.mode == "다음날" else "전날 남은 물량 정리")
         if t.virtual and t.kind in OVERNIGHT_VIRTUAL:
             pass                                               # 19:50 에 정리하지 않고 밤을 넘겨 들고 간다
-        elif t.virtual:
+        elif self._nxt(t):
             bought = session(t.buy_ts.time())
             if bought != sess or tm >= {"pre": PRE[2], "after": AFTER[2]}[sess]:
                 return self._sell(now, t, "가상 시간 끝 정리")
@@ -517,7 +567,7 @@ class PaperTrader:
             return self._sell(now, t, "장 마감 정리")
         elif tm >= LIQUIDATE_AT:
             return
-        q = self.market.quote(t.code, integrated=t.virtual)
+        q = self.market.quote(t.code, integrated=self._nxt(t))
         if not q:
             return
         self.last_price[t.code] = q.price
@@ -558,7 +608,7 @@ class PaperTrader:
                     t.stop = new
                     save_trade(self.store, t)
             return
-        if t.mode in ("차트", "눌림") and not t.virtual:
+        if t.mode in ("차트", "눌림") and not self._nxt(t):
             why = self._chart_exit(now, t)
             if why:
                 return self._sell(now, t, why)
@@ -609,7 +659,7 @@ class PaperTrader:
 
     def _sell(self, now: datetime, t: Trade, reason: str) -> None:
         try:   # 매도 직전 시세: 실주문은 체결가를 못 받을 때 쓸 추정가, 가상은 이 값이 체결가
-            q = self.market.quote(t.code, integrated=t.virtual)
+            q = self.market.quote(t.code, integrated=self._nxt(t))
             if q:
                 self.last_price[t.code] = q.price
         except Exception:
@@ -696,7 +746,7 @@ class PaperTrader:
 
     def _day_pnl(self) -> float:
         """오늘 실현 + 평가 손익 (추정 비용 0.25% 차감)."""
-        today = [t for t in self.trades if t.date == self.today and t.buy_price]
+        today = [t for t in self.trades if t.date == self.today and t.buy_price and not t.overflow]
         return sum((net_pnl(t) or 0) if t.status == "closed" else (net_pnl(t, self.last_price.get(t.code)) or 0) for t in today)
 
     def _trend_keep(self, now: datetime, used: float) -> float:
@@ -708,7 +758,7 @@ class PaperTrader:
 
     def _trend_used(self) -> float:
         """⑦ 주도주 추세로 들고 있는(주문 중 포함) 원금 합계."""
-        return sum((x.buy_price or x.signal_price or 0) * x.qty for x in self.active() if x.kind == TREND_KIND)
+        return sum((x.buy_price or x.signal_price or 0) * x.qty for x in self._held() if x.kind == TREND_KIND)
 
     def _nada_factor(self, t: Trade) -> tuple[float, str]:
         """Nada 손실 관리 → (매수 금액 배수, 이유). 드로다운 절반 × 오늘 손실 종목 재매수 절반."""
@@ -793,11 +843,11 @@ def build_report(store: ScreenerStore, day: date, final: bool = True) -> list[st
         lines.append(f"계좌 추정자산 {a0:,} → {a1:,}원 ({a1 - a0:+,}원, {a1 / a0 - 1:+.2%})")
     msgs = ["\n".join(lines)]
     if done:
-        rows = [(t.buy_ts.strftime("%H:%M"), ("◇" if t.virtual else "") + t.name, _pct(net_ret(t)), _won(net_pnl(t)), t.sell_reason)
+        rows = [(t.buy_ts.strftime("%H:%M"), ("◆" if t.overflow else "◇" if t.virtual else "") + t.name, _pct(net_ret(t)), _won(net_pnl(t)), t.sell_reason)
                 for t in done]
         msgs[-1] += _table(rows, ("매수", "종목", "수익%", "손익", "사유"), (5, 12, 6, 7, 16))
         if any(t.virtual for t in done):
-            msgs[-1] += "\n◇ = NXT 프리·애프터장 가상 체결 (주문 없음, 계좌 자산에는 반영 안 됨)"
+            msgs[-1] += "\n◇ = NXT 프리·애프터장 가상 체결, ◆ = 잔고·한도로 모의 못 사서 가상 (둘 다 주문 없음, 계좌 자산에는 반영 안 됨)"
     if skipped:
         counts: dict[str, int] = {}
         for t in skipped:
@@ -819,7 +869,7 @@ def build_report(store: ScreenerStore, day: date, final: bool = True) -> list[st
         if start_asset and last_asset:
             lines.append(f"계좌 추정자산 {start_asset:,} → {last_asset:,}원 ({last_asset / start_asset - 1:+.2%}, 정규장 주문만·실제 수수료·세금 반영)")
         groups = []
-        for label, key in (("거래", lambda t: "가상(NXT)" if t.virtual else "정규장 주문"), ("방식", lambda t: t.mode),
+        for label, key in (("거래", lambda t: "잔고 밖 가상" if t.overflow else "가상(NXT)" if t.virtual else "정규장 주문"), ("방식", lambda t: t.mode),
                            ("신호", lambda t: t.kind)):
             for g in sorted({key(t) for t in allt}):
                 xs = [t for t in allt if key(t) == g]

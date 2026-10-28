@@ -144,6 +144,7 @@ ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS virtual BOOLEAN DEFAULT false;
 ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS part_qty INTEGER DEFAULT 0;      -- '반반'(🎯 주도주 모양): +2% 에 먼저 판 절반
 ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS part_price DOUBLE;
 ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS part_order_no VARCHAR;
+ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS overflow BOOLEAN DEFAULT false;   -- 잔고·보유 한도로 모의 못 사서 가상 매매 (2026-10-28)
 ALTER TABLE paper_days ADD COLUMN IF NOT EXISTS reported_close BOOLEAN DEFAULT false;   -- 15:40 정규장 마감 리포트 (reported = 19:55 최종)   -- NXT 프리·애프터장 가상 체결 (주문 없음)
 CREATE TABLE IF NOT EXISTS market_regime (    -- 09:10·09:20 시장 분위기 판정 (스캐너를 다시 켜도 그날 판정 유지)
     date        DATE PRIMARY KEY,
