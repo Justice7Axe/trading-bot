@@ -53,7 +53,7 @@ from kiwoom_trading.strategies.contra_close.live import KIND as CONTRA_KIND
 from kiwoom_trading.strategies.danswer.rebreak import KIND as REBREAK_KIND
 from kiwoom_trading.strategies.danswer.close import KIND as DANSWER_KIND
 from kiwoom_trading.strategies.resistance_retest.live import RETEST_KIND, RETEST_TP
-from kiwoom_trading.strategies.regime_plays.live import BLOCK_KIND, NEWHIGH_KIND, UP_BUDGET, UP_HALF_TP, UP_KIND, UP_MAX_PREV_GAIN, UP_TOP_N, UP_TRAIL
+from kiwoom_trading.strategies.regime_plays.live import BLOCK_KIND, NEWHIGH_KIND, UP_BUDGET, UP_HALF_TP, UP_KIND, UP_MAX_PREV_GAIN, UP_STOP, UP_TOP_N, UP_TRAIL
 from kiwoom_trading.strategies.cafe_leader.live import HALF_TP as CAFE_HALF_TP, KIND as CAFE_KIND, STOP as CAFE_STOP
 from kiwoom_trading.strategies.premarket_reclaim.live import HALF_R as RECLAIM_HALF_R, KIND as RECLAIM_KIND, TRAIL as RECLAIM_TRAIL
 from kiwoom_trading.strategies.trend_hold.live import BUDGET as TREND_BUDGET, BUY_END as TREND_BUY_END, KIND as TREND_KIND, MAX_HOLD as TREND_MAX, TREND_POOL
@@ -447,6 +447,8 @@ class PaperTrader:
                 reason = f"전일 대비 {_prev_gain(q):+.1%} — 이미 많이 오름 ({UP_KIND}는 +{UP_MAX_PREV_GAIN:.0%}까지)"
             elif t.kind != UP_KIND and price > s.price * (1 + MAX_CHASE):
                 reason = f"현재가 {price:,}원이 신호가보다 {price / s.price - 1:+.1%} — 추격 안 함"
+        if reason is None and t.kind == UP_KIND:
+            t.stop = float(price) * (1 - UP_STOP)   # 1️⃣ 손절은 신호가가 아니라 매수가 기준 (추격 제한이 없어져 차이가 커질 수 있음, 2026-10-28)
         if reason is None:
             factor, why = self._nada_factor(t) if t.kind != TREND_KIND else (1.0, "")   # ⑦ 은 정한 금액 그대로 (사용자 2026-10-25)
             if t.kind == NEWHIGH_KIND:   # 🏆 주도주 신고가: 테마 대장이면 2배, 아니면 절반 (2026-10-27, 1년 계좌 5,048만 → 5,423만, 스킬 hong 8장)
@@ -484,7 +486,7 @@ class PaperTrader:
             self.notify(f"🟣 가상 매수 {t.name}({t.code}) {t.qty}주 × {price:,}원 = {t.qty * price / 1e4:,.0f}만 원 "
                         f"(NXT {'프리장' if now.time() < SESSION_OPEN else '애프터장'}, 주문 없이 기록만)\n"
                         f"  [{t.kind} {s.ts:%H:%M}] "
-                        + (_next_day_how(NEXT_DAY_TP.get(t.kind, RETEST_TP), s.stop, t.kind) if t.mode == "다음날"
+                        + (_next_day_how(NEXT_DAY_TP.get(t.kind, RETEST_TP), t.stop, t.kind) if t.mode == "다음날"
                            else f"손절 {t.stop:,.0f}원 ({t.stop / price - 1:+.1%})" if t.stop else "손절 없음") + f" — {t.source}"
                         + (f"\n  📏 {t.note}" if t.note else "") + f"\n  포착: {(s.reason or '')[:300]}")
             return
@@ -492,7 +494,7 @@ class PaperTrader:
         t.status, t.buy_ts, t.peak = "ordered", now.replace(tzinfo=None), float(price)
         self.last_price[t.code] = price
         how = (f"손절 -{STRONG_STOP:.0%}, +{TRAIL_START:.0%} 뒤 고점 -{TRAIL_GAP:.0%} (평소 {t.flow_mult:.1f}배)"
-               if t.mode == "추적" else "손절·익절 없음, 종가가 20일선 아래면 다음 날 09:00 매도" if t.mode == "추세" else _next_day_how(NEXT_DAY_TP.get(t.kind, RETEST_TP), s.stop, t.kind) if t.mode == "다음날" else "손절 없음, 15:19 정리" if not s.stop else f"손절 {s.stop:,.0f}원 ({s.stop / price - 1:+.1%})")
+               if t.mode == "추적" else "손절·익절 없음, 종가가 20일선 아래면 다음 날 09:00 매도" if t.mode == "추세" else _next_day_how(NEXT_DAY_TP.get(t.kind, RETEST_TP), t.stop, t.kind) if t.mode == "다음날" else "손절 없음, 15:19 정리" if not s.stop else f"손절 {s.stop:,.0f}원 ({s.stop / price - 1:+.1%})")
         logging.info("모의 매수 주문 %s %s주 (주문 %s)", t.name, t.qty, t.buy_order_no)
         self.notify(f"🟢 모의 매수 {t.name}({t.code}) {t.qty}주 × 약 {price:,}원 = {t.qty * price / 1e4:,.0f}만 원\n"
                     f"  [{t.kind} {s.ts:%H:%M}] {how} — {t.source}"
@@ -519,6 +521,8 @@ class PaperTrader:
         if not t.qty:
             return False
         t.virtual = t.overflow = True
+        if t.kind == UP_KIND:
+            t.stop = float(price) * (1 - UP_STOP)
         t.note = f"모의 못 삼({reason[:80]}) → 잔고 밖 가상"
         t.status, t.buy_ts, t.buy_price, t.peak = "open", now.replace(tzinfo=None), float(price), float(price)
         if t.mode == "추적":
@@ -526,7 +530,7 @@ class PaperTrader:
         self.last_price[t.code] = price
         how = (f"손절 -{STRONG_STOP:.0%}, +{TRAIL_START:.0%} 뒤 고점 -{TRAIL_GAP:.0%}" if t.mode == "추적"
                else "손절·익절 없음, 종가가 20일선 아래면 다음 날 09:00 매도" if t.mode == "추세"
-               else _next_day_how(NEXT_DAY_TP.get(t.kind, RETEST_TP), s.stop, t.kind) if t.mode == "다음날"
+               else _next_day_how(NEXT_DAY_TP.get(t.kind, RETEST_TP), t.stop, t.kind) if t.mode == "다음날"
                else "손절 없음, 15:19 정리" if not s.stop else f"손절 {s.stop:,.0f}원 ({s.stop / price - 1:+.1%})")
         logging.info("잔고 밖 가상 매수 %s %s주 × %s (%s)", t.name, t.qty, price, reason)
         self.notify(f"🟣 가상 매수 {t.name}({t.code}) {t.qty}주 × {price:,}원 = {t.qty * price / 1e4:,.0f}만 원 "
