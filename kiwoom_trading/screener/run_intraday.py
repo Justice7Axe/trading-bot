@@ -54,6 +54,7 @@ from kiwoom_trading.screener.early_leader_log import EarlyLeaderLog, load_univer
 from kiwoom_trading.strategies.premarket_reclaim.live import KIND as RECLAIM_KIND, ReclaimWatcher, load_candidates as load_reclaim_cands
 from kiwoom_trading.strategies.regime_plays.live import (BLOCK_KIND, NEWHIGH_KIND, UP_KIND, BlockedHighWatcher, NewHighWatcher, UpOpenWatcher,
                                                   load_block_candidates, load_newhigh_candidates)
+from kiwoom_trading.strategies.centerline.live import KIND as CENTER_KIND, CenterlineWatcher, exit_reasons as center_exits, load_picks as load_center_picks
 from kiwoom_trading.strategies.trend_hold.live import KIND as TREND_KIND, TrendHoldWatcher, load_trend_picks, ma_breaks
 from kiwoom_trading.execution.small import SmallAccount
 from kiwoom_trading.execution import real as real_inverse
@@ -368,7 +369,7 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
              surges: Optional[SurgeGroups] = None, burger: Optional[HamburgerWatcher] = None,
              weak_inv: Optional[WeakInverseWatcher] = None, rebreak: Optional[ClosingRebreakWatcher] = None,
              danswer: Optional[DanswerCloseWatcher] = None, small: Optional[SmallAccount] = None, real: Optional["real_inverse.RealTrader"] = None,
-             reclaim=None, elog=None, dwatch: Optional[DanswerWatch] = None, strong: Optional[StrongListWatcher] = None,
+             reclaim=None, center=None, elog=None, dwatch: Optional[DanswerWatch] = None, strong: Optional[StrongListWatcher] = None,
              books: tuple = (), leader_fn=None) -> int:
     now = datetime.now(KST)
     if real is not None:
@@ -496,7 +497,7 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
         trader.lead_now = lead_now
     own_msgs: list[str] = []  # 자기 알림 문구가 있는 판정(🧭·🌙)은 🎯 묶음과 따로 보낸다
     own_ids: set = set()
-    for label, w in (("인버스 갭", inverse), ("장 초 공통점", nine), ("대형주 수급", bigcap), ("주도주 모양", leader), ("눌림 돌파", pullback), ("햄버거", burger), ("역행 강세 종가", contra), ("저항 돌파", retest), ("상승장 장 초", up), ("막힌 고점 돌파", block), ("주도주 신고가", newhigh), ("주도주 추세", trend), ("약세장 인버스", weak_inv), ("[디앤서] 종가 재돌파", rebreak), ("[디앤서] 종가 체크리스트", danswer), ("시가 탈환", reclaim)):
+    for label, w in (("인버스 갭", inverse), ("장 초 공통점", nine), ("대형주 수급", bigcap), ("주도주 모양", leader), ("눌림 돌파", pullback), ("햄버거", burger), ("역행 강세 종가", contra), ("저항 돌파", retest), ("상승장 장 초", up), ("막힌 고점 돌파", block), ("주도주 신고가", newhigh), ("주도주 추세", trend), ("약세장 인버스", weak_inv), ("[디앤서] 종가 재돌파", rebreak), ("[디앤서] 종가 체크리스트", danswer), ("시가 탈환", reclaim), ("중심선", center)):
         if w is not None and hasattr(w, "cache"):
             w.cache = shared_bars
         if w is None:
@@ -517,7 +518,7 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
             except Exception:
                 logging.exception("%s 알림 문구 실패", label)
         signals += found
-    if watcher is not None or leader is not None or pullback is not None or nine is not None or bigcap is not None or inverse is not None or burger is not None or contra is not None or retest is not None or up is not None or block is not None or newhigh is not None or trend is not None or weak_inv is not None or rebreak is not None or danswer is not None:
+    if watcher is not None or leader is not None or pullback is not None or nine is not None or bigcap is not None or inverse is not None or burger is not None or contra is not None or retest is not None or up is not None or block is not None or newhigh is not None or trend is not None or weak_inv is not None or rebreak is not None or danswer is not None or center is not None:
         if signals:
             logging.info("매수 신호 %s건: %s", len(signals), ", ".join(f"{n} {s.kind} {s.ts:%H:%M}" for _, n, _, s in signals))
             flow = watcher.flow if watcher is not None else {}
@@ -615,6 +616,7 @@ def main() -> int:
     reclaim: Optional[ReclaimWatcher] = None
     elog: Optional[EarlyLeaderLog] = None
     trend: Optional[TrendHoldWatcher] = None
+    center: Optional[CenterlineWatcher] = None
     danswer: Optional[DanswerCloseWatcher] = None
     jctx = None
     hlim: set = set()
@@ -673,6 +675,22 @@ def main() -> int:
             trader.trend_picks = len(tpicks)
         logging.info("주도주 추세: 매수 대상 %s종목 (%s 마감 기준) %s · 보유 %s종목 중 20일선 이탈 %s", len(tpicks), tday,
                      ", ".join(f"{p.name} {p.rank}위" for p in tpicks), len(held), ", ".join(texit) or "없음")
+        try:   # 📍 중심선 — 기준봉 대금 20위·평소 대금 10배 뒤 몸통 가운데 눌림 (모의, 2026-10-30)
+            dconn = duckdb.connect(DEFAULT_DB_PATH, read_only=True)
+            try:
+                cpicks = load_center_picks(dconn, client, now.date())
+                cdays = [d for (d,) in dconn.execute("SELECT DISTINCT date FROM daily_ohlcv WHERE code='005930' AND date < ? ORDER BY 1 DESC LIMIT 15", [now.date()]).fetchall()]
+            finally:
+                dconn.close()
+            center = CenterlineWatcher(market, cpicks, done={c for c, _, k in keys if k == CENTER_KIND})
+            cheld = [t for t in trader.active() if t.kind == CENTER_KIND and t.date < now.date()] if trader is not None else []
+            if trader is not None and cheld:
+                trader.center_exit = center_exits(client, cheld, now.date(), cdays)
+            logging.info("중심선: 후보 %s종목 %s · 보유 %s종목 중 오늘 09:00 매도 %s", len(cpicks),
+                         ", ".join(f"{p.name}({p.base_d:%m-%d}) {p.center:,.0f}" for p in cpicks), len(cheld),
+                         ", ".join(f"{t.name}: {trader.center_exit[t.id]}" for t in cheld if t.id in trader.center_exit) or "없음")
+        except Exception:
+            logging.exception("중심선 준비 실패")
         danswer = DanswerCloseWatcher(market, client, dctx, screener.hist.keys(), done=any(k == DANSWER_KIND for _, _, k in keys), notify=None)   # 🧭 14:30 주도주 종가 (기록만 — 매매 대상 아님)
         logging.info("디앤서 종가 준비: 250일 고가 %s종목", len(dctx.hi250))
     except Exception:
@@ -806,7 +824,7 @@ def main() -> int:
                         logging.info("오늘 데이터가 없음(휴장일로 판단, 기준일 %s) → 종료", probe[0].as_of)
                         break
                 run_once(screener, market, store, telegram=not args.no_telegram, watcher=watcher, early=early, investors=investors,
-                         themes=themes, board=board, trader=trader, leader=leader, pullback=pullback, nine=nine, bigcap=bigcap, regime=regime, inverse=inverse, contra=contra, retest=retest, up=up, block=block, newhigh=newhigh, trend=trend, surges=surges, burger=burger, weak_inv=weak_inv, rebreak=rebreak, danswer=danswer, small=small, real=real, reclaim=reclaim, elog=elog, dwatch=dwatch, strong=strong, books=books, leader_fn=cafe.leaders if cafe is not None else None)
+                         themes=themes, board=board, trader=trader, leader=leader, pullback=pullback, nine=nine, bigcap=bigcap, regime=regime, inverse=inverse, contra=contra, retest=retest, up=up, block=block, newhigh=newhigh, trend=trend, surges=surges, burger=burger, weak_inv=weak_inv, rebreak=rebreak, danswer=danswer, small=small, real=real, reclaim=reclaim, center=center, elog=elog, dwatch=dwatch, strong=strong, books=books, leader_fn=cafe.leaders if cafe is not None else None)
             except Exception:
                 logging.exception("스캔 실패 (다음 주기에 재시도)")
             if args.once:

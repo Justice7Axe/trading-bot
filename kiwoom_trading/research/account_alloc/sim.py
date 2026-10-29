@@ -73,14 +73,14 @@ def run(cfg, seed=10_000_000, trades=None, collect=False):
     sig_n = 0; bought = []
     for d in DAYS:
         keep = []; dp = 0.0
-        for sd, a, r, code in tied:
+        for sd, a, r, code, tk in tied:
             if sd <= d:
-                eq += a * r; pnl_k["7️⃣"] += a * r; dp += a * r
+                eq += a * r; pnl_k[tk] += a * r; dp += a * r
             else:
-                keep.append((sd, a, r, code))
+                keep.append((sd, a, r, code, tk))
         tied = keep
         day = sorted(byd.get(d, []), key=keyf)
-        left = eq - sum(a for _, a, _, _ in tied)
+        left = eq - sum(x[1] for x in tied)
         pnl = 0.0; got = set(c7[3] for c7 in tied); npos = 0; nup = 0; first = None
         nk = defaultdict(int); res_used = 0.0; r_used = 0.0
         rsv = c.get("reserve")          # (자산 비율, 이 시각까지, 이 매매들 몫) — 그 시각 전엔 다른 매매가 못 씀 (미래 정보 아님)
@@ -98,7 +98,7 @@ def run(cfg, seed=10_000_000, trades=None, collect=False):
                     else:
                         keep2.append(x)
                 live = keep2
-            base = eq * (c["k7_amt"] if k == "7️⃣" else c["amt"][k])
+            base = eq * (c["k7_amt"] if k == "7️⃣" else c.get("c_amt", 0.10) if k == "📍" else c["amt"][k])
             if k == "6️⃣":
                 base *= c["lead"] if t.get("lead") else c["nonlead"]
             ref = base * t["ret"]                          # 이 신호를 기본 금액으로 샀다면 손익
@@ -115,9 +115,13 @@ def run(cfg, seed=10_000_000, trades=None, collect=False):
                 base = eq / c["up_slots"] if k == "1️⃣" else eq / sl
                 if c.get("cap"): base = min(base, c["cap"])
             elif k == "7️⃣":
-                used7 = sum(a for _, a, _, _ in tied)
+                used7 = sum(x[1] for x in tied if x[4] == "7️⃣")
                 if used7 + base > eq * c["pool"] + 1:
                     skip["7️⃣ 몫 다 씀"][0] += 1; skip["7️⃣ 몫 다 씀"][1] += ref; continue
+            elif k == "📍":   # 중심선 (2026-10-30): 7️⃣ 처럼 팔 때까지 돈이 묶이는 전용 몫
+                usedc = sum(x[1] for x in tied if x[4] == "📍")
+                if usedc + base > eq * c.get("cpool", 0.0) + 1:
+                    skip["📍 몫 다 씀"][0] += 1; skip["📍 몫 다 씀"][1] += ref; continue
             elif k == "🔁" and c.get("rpool") is not None:
                 if r_used + base > eq * c["rpool"] + 1:
                     skip["🔁 몫 다 씀"][0] += 1; skip["🔁 몫 다 씀"][1] += ref; continue
@@ -153,8 +157,8 @@ def run(cfg, seed=10_000_000, trades=None, collect=False):
             if collect: bought.append(t)
             if rsv and k in rsv[2]: res_used += amt
             if first is None: first = k
-            if k == "7️⃣":
-                tied.append((t["sell_d"], amt, t["ret"], t["code"]))
+            if k in ("7️⃣", "📍"):
+                tied.append((t["sell_d"], amt, t["ret"], t["code"], k))
             else:
                 pnl += amt * t["ret"]; pnl_k[k] += amt * t["ret"]
                 if k == "1️⃣": nup += 1
@@ -164,8 +168,8 @@ def run(cfg, seed=10_000_000, trades=None, collect=False):
                     live.append((t["xt"], amt, t["ret"], k))
         eq += pnl; dp += pnl
         curve.append((d, eq)); dpnl.append((d, dp))
-    for sd, a, r, code in tied:
-        eq += a * r; pnl_k["7️⃣"] += a * r
+    for sd, a, r, code, tk in tied:
+        eq += a * r; pnl_k[tk] += a * r
     curve[-1] = (curve[-1][0], eq)
     v = np.array([x for _, x in curve]); pk = np.maximum.accumulate(np.r_[seed, v])[1:]
     mdd = float(((pk - v) / pk).max())
