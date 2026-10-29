@@ -9,6 +9,7 @@
   - 금액 = 자산 × (매매별 비율) (복리). 6️⃣ 은 테마 대장 ×lead / 아님 ×nonlead (모의 규칙 2배·0.5배).
   - 동시 한도: 1️⃣·7️⃣ 빼고 그날 산 종목 수 ≤ max_pos (모의 10), 1️⃣ 은 up_max(40) 까지.
   - 정수 주(integer=True): 지정가 = 가격 +1% 호가 올림, 수량 = 금액 ÷ 지정가 내림, 0주면 못 삼(1주 값 > 금액). 손익 = 수량 × 가격 × 수익률.
+  - 🔁 전용 몫(rpool=자산 비율): 🔁 는 그 몫 안에서만 산다(장중에 팔리면 몫 돌아옴), 동시 한도(max_pos) 칸은 안 씀 (2026-10-29).
   - 실전 방식(real=True): 하루 1종목(첫 신호, 전액). 1️⃣ 이 먼저 오면 1️⃣ 만 up_slots 종목까지 (자산 ÷ up_slots).
 최대 낙폭은 날마다 마감 자산(실현 기준) 기준. ★ = 앞 반·뒤 반 모두 + 이고 가장 좋은 5일을 빼도 +.
 실행: PYTHONPATH=. .venv/Scripts/python.exe -m kiwoom_trading.research.account_alloc.sim
@@ -81,7 +82,7 @@ def run(cfg, seed=10_000_000, trades=None, collect=False):
         day = sorted(byd.get(d, []), key=keyf)
         left = eq - sum(a for _, a, _, _ in tied)
         pnl = 0.0; got = set(c7[3] for c7 in tied); npos = 0; nup = 0; first = None
-        nk = defaultdict(int); res_used = 0.0
+        nk = defaultdict(int); res_used = 0.0; r_used = 0.0
         rsv = c.get("reserve")          # (자산 비율, 이 시각까지, 이 매매들 몫) — 그 시각 전엔 다른 매매가 못 씀 (미래 정보 아님)
         live = []                       # 장중에 팔릴 보유 (xt, 원금, 수익률, 종류)
         for t in day:
@@ -92,6 +93,7 @@ def run(cfg, seed=10_000_000, trades=None, collect=False):
                     if x[0] < now:
                         left += x[1] * (1 + x[2])
                         if x[3] == "1️⃣": nup -= 1
+                        elif x[3] == "🔁" and c.get("rpool") is not None: r_used -= x[1]
                         elif not c["real"]: npos -= 1
                     else:
                         keep2.append(x)
@@ -116,6 +118,9 @@ def run(cfg, seed=10_000_000, trades=None, collect=False):
                 used7 = sum(a for _, a, _, _ in tied)
                 if used7 + base > eq * c["pool"] + 1:
                     skip["7️⃣ 몫 다 씀"][0] += 1; skip["7️⃣ 몫 다 씀"][1] += ref; continue
+            elif k == "🔁" and c.get("rpool") is not None:
+                if r_used + base > eq * c["rpool"] + 1:
+                    skip["🔁 몫 다 씀"][0] += 1; skip["🔁 몫 다 씀"][1] += ref; continue
             elif k == "1️⃣":
                 if nup >= c["up_max"]:
                     skip["1️⃣ 한도"][0] += 1; skip["1️⃣ 한도"][1] += ref; continue
@@ -153,6 +158,7 @@ def run(cfg, seed=10_000_000, trades=None, collect=False):
             else:
                 pnl += amt * t["ret"]; pnl_k[k] += amt * t["ret"]
                 if k == "1️⃣": nup += 1
+                elif k == "🔁" and c.get("rpool") is not None: r_used += amt
                 else: npos += 1
                 if t.get("xt") is not None:
                     live.append((t["xt"], amt, t["ret"], k))

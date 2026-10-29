@@ -71,13 +71,15 @@ MAX_POSITIONS = 10            # 키움 제한이 아니라 우리 규칙. 모의
 # 규칙상 이 신호는 매매 대상이 아님(알림만·시장 상황상 쉼·수급 조건 등) → 알림 없이 기록만. 그 밖의 건너뜀(잔고·보유 한도·추격·시세)은 알림.
 RULE_SKIPS = ("매수 시간 아님", "시장 분위기 판정", "강한 하락장", "하락 흐름 보통 날", "눌림 돌파는", "[디앤서]", "강한 상승장 아님",
               "전날 외인", "이미 보유 중", "전일 대비", "모의 안 삼")
-MOCK_OFF = (RECLAIM_KIND, BLOCK_KIND)   # 2026-10-29 사용자 '권장대로': 🔁·3️⃣ 는 건당 수익이 작은데 아침 현금을 먼저 차지해 6️⃣·1️⃣ 를 못 삼 → 모의에서 뺌 (1년 1천만 7,837만 → 2.2억, 앞·뒤 반기 모두 개선, research/account_alloc)
+MOCK_OFF = (BLOCK_KIND,)   # 2026-10-29 사용자 '권장대로': 3️⃣ 는 건당 수익이 작은데 아침 현금을 먼저 차지해 6️⃣·1️⃣ 를 못 삼 → 모의에서 뺌 (1년 1천만 7,837만 → 2.2억, 앞·뒤 반기 모두 개선, research/account_alloc)
+RECLAIM_POOL = 1_000_000   # 2026-10-29 사용자 '🔁 만 쓰는 몫': 🔁 는 이 몫(종목당 100만 → 동시 1종목) 안에서만 모의로 사고, 넘는 신호는 잔고 밖 가상. 보유 한도 칸은 안 씀.
+                           # 1년 시험(research/account_alloc/reclaim_pool): 몫 100만 2억 367만(뺐을 때 2억 2,192만의 −8%, 뒤 반기는 +240→+264%) — 몫이 클수록 더 나빠짐
 NEXT_DAY_KINDS = (RETEST_KIND, UP_KIND, BLOCK_KIND, NEWHIGH_KIND, CONTRA_KIND, WEAK_KIND, REBREAK_KIND, DANSWER_KIND, RECLAIM_KIND, CAFE_KIND, LEADER_KIND)   # '다음날' 매도: 익절가 / 손절가 / 다음 날 09:00 (2026-10-25 시장 상황별 매매표)
 NEXT_DAY_TP = {LEADER_KIND: None, CAFE_KIND: None, RECLAIM_KIND: None, UP_KIND: None, NEWHIGH_KIND: None, WEAK_KIND: WEAK_TP, REBREAK_KIND: None, DANSWER_KIND: None}   # '다음날' 익절가 — 기본 +7%. 📈 상승장 장 초·🏆 주도주 신고가·🌙 종가 재돌파·🧭 디앤서 종가는 익절 없음, 약세장 인버스 +5% (2026-10-25)
 OVERNIGHT_VIRTUAL = (REBREAK_KIND,)   # NXT 애프터장에 가상으로 사서 밤을 넘기는 신호 (모의 서버는 애프터장 주문 불가)
 KIND_BUDGET = {UP_KIND: UP_BUDGET, TREND_KIND: TREND_BUDGET}   # 📈 상승장 장 초: 종목당 25만 원, 보유 한도(10종목) 예외로 40종목까지 (2026-10-25 사용자)
 # 2026-10-28 사용자 "가상 매매는 잔고와 무관하게 포착된 종목 모두": 정규장에 이 이유로 모의를 못 사면 같은 규칙으로 가상 매매 (overflow)
-OVERFLOW_SKIPS = ("주문 가능 금액 부족", "최대 ", "7️⃣ 몫", "하루 손실 한도")
+OVERFLOW_SKIPS = ("주문 가능 금액 부족", "최대 ", "7️⃣ 몫", "🔁 몫", "하루 손실 한도")
 KIND_LIMIT = {PULLBACK_KIND: 2}  # 눌림 돌파는 장 초부터 자주 나와 자리를 차지 → 동시 2종목까지 (1년 −0.34%, 10-19 유일한 마이너스 −0.08%)
 DAILY_LOSS_LIMIT = 0.03
 NADA_DAY_DD = 0.02            # Nada: 그날 손익 -2% 부터 매수 금액 절반
@@ -418,7 +420,9 @@ class PaperTrader:
         elif t.kind == TREND_KIND:
             if sum(1 for x in self._held() if x.kind == TREND_KIND) >= TREND_MAX:
                 return f"{TREND_KIND} 최대 {TREND_MAX}종목 보유 중"
-        elif sum(1 for x in self._held() if x.kind not in (UP_KIND, TREND_KIND)) >= MAX_POSITIONS:
+        elif t.kind == RECLAIM_KIND:
+            pass                                   # 🔁 는 보유 한도 대신 전용 몫(RECLAIM_POOL)으로 막음 — _buy 에서 금액으로 확인
+        elif sum(1 for x in self._held() if x.kind not in (UP_KIND, TREND_KIND, RECLAIM_KIND)) >= MAX_POSITIONS:
             return f"최대 {MAX_POSITIONS}종목 보유 중"
         cap = KIND_LIMIT.get(t.kind)
         if cap is not None and sum(1 for x in self._held() if x.kind == t.kind) >= cap:
@@ -467,6 +471,9 @@ class PaperTrader:
             keep = self._trend_keep(now, used)
             if t.kind == TREND_KIND and used + t.qty * price > TREND_POOL:
                 reason = f"7️⃣ 몫 {TREND_POOL / 1e4:,.0f}만 원 중 {used / 1e4:,.0f}만 원 사용 중 — {t.qty * price / 1e4:,.0f}만 원 더 못 삼"
+            elif t.kind == RECLAIM_KIND and not t.virtual and self._reclaim_used() + t.qty * price > RECLAIM_POOL:
+                reason = (f"🔁 몫 {RECLAIM_POOL / 1e4:,.0f}만 원 중 {self._reclaim_used() / 1e4:,.0f}만 원 사용 중 — "
+                          f"{t.qty * price / 1e4:,.0f}만 원 더 못 삼")
             elif t.kind != TREND_KIND and not t.virtual and keep and cash - keep < t.qty * price:
                 reason = (f"주문 가능 금액 부족 ({cash:,}원 중 7️⃣ 몫 {keep:,.0f}원은 남겨 둠 < {t.qty * price:,}원)")
             elif cash < t.qty * price:
@@ -775,6 +782,10 @@ class PaperTrader:
     def _trend_used(self) -> float:
         """⑦ 주도주 추세로 들고 있는(주문 중 포함) 원금 합계."""
         return sum((x.buy_price or x.signal_price or 0) * x.qty for x in self._held() if x.kind == TREND_KIND)
+
+    def _reclaim_used(self) -> float:
+        """🔁 시가 탈환으로 모의 계좌에 들고 있는(주문 중 포함) 원금 합계. 잔고 밖 가상과 09:00 에 파는 중인 전날 몫은 뺌."""
+        return sum((x.buy_price or x.signal_price or 0) * x.qty for x in self._held() if x.kind == RECLAIM_KIND and x.status != "selling")
 
     def _nada_factor(self, t: Trade) -> tuple[float, str]:
         """Nada 손실 관리 → (매수 금액 배수, 이유). 드로다운 절반 × 오늘 손실 종목 재매수 절반."""
