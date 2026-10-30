@@ -705,6 +705,14 @@ def main() -> int:
             real = real_inverse.RealTrader(real_inverse.build_real_client(), market, store, now.date(),
                                            notify=None if args.no_telegram else send_telegram_message, kinds=kinds)
             logging.info("실전 매매 켜짐(%s): 시드+손익 %s원, 진행 중 %s", real_mode, f"{real_inverse.SEED + real.realized():,.0f}", real.active())
+            rheld = [t[2] for t in real.actives() if t[4] == TREND_KIND and t[1] < now.date()]   # 7️⃣ 실전 보유 → 전날 종가 20일선 이탈이면 오늘 09:00 매도
+            if rheld:
+                rconn = duckdb.connect(DEFAULT_DB_PATH, read_only=True)
+                try:
+                    real.trend_exit = ma_breaks(rconn, rheld, now.date())
+                finally:
+                    rconn.close()
+                logging.info("실전 7️⃣ 보유 %s종목 중 20일선 이탈 %s", len(rheld), ", ".join(real.trend_exit) or "없음")
         except Exception:
             logging.exception("실전 매매 준비 실패")
             real_mode = ""

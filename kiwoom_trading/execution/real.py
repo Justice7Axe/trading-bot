@@ -38,6 +38,7 @@ from kiwoom_trading.execution import split_exit
 from kiwoom_trading.strategies.cafe_leader.live import KIND as CAFE_KIND
 from kiwoom_trading.strategies.contra_close.live import KIND as CONTRA_KIND
 from kiwoom_trading.strategies.danswer.rebreak import KIND as REBREAK_KIND
+from kiwoom_trading.strategies.trend_hold.live import KIND as TREND_KIND
 from kiwoom_trading.strategies.premarket_reclaim.live import KIND as RECLAIM_KIND
 from kiwoom_trading.strategies.regime_plays.live import NEWHIGH_KIND, NEWHIGH_STOP, UP_HALF_TP, UP_KIND, UP_MAX_PREV_GAIN, UP_STOP, UP_TRAIL
 from kiwoom_trading.strategies.resistance_retest.live import RETEST_KIND, RETEST_STOP, RETEST_TP
@@ -64,7 +65,8 @@ PLAYS = {   # 종류 → (이름, 익절, 손절)
     RECLAIM_KIND: ("🔁 시가 탈환", None, None),        # 2026-10-27 사용자 '모의·실전 모두' — 손절·익절은 split_exit
     CAFE_KIND: ("☕ 카페 테마 대장", None, None),
     CONTRA_KIND: ("4️⃣ 역행 강세 종가", None, None),      # 2026-10-30 사용자 '제안대로' — 강한 하락장 15:15~15:19 매수, 다음 날 09:00 (1년 422건 +0.85%)
-    REBREAK_KIND: ("🌙 종가 재돌파", None, None),        # 2026-10-30 — 17~18시 NXT 애프터장에서 정규장 종가 위 매수, 다음 날 09:00 (1년 554건 +0.79%)
+    REBREAK_KIND: ("🌙 종가 재돌파", None, None),
+    TREND_KIND: ("7️⃣ 주도주 추세", None, None),         # 2026-10-30 사용자 '7번 매매를 실전으로' — 09:00 매수, 종가 20일선 이탈 다음 날 09:00 매도 (며칠~몇 주 보유)        # 2026-10-30 — 17~18시 NXT 애프터장에서 정규장 종가 위 매수, 다음 날 09:00 (1년 554건 +0.79%)
 }
 
 SCHEMA = """
@@ -196,6 +198,7 @@ class RealTrader:
         self.conn = store.conn
         self.today = today
         self.notify = notify or (lambda text: None)
+        self.trend_exit: dict = {}               # 7️⃣ 실전 보유 중 전날 종가 20일선 이탈 {code: (날짜, 종가, 20일선)} — run_intraday 가 넣어 줌
         self.kinds = tuple(k for k in (kinds or PLAYS) if k not in REAL_OFF)
         self.conn.execute(SCHEMA)
         for t in self.actives():                # 들고 있는 종목은 팔 수 있게 허용
@@ -319,6 +322,7 @@ class RealTrader:
                                    float(s.stop) if s.kind == RECLAIM_KIND and s.stop else None])
                 how = (split_exit.plan_text(s.kind, price, s.stop if s.kind == RECLAIM_KIND else None)
                        if s.kind in split_exit.KINDS else
+                       "손절·익절 없이 종가가 20일선 아래로 마감한 다음 날 09:00 매도 (며칠~몇 주 보유)" if s.kind == TREND_KIND else
                        f"익절 +{tp:.0%} / 손절 −{sl:.0%}, 못 닿으면 다음 날 09:00 매도" if tp
                        else f"장중 익절 없이 다음 날 09:00 시가 매도 (−{sl:.0%} 손절)" if sl
                        else "익절·손절 없이 다음 날 09:00 시가 매도")
@@ -368,7 +372,9 @@ class RealTrader:
                     self.notify(f"🔴 실전 매수 체결 {name} {qty}주 × {px:,.0f}원 [{label}] — "
                                 + (f"손절 {px * (1 - sl):,.0f}원" if sl else "손절 없음")
                                 + (f" · {px * (1 + UP_HALF_TP):,.0f}원에 절반 익절, 남은 절반 트레일링" if kind == UP_KIND and UP_HALF_TP
-                                   else f" · 익절 {px * (1 + tp):,.0f}원" if tp else " · 장중 익절 없이 다음 날 09:00 시가 매도"))
+                                   else f" · 익절 {px * (1 + tp):,.0f}원" if tp
+                                   else " · 종가가 20일선 아래로 마감한 다음 날 09:00 매도 (그 전까지 들고 감)" if kind == TREND_KIND
+                                   else " · 장중 익절 없이 다음 날 09:00 시가 매도"))
                 return
             part, ppx, peak, stop_px = self.conn.execute("SELECT coalesce(part_qty, 0), part_price, peak, stop_px FROM real_trades WHERE id = ?", [tid]).fetchone()
             if status == "selling":
@@ -382,7 +388,12 @@ class RealTrader:
             if not (OPEN <= tm < CLOSE):
                 return
             reason = None
-            if d < self.today:
+            if d < self.today and kind == TREND_KIND:   # 7️⃣ 은 전날 종가가 20일선 아래일 때만 09:00 매도, 아니면 계속 들고 감 (손절·익절 없음)
+                brk = self.trend_exit.get(code)
+                if not brk:
+                    return
+                reason = f"20일선 이탈 ({brk[0]:%m-%d} 종가 {brk[1]:,.0f} < 20일선 {brk[2]:,.0f}) — 시초 매도"
+            elif d < self.today:
                 reason = "다음 날 시초 매도"
             elif tm < LAST:
                 q = self.market.quote(code, integrated=False)
