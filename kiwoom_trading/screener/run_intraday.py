@@ -390,6 +390,11 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
     store.save_ranks(now, "search_1m", search_1m)
     store.save_ranks(now, "search_day", search_day)
     store.save_ranks(now, "value_krx", value_top)
+    try:   # 30초·10분 조회 순위도 쌓음 (2026-10-30 사용자 '조회 급증을 더 일찍 잡기' — ka00198 은 어느 범위든 20위까지만 줌, 1분 20위 진입은 끝물이었음)
+        store.save_ranks(now, "search_30s", market.search_rank("5"))
+        store.save_ranks(now, "search_10m", market.search_rank("2"))
+    except Exception:
+        logging.warning("30초·10분 조회 순위 저장 실패")
     store.snapshot()                   # 10분마다 DB 사본 — 장중에도 다른 프로그램이 분석 (본 DB 는 잠김)
     if strong is not None:
         try:
