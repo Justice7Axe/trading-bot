@@ -52,7 +52,7 @@ PER_STOCK = 30_000            # 2026-10-30 사용자: 종목당 3만 원 안에�
 LIMIT_UP = 0.01               # 2026-10-28 사용자 '증거금 문제 해소': 매수는 시장가(상한가 기준 증거금) 대신 현재가 +1% 지정가
 FILL_WAIT_SEC = 120           # 지정가가 2분 안에 다 안 채워지면 남은 수량 취소
 ETF_CODES = {INVERSE_CODE}
-REAL_OFF = (RECLAIM_KIND,)    # 2026-10-29 사용자 '권장대로': 🔁 은 09:0x 에 먼저 와 하루 1칸을 차지 → 6️⃣·📕 를 못 삼 (1년 시드 10만 34만 → 562만, research/account_alloc)
+REAL_OFF = (RECLAIM_KIND, CAFE_KIND)   # ☕: 2026-10-30 사용자 '☕는 실전에서 빼자' — 94% 가 1주 3만 원 넘어 1주씩만 사고 절반 익절이 안 됨, 1년 실전 새 규칙 −3~−9만 (research/strict_select). 🔁: 2026-10-29 사용자 '권장대로': 🔁 은 09:0x 에 먼저 와 하루 1칸을 차지 → 6️⃣·📕 를 못 삼 (1년 시드 10만 34만 → 562만, research/account_alloc)
 OPEN, LAST, CLOSE = time(9, 0), time(15, 19), time(15, 30)
 AFTER_BUY = (time(17, 0), time(18, 0))   # 🌙 종가 재돌파: NXT 애프터마켓 매수 시간 (2026-10-30 사용자 '키움 실계좌로 NXT 애프터장 거래가 된다, 종목별로 다름')
 NXT_KINDS = (REBREAK_KIND,)               # NXT 거래소로 주문하는 매매 (지정가 = 통합 현재가 +1%), 다음 날 09:00 매도는 KRX

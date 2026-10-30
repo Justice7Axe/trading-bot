@@ -54,7 +54,7 @@ from kiwoom_trading.screener.early_leader_log import EarlyLeaderLog, load_univer
 from kiwoom_trading.strategies.premarket_reclaim.live import KIND as RECLAIM_KIND, ReclaimWatcher, load_candidates as load_reclaim_cands
 from kiwoom_trading.strategies.regime_plays.live import (BLOCK_KIND, NEWHIGH_KIND, UP_KIND, BlockedHighWatcher, NewHighWatcher, UpOpenWatcher,
                                                   load_block_candidates, load_newhigh_candidates)
-from kiwoom_trading.strategies.centerline.live import KIND as CENTER_KIND, CenterlineWatcher, exit_reasons as center_exits, load_picks as load_center_picks
+from kiwoom_trading.strategies.centerline.live import KIND as CENTER_KIND, CenterlineWatcher, load_picks as load_center_picks
 from kiwoom_trading.strategies.trend_hold.live import KIND as TREND_KIND, TrendHoldWatcher, load_trend_picks, ma_breaks
 from kiwoom_trading.execution.small import SmallAccount
 from kiwoom_trading.execution import real as real_inverse
@@ -675,20 +675,16 @@ def main() -> int:
             trader.trend_picks = len(tpicks)
         logging.info("주도주 추세: 매수 대상 %s종목 (%s 마감 기준) %s · 보유 %s종목 중 20일선 이탈 %s", len(tpicks), tday,
                      ", ".join(f"{p.name} {p.rank}위" for p in tpicks), len(held), ", ".join(texit) or "없음")
-        try:   # 📍 중심선 — 기준봉 대금 20위·평소 대금 10배 뒤 몸통 가운데 눌림 (모의, 2026-10-30)
+        try:   # 📍 중심선 강한 돌파 — 시총 5천억·대금 10위 기준봉 몸통 가운데를 대금 실어 뚫으면 (모의, 2026-10-30 사용자)
+            fired = {c for (c,) in store.conn.execute("SELECT DISTINCT code FROM buy_signals WHERE kind = ? AND date >= ? AND date < ?",
+                                                       [CENTER_KIND, now.date() - timedelta(days=20), now.date()]).fetchall()}
             dconn = duckdb.connect(DEFAULT_DB_PATH, read_only=True)
             try:
-                cpicks = load_center_picks(dconn, client, now.date())
-                cdays = [d for (d,) in dconn.execute("SELECT DISTINCT date FROM daily_ohlcv WHERE code='005930' AND date < ? ORDER BY 1 DESC LIMIT 15", [now.date()]).fetchall()]
+                cpicks = load_center_picks(dconn, client, now.date(), fired)
             finally:
                 dconn.close()
-            center = CenterlineWatcher(market, cpicks, done={c for c, _, k in keys if k == CENTER_KIND})
-            cheld = [t for t in trader.active() if t.kind == CENTER_KIND and t.date < now.date()] if trader is not None else []
-            if trader is not None and cheld:
-                trader.center_exit = center_exits(client, cheld, now.date(), cdays)
-            logging.info("중심선: 후보 %s종목 %s · 보유 %s종목 중 오늘 09:00 매도 %s", len(cpicks),
-                         ", ".join(f"{p.name}({p.base_d:%m-%d}) {p.center:,.0f}" for p in cpicks), len(cheld),
-                         ", ".join(f"{t.name}: {trader.center_exit[t.id]}" for t in cheld if t.id in trader.center_exit) or "없음")
+            center = CenterlineWatcher(market, client, now.date(), cpicks, done={c for c, _, k in keys if k == CENTER_KIND})
+            logging.info("중심선 강한 돌파 후보 %s종목: %s", len(cpicks), ", ".join(f"{p.name}({p.base_d:%m-%d}) {p.center:,.0f}" for p in cpicks) or "없음")
         except Exception:
             logging.exception("중심선 준비 실패")
         danswer = DanswerCloseWatcher(market, client, dctx, screener.hist.keys(), done=any(k == DANSWER_KIND for _, _, k in keys), notify=None)   # 🧭 14:30 주도주 종가 (기록만 — 매매 대상 아님)
