@@ -45,6 +45,7 @@ from kiwoom_trading.ingestion.collectors.daily_backfill import KiwoomDailyClient
 from kiwoom_trading.screener.daily_summary import _pct, _table
 from kiwoom_trading.screener.intraday_signals import Signal
 from kiwoom_trading.ingestion.collectors.minute_collector import fetch_minute_bars
+from kiwoom_trading.execution import strict_select
 from kiwoom_trading.strategies.bigcap_flow.live import KIND as BIGCAP_KIND, TARGET as BIGCAP_TARGET
 from kiwoom_trading.strategies.early_nine.live import KIND as NINE_KIND
 from kiwoom_trading.strategies.hamburger.live import KIND as BURGER_KIND
@@ -71,7 +72,7 @@ LEAD_MULT, NONLEAD_MULT = 2.0, 0.5   # 🏆 주도주 신고가 금액: 테마 �
 MAX_POSITIONS = 10            # 키움 제한이 아니라 우리 규칙. 모의 계좌 약 1천만 원 ÷ 종목당 100만 원 (2026-10-20, 10-19 복기: 5종목 한도로 신호 85건 건너뜀)
 # 규칙상 이 신호는 매매 대상이 아님(알림만·시장 상황상 쉼·수급 조건 등) → 알림 없이 기록만. 그 밖의 건너뜀(잔고·보유 한도·추격·시세)은 알림.
 RULE_SKIPS = ("매수 시간 아님", "시장 분위기 판정", "강한 하락장", "하락 흐름 보통 날", "눌림 돌파는", "[디앤서]", "강한 상승장 아님",
-              "전날 외인", "이미 보유 중", "전일 대비", "모의 안 삼")
+              "전날 외인", "이미 보유 중", "전일 대비", "모의 안 삼", "엄격 선정")
 MOCK_OFF = (BLOCK_KIND,)   # 2026-10-29 사용자 '권장대로': 3️⃣ 는 건당 수익이 작은데 아침 현금을 먼저 차지해 6️⃣·1️⃣ 를 못 삼 → 모의에서 뺌 (1년 1천만 7,837만 → 2.2억, 앞·뒤 반기 모두 개선, research/account_alloc)
 RECLAIM_POOL = 1_000_000   # 2026-10-29 사용자 '🔁 만 쓰는 몫': 🔁 는 이 몫(종목당 100만 → 동시 1종목) 안에서만 모의로 사고, 넘는 신호는 잔고 밖 가상. 보유 한도 칸은 안 씀.
                            # 1년 시험(research/account_alloc/reclaim_pool): 몫 100만 2억 367만(뺐을 때 2억 2,192만의 −8%, 뒤 반기는 +240→+264%) — 몫이 클수록 더 나빠짐
@@ -319,6 +320,7 @@ class PaperTrader:
         self.halted = False
         self.regime = None                      # MarketRegime (run_intraday 가 넣어 줌) — 강한 하락장이면 보수적 매매
         self.prev_flow = load_prev_flow(today)  # 전날 외인·기관 순매수 (주도주 모양 매수 조건)
+        self.strict = strict_select.load_context(today)   # 당일 매매 엄격 선정 A안 (2026-10-30 사용자)
         self.trend_picks: int = 0                  # 오늘 ⑦ 매수 대상 수 (run_intraday 가 넣어 줌) — 0 이면 ⑦ 몫을 남겨 두지 않음
         self.center_exit: dict[str, str] = {}    # 📍 중심선: 전날 종가가 중심선 아래·5거래일 보유 끝 → 오늘 09:00 매도 {trade id: 이유} (run_intraday 가 넣어 줌)
         self.trend_exit: dict[str, tuple] = {}   # ⑦ 주도주 추세: 전날 종가가 20일선 아래인 보유 종목 → 오늘 09:00 매도 (run_intraday 가 넣어 줌)
@@ -443,7 +445,7 @@ class PaperTrader:
 
     def _buy(self, now: datetime, t: Trade, s: Signal) -> None:
         t.virtual = session(now.time()) != "real"   # _skip_reason 이 가상 여부를 보므로 먼저
-        reason = self._skip_reason(now, t)
+        reason = self._skip_reason(now, t) or strict_select.skip_reason(self.strict, t.kind, t.code, s.reason, strict_select.PLAN_A)   # 2026-10-30 엄격 선정 A안
         price = None
         if reason is None:
             q = self.market.quote(t.code, integrated=self._nxt(t))   # 가상은 NXT 체결까지 반영한 통합 시세
