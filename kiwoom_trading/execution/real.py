@@ -9,6 +9,8 @@
 - 들고 있는 종목이 없고 오늘 아직 안 샀으면, 신호가 온 순서대로 첫 신호를 시장가로 산다 (정규장 09:00~15:19).
   금액 = min(시드 10만 원 + 실전 실현 손익, 계좌 주문 가능 금액, 주문 상한 20만 원). 1주도 못 사면 다음 신호. 신호가 +1% 넘게 오른 뒤면 추격 안 함.
   2026-10-28 사용자 'B': 1️⃣ 상승장 장 초는 하루 1종목 대신 UP_SLOTS(4)종목까지, 종목당 (시드+손익)/4. 1️⃣ 을 산 날 다른 신호는 안 산다.
+  → 2026-10-30 사용자 '하루 1종목 규칙을 없애줘, 3만 원 안에서는 1주 이상, 3만 원 넘으면 1주만': 하루 종목 수·1️⃣ 칸 규칙 없음.
+    신호마다 같은 종목을 들고 있지 않고(같은 날 같은 종목은 한 번) 예수금이 되면 산다. 수량 = 지정가 ≤ 3만 원이면 3만 원 안에서 최대, 넘으면 1주 (가격 상한 없음).
   같은 날 '증거금 문제 해소': 매수는 현재가 +1% 지정가 (시장가는 상한가 기준 증거금이라 덜 샀음), 2분 안에 다 안 채워지면 남은 수량 취소.
 - 📕 신호 = 홍인기 가상 장부 '수급 없이' 매수 판단 (첫 상한가 · 5분↑ 잠김 뒤 풀림, hong_account.py). 지금가가 상한가면(다시 잠김) 안 산다.
 - 매도 (체결가 기준, 1분마다 현재가 확인): 6️⃣ 익절 없음 · −4% / 2️⃣ +7% · −5% / 5️⃣ +5% · −3% / 📕 익절·손절 없음 (1년: 손절 넣으면 나빠짐,
@@ -41,7 +43,7 @@ LIQUIDATE_ENV = "KIWOOM_REAL_LIQUIDATE_DATE"
 SEED = 100_000
 REAL_MAX_ORDER = 200_000
 MAX_CHASE = 0.01
-UP_SLOTS = 4                  # 2026-10-28 사용자 'B': 강한 상승장 날 1️⃣ 은 시드를 4로 나눠 여러 종목 (다른 신호는 하루 1종목 그대로)
+PER_STOCK = 30_000            # 2026-10-30 사용자: 종목당 3만 원 안에서 여러 주, 1주가 3만 원 넘으면 1주만, 하루 종목 수 제한 없음 (옛 1️⃣ UP_SLOTS 4칸 규칙 없앰)
 LIMIT_UP = 0.01               # 2026-10-28 사용자 '증거금 문제 해소': 매수는 시장가(상한가 기준 증거금) 대신 현재가 +1% 지정가
 FILL_WAIT_SEC = 120           # 지정가가 2분 안에 다 안 채워지면 남은 수량 취소
 ETF_CODES = {INVERSE_CODE}
@@ -256,18 +258,8 @@ class RealTrader:
         cands = sorted((x for x in items if x[3].kind in self.kinds), key=lambda x: x[3].ts)
         if not cands or not (OPEN <= now.time() < LAST):
             return
-        held, kinds_today = self.actives(), self.today_kinds()
-        up_only = bool(held or kinds_today)     # 이미 샀으면 1️⃣ 칸이 남았을 때 1️⃣ 만 더 산다 (B, 2026-10-28)
-        if up_only:
-            n_up = sum(k == UP_KIND for k in kinds_today)
-            can_more = all(t[4] == UP_KIND for t in held) and all(k == UP_KIND for k in kinds_today) and n_up < UP_SLOTS
-            names = ", ".join(t[3] for t in held) or "매수함"
-            why = f"실전은 하루 1종목 — 오늘 이미 {names}" + (f" (1️⃣ 만 {UP_SLOTS}종목까지)" if can_more else "")
-            self._skip_note([f"{n}({c}) [{PLAYS[s.kind][0]} {s.ts:%H:%M}] 포착: {(s.reason or '')[:120]}"
-                             for c, n, _, s in cands if not (can_more and s.kind == UP_KIND)], why)
-            cands = [x for x in cands if can_more and x[3].kind == UP_KIND]
-            if not cands:
-                return
+        held = self.actives()   # 2026-10-30 사용자 '하루 1종목 규칙을 없애줘' — 같은 종목만 안 겹치게, 예수금 안에서 신호마다 산다
+        bought = {c for (c,) in self.conn.execute("SELECT code FROM real_trades WHERE date = ? AND status <> 'failed'", [self.today]).fetchall()}
         skipped = []
         try:
             cash = self.client.cash()
@@ -275,16 +267,10 @@ class RealTrader:
             logging.exception("실전: 예수금 조회 실패")
             self.notify(f"⚠️ 실전 예수금 조회 실패 — {exc}"[:400])
             return
-        equity = SEED + self.realized()
-        n_up = sum(k == UP_KIND for k in kinds_today)
         for code, name, _source, s in cands:
             label, tp, sl = PLAYS[s.kind]
-            if up_only and (s.kind != UP_KIND or n_up >= UP_SLOTS):
-                skipped.append(f"{name}({code}) [{label} {s.ts:%H:%M}] 포착: {(s.reason or '')[:120]}")
+            if any(t[2] == code for t in held) or code in bought:   # real_trades id 가 날짜-종목이라 같은 날 같은 종목은 한 번
                 continue
-            if any(t[2] == code for t in held):
-                continue
-            budget = min(equity / UP_SLOTS if s.kind == UP_KIND else equity, cash, REAL_MAX_ORDER)
             try:
                 q = self.market.quote(code, integrated=False)
                 price = float(q.price) if q and q.price else None
@@ -301,9 +287,9 @@ class RealTrader:
                     skipped.append(f"{name}({code}) [{label} {s.ts:%H:%M}] 신호가보다 {price / s.price - 1:+.1%} — 추격 안 함 · 포착: {(s.reason or '')[:120]}")
                     continue
                 limit = tick_up(price * (1 + LIMIT_UP))   # 현재가 +1% 지정가 — 증거금이 이 가격 기준 (시장가는 상한가 기준이라 덜 삼, 2026-10-28)
-                qty = int(budget // limit)
+                qty = min(max(1, int(PER_STOCK // limit)), int(cash // limit))   # 3만 원 안에서 여러 주, 1주가 3만 원 넘으면 1주 — 예수금 안에서
                 if qty < 1:
-                    skipped.append(f"{name}({code}) [{label} {s.ts:%H:%M}] 1주 {limit:,.0f}원 > 쓸 수 있는 돈 {budget:,.0f}원 · 포착: {(s.reason or '')[:120]}")
+                    skipped.append(f"{name}({code}) [{label} {s.ts:%H:%M}] 1주 {limit:,.0f}원 > 예수금 {cash:,.0f}원 · 포착: {(s.reason or '')[:120]}")
                     continue
                 self.client.allowed.add(code)
                 try:
@@ -327,19 +313,15 @@ class RealTrader:
                        else "익절·손절 없이 다음 날 09:00 시가 매도")
                 self.notify(f"🔴 실전 매수 주문 {name}({code}) {qty}주 × 약 {price:,.0f}원 = {qty * price:,.0f}원 (지정가 {limit:,}원, 주문 {no})\n"
                             f"  [{label} {s.ts:%H:%M}] {how}"
-                            + (f"\n  1️⃣ {n_up + 1}/{UP_SLOTS}종목 (종목당 시드의 1/{UP_SLOTS})" if s.kind == UP_KIND else "")
                             + "".join(f"\n{l}" for l in (getattr(s, "reason", "") or "").splitlines() if "🇺🇸" in l))
                 logging.info("실전 매수 주문 %s %s %s주 지정가 %s (주문 %s)", label, name, qty, limit, no)
-                if s.kind != UP_KIND:
-                    self._skip_note(skipped, "먼저 온 신호를 건너뜀")
-                    return
-                up_only, n_up, cash = True, n_up + 1, cash - qty * limit
-                held.append((tid, self.today, code))
+                cash -= qty * limit
+                held.append((tid, self.today, code)); bought.add(code)
             except Exception as exc:
                 logging.exception("실전 매수 실패 %s", name)
                 self.notify(f"⚠️ 실전 매수 실패 {name}({code}) [{label}] — {exc}"[:500])
-                return
-        self._skip_note(skipped, "1️⃣ 칸이 찼거나 조건에 걸림" if up_only else "")
+                continue
+        self._skip_note(skipped, "")
 
     # ------------------------------------------------------------ 체결 확인·매도
     def tick(self, now: datetime) -> None:
