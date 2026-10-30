@@ -41,13 +41,15 @@ US_NOTE = ("  간밤 미국 방향 → 코스피 시가 상승 출발 비율(5�
            "  (시가 이후 흐름과는 무관 — 매매 신호는 그대로, 참고용)")
 
 
-def build_card(day: date, trend_text: Optional[str] = None, real_mode: str = "", us_text: Optional[str] = None) -> str:
-    real = {"combo": "6️⃣→2️⃣→5️⃣ 먼저 온 신호에 전액 (10만 원 + 실현 손익, 한 번 20만 상한)",
+def build_card(day: date, trend_text: Optional[str] = None, real_mode: str = "", us_text: Optional[str] = None,
+               real_line: Optional[str] = None) -> str:
+    real = {"combo": "1️⃣2️⃣5️⃣6️⃣7️⃣📕4️⃣🌙 신호마다 종목당 3만 원(넘으면 1주) · 엄격 선정 · 15:45 실전 성과 리포트 (2026-10-30)",
             "inverse": "5️⃣ 약세장 인버스만 (10만 원 + 실현 손익)"}.get(real_mode, "꺼짐")
     trend = f"큰 흐름: {trend_text}" if trend_text else ""
     if us_text:
         trend = (trend + "\n" if trend else "") + us_text + "\n" + US_NOTE
-    return TABLE.format(day=day, trend=trend, real=real).replace("\n\n\n", "\n\n")
+    card = TABLE.format(day=day, trend=trend, real=real).replace("\n\n\n", "\n\n")
+    return (real_line + "\n\n" + card) if real_line else card   # 🔴 실전 누적 한 줄을 맨 위에 (2026-10-30 사용자 '실전 성과가 눈에 안 띈다')
 
 
 def main() -> None:
