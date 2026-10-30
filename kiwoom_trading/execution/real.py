@@ -34,7 +34,7 @@ from typing import Any, Callable, Optional
 from kiwoom_trading.ingestion.collectors.daily_backfill import KiwoomDailyClient, _to_int
 from kiwoom_trading.strategies.hong_limitup.live import HONG_KIND
 from kiwoom_trading.strategies.inverse.live import CODE as INVERSE_CODE, WEAK_KIND, WEAK_STOP, WEAK_TP
-from kiwoom_trading.execution import split_exit
+from kiwoom_trading.execution import split_exit, strict_select
 from kiwoom_trading.strategies.cafe_leader.live import KIND as CAFE_KIND
 from kiwoom_trading.strategies.contra_close.live import KIND as CONTRA_KIND
 from kiwoom_trading.strategies.danswer.rebreak import KIND as REBREAK_KIND
@@ -198,6 +198,7 @@ class RealTrader:
         self.conn = store.conn
         self.today = today
         self.notify = notify or (lambda text: None)
+        self.strict = strict_select.load_context(today)   # 당일 매매 엄격 선정 B안 (2026-10-30 사용자)
         self.trend_exit: dict = {}               # 7️⃣ 실전 보유 중 전날 종가 20일선 이탈 {code: (날짜, 종가, 20일선)} — run_intraday 가 넣어 줌
         self.kinds = tuple(k for k in (kinds or PLAYS) if k not in REAL_OFF)
         self.conn.execute(SCHEMA)
@@ -283,6 +284,10 @@ class RealTrader:
         for code, name, _source, s in cands:
             label, tp, sl = PLAYS[s.kind]
             if any(t[2] == code for t in held) or code in bought:   # real_trades id 가 날짜-종목이라 같은 날 같은 종목은 한 번
+                continue
+            why = strict_select.skip_reason(self.strict, s.kind, code, s.reason, strict_select.PLAN_B)   # 2026-10-30 엄격 선정 B안 — 규칙상 대상 아님이라 알림 없이 로그만
+            if why:
+                logging.info("실전 안 삼 %s [%s]: %s", name, label, why)
                 continue
             try:
                 nxt = s.kind in NXT_KINDS
