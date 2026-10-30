@@ -29,6 +29,8 @@ NY = timezone(timedelta(hours=-5))   # 날짜만 쓰므로 서머타임 차이�
 
 
 def _chart(symbol: str, rng: str = "10d", interval: str = "1d") -> list[tuple[date, float, float, float, float]]:
+    """일봉 [(날짜, 시, 고, 저, 종)]. 선물(NQ=F)은 야후가 세션 시작(전날 18:00 ET) 날짜로 주므로 하루 뒤(세션 끝나는 날)로 바꾼다
+    (2026-10-30 종가배팅 재점검에서 발견: 그대로 쓰면 그날 밤 시세가 섞여 백테스트가 부풂 — 일요일 날짜 행이 있고 금요일 행이 없었음)."""
     r = requests.get(URL.format(symbol), params={"range": rng, "interval": interval},
                      headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
     r.raise_for_status()
@@ -38,7 +40,10 @@ def _chart(symbol: str, rng: str = "10d", interval: str = "1d") -> list[tuple[da
     for t, o, h, l, c in zip(res.get("timestamp") or [], q["open"], q["high"], q["low"], q["close"]):
         if c is None:
             continue
-        d = datetime.fromtimestamp(t, NY).date()
+        dt = datetime.fromtimestamp(t, NY)
+        d = dt.date()
+        if symbol == FUTURE[0] and dt.hour >= 12:   # 저녁 시각(세션 시작)으로 찍힌 봉만 다음 날로 — 옛 자료는 자정으로 찍힌 것도 있음
+            d = d + timedelta(days=1)
         out.append((d, o or c, h or c, l or c, c))
     return out
 
@@ -109,6 +114,8 @@ def backfill(db_path: str, rng: str = "5y") -> int:
     n = 0
     for sym in list(SYMBOLS) + [FUTURE[0]]:
         rows = _chart(sym, rng=rng)
+        if sym == FUTURE[0] and rows:   # 선물은 날짜 기준을 바꿨으므로(세션 끝 날) 받은 기간의 옛 행을 먼저 지움 (2026-10-30)
+            db.execute("DELETE FROM us_daily WHERE symbol = ? AND date >= ?", [sym, rows[0][0] - timedelta(days=4)])
         db.executemany("INSERT OR REPLACE INTO us_daily VALUES (?, ?, ?, ?, ?, ?)", [(sym, *r) for r in rows])
         n += len(rows)
     db.close()
