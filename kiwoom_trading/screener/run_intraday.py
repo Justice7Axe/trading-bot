@@ -706,6 +706,9 @@ def main() -> int:
             real = real_inverse.RealTrader(real_inverse.build_real_client(), market, store, now.date(),
                                            notify=None if args.no_telegram else send_telegram_message, kinds=kinds)
             logging.info("실전 매매 켜짐(%s): 시드+손익 %s원, 진행 중 %s", real_mode, f"{real_inverse.SEED + real.realized():,.0f}", real.active())
+            if not args.no_telegram:   # 🔴 실전 성과 리포트 15:45 하루 한 번 (2026-10-30 사용자 '실전 성과 리포트가 눈에 안 띈다')
+                from kiwoom_trading.execution.real_report import RealReporter
+                real.reporter = RealReporter(real, send_telegram_message)
             rheld = [t[2] for t in real.actives() if t[4] == TREND_KIND and t[1] < now.date()]   # 7️⃣ 실전 보유 → 전날 종가 20일선 이탈이면 오늘 09:00 매도
             if rheld:
                 rconn = duckdb.connect(DEFAULT_DB_PATH, read_only=True)
@@ -721,8 +724,12 @@ def main() -> int:
         try:   # 📋 매일 아침 오늘의 트레이딩 전략 (2026-10-25 사용자, 하루 한 번)
             store.conn.execute("CREATE TABLE IF NOT EXISTS playbook_sent (date DATE PRIMARY KEY)")
             if not store.conn.execute("SELECT count(*) FROM playbook_sent WHERE date = ?", [now.date()]).fetchone()[0]:
+                rline = None
+                if real is not None:
+                    from kiwoom_trading.execution.real_report import one_line
+                    rline = one_line(store.conn, real_inverse.SEED)
                 send_telegram_message(build_card(now.date(), regime.trend_text(), real_mode if real is not None else "",
-                                                 us_ov.text() if us_ov is not None else None))
+                                                 us_ov.text() if us_ov is not None else None, rline))
                 store.conn.execute("INSERT INTO playbook_sent VALUES (?)", [now.date()])
         except Exception:
             logging.exception("트레이딩 전략 전송 실패")

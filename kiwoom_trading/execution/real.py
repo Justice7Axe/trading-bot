@@ -346,6 +346,8 @@ class RealTrader:
     # ------------------------------------------------------------ 체결 확인·매도
     def tick(self, now: datetime) -> None:
         self.liquidate_once(now)
+        if getattr(self, "reporter", None) is not None:   # 🔴 15:45 실전 성과 리포트 (real_report.py, 2026-10-30 사용자)
+            self.reporter.tick(now)
         for t in self.actives():   # 1️⃣ 은 여러 종목일 수 있다 (2026-10-28 B)
             self._tick_one(now, t)
 
