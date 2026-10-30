@@ -11,6 +11,8 @@
 | 6️⃣ 주도주 신고가 (B만) | 전날 기관 순매수 | 367건 +2.33% → 255건 +2.73% (빠지는 112건도 +1.40%) |
 | 📕 상한가 풀림 (B만) | 전날 외인 순매수 | 870건 +1.93% → 405건 +2.81% (빠지는 465건도 +1.17%) |
 계좌 1년: 모의 1천만 A 1억 1,871만 → 1억 3,792만 (낙폭 15.1 → 17.8%) / 실전 10만 새 규칙 B 68.9만 → 91.5만 (낙폭 17.9 → 12.9%).
+🌙 종가 재돌파 (B만, 2026-10-30 종가배팅 재점검): 전날 시총 20조↑ — 🌙 시총 20조↑ 515건 +0.82% (7월~ +0.78%) / 3조 미만 −0.43% (7월~ −1.68%),
+  실전 10만 계좌가 살 수 있는 값싼 🌙 은 135건 −0.02%.
 ⚠️ 조건 약 150개 중 고른 값 — 우연 섞일 수 있음, 자료는 대부분 상승장 1년.
 """
 import logging
@@ -23,6 +25,7 @@ import duckdb
 
 from kiwoom_trading.common.daily_store import DEFAULT_DB_PATH
 from kiwoom_trading.strategies.cafe_leader.live import KIND as CAFE_KIND
+from kiwoom_trading.strategies.danswer.rebreak import KIND as REBREAK_KIND
 from kiwoom_trading.strategies.hong_limitup.live import HONG_KIND
 from kiwoom_trading.strategies.premarket_reclaim.live import KIND as RECLAIM_KIND
 from kiwoom_trading.strategies.regime_plays.live import NEWHIGH_KIND, UP_KIND
@@ -32,8 +35,9 @@ TAG = "엄격 선정"          # 건너뜀 이유 앞머리 — paper.RULE_SKIPS
 UP_RANK = 20
 RETEST_MCAP = 3e11
 CAFE_PREV_RANK = 50
+REBREAK_MCAP = 2e13      # 🌙 실전은 시총 20조↑만 (2026-10-30 사용자 '제안대로', research/closing_bet_review)
 PLAN_A = (UP_KIND, RETEST_KIND, CAFE_KIND, RECLAIM_KIND)
-PLAN_B = PLAN_A + (NEWHIGH_KIND, HONG_KIND)
+PLAN_B = PLAN_A + (NEWHIGH_KIND, HONG_KIND, REBREAK_KIND)
 
 
 @dataclass
@@ -86,6 +90,9 @@ def skip_reason(ctx: Context, kind: str, code: str, reason: str, plan: tuple) ->
         return None if rk <= CAFE_PREV_RANK else f"{TAG} — ☕ 는 전날 대금 {CAFE_PREV_RANK}위 안만 (전날 {rk}위)"
     if kind in (RECLAIM_KIND, NEWHIGH_KIND):
         return None if _pos(i) else f"{TAG} — 전날 기관 순매수 종목만 (기관 {_won(i)})"
+    if kind == REBREAK_KIND:
+        mc = ctx.mcap.get(code, 0)
+        return None if mc >= REBREAK_MCAP else f"{TAG} — 🌙 실전은 시총 20조↑만 (전날 시총 {mc / 1e12:,.1f}조)"
     if kind == HONG_KIND:
         return None if _pos(f) else f"{TAG} — 📕 는 전날 외인 순매수 종목만 (외인 {_won(f)})"
     return None
