@@ -10,7 +10,9 @@
                            1년 140건 +0.81%, 앞 +0.84/뒤 +0.77 — 15일 91건 +0.82%, 5일·30% +0.33%)
   ⑤ 오늘 수급(잠정)       : 그 시각까지 외국인·기관 가집계, 프로그램 순매수 — 표시만 (과거 자료 없어 검증 불가)
   ⑥ 매수 자리             : 1분봉 당일 고점 돌파 + 햄버거(봉 대금 ≥ 10억·직전 5봉 평균 2배) → 돌파한 고점에 지정가, 10분 안 눌림 체결
-가상 장부는 ①③④⑥ 이 모두 맞을 때만 산다 (텔레그램 체크리스트는 ①③⑥ 이 맞을 때) (1년 run_cafe_leader_backtest: 91건 건당 +0.82%, 앞 +1.21%/뒤 +0.37%,
+2026-10-30 사용자 '15일 박스 아님 조건도 빼줘' → ④ 는 표시만, 가상 장부·모의·실전은 ①③⑥ 이면 산다
+  (1년 눌림 지정가 ①+③ 601건 건당 +0.24%, 앞 +0.38/뒤 +0.12, 최고 5일 빼면 −31만, 낙폭 53만 — ④ 넣은 140건 +0.81% 보다 건당·낙폭 나쁨, 합계는 큼).
+옛 규칙: 가상 장부는 ①③④⑥ 이 모두 맞을 때만 산다 (텔레그램 체크리스트는 ①③⑥ 이 맞을 때) (1년 run_cafe_leader_backtest: 91건 건당 +0.82%, 앞 +1.21%/뒤 +0.37%,
   최고 5일 빼도 +, 단 조건 16개 중 고른 값이라 우연일 수 있음 → 이 장부로 확인). ①③⑥ 만 맞으면 체크리스트 알림만.
 매도: 절반 +2.5%, 나머지 상한가 닿으면 상한가 / −2% 손절 즉시 / 아니면 다음 날 09:00. 하루 3종목, 종목당 잔고 ÷ 3. 비용 0.25%.
 """
@@ -193,8 +195,8 @@ class CafeLeaderWatcher:
         st = self.ctx.stocks[code]
         box = bool(st.hi15 and st.lo15 and st.hi15 / st.lo15 - 1 <= BOX_WIDTH and x["close"] > st.hi15)
         fo, ins, pg = self._flow(code, now)
-        all_ok = box and not self.ledger.full()
-        decision = f"눌림 지정가 {hi:,.0f} 대기 (10분)" if all_ok else ("④ 일봉 박스 아님 → 알림만" if not box else f"오늘 {SLOTS}종목 다 참")
+        all_ok = not self.ledger.full()   # 2026-10-30 사용자 '15일 박스 아님 조건도 빼줘' — ④ 는 표시만
+        decision = f"눌림 지정가 {hi:,.0f} 대기 (10분)" if all_ok else f"오늘 {SLOTS}종목 다 참"
         self.checked.add(code)
         th, n_up, chg = lead
         th = th if code in self.ctx.top200 else f"{th} (전날 대금 200위 밖)"
@@ -204,10 +206,6 @@ class CafeLeaderWatcher:
         if all_ok:
             self.pending[code] = dict(level=hi, until=x["ts"] + timedelta(minutes=PULL_BARS), name=st.name)
         logging.info("카페 체크 %s %s → %s (프리장 %.0f억)", st.name, x["ts"], decision, pre_value / 1e8)
-        if not all_ok and box:   # ①③④⑥ 다 맞았는데 오늘 3종목이 차서 못 삼 → 포착 이유와 함께 알림 (2026-10-27 사용자)
-            pass
-        elif not all_ok:         # 매매 대상(①③④⑥)이 아닌 포착은 알림 안 함 (2026-10-27 사용자) → cafe_checks 에 기록만
-            return
         ok = lambda b: "✅" if b else "❌"
         fmt = lambda v: "-" if v is None else f"{v / 1e8:+,.0f}억"
         hi15 = f"{st.hi15:,.0f}" if st.hi15 else "-"
@@ -217,10 +215,10 @@ class CafeLeaderWatcher:
             f"  ① 테마 대장 ✅ '{th}' (+4%↑ {n_up}종목 중 대금 1위)\n"
             f"  ② 최근 기관 {ok((st.inst3 or 0) >= 2)} 3일 중 {st.inst3 if st.inst3 is not None else '?'}일 순매수 (참고)\n"
             f"  ③ 프리장 햄버거 {ok(pre_value >= PRE_VALUE)} 08시 대금 {pre_value / 1e8:,.0f}억 → {'09:00 부터' if pre_value >= PRE_VALUE else '09:15 부터'}\n"
-            f"  ④ 일봉 박스 돌파 {ok(box)} {BOX_DAYS}일 고가 {hi15} (폭 {width})\n"
+            f"  ④ 일봉 박스 돌파 {ok(box)} {BOX_DAYS}일 고가 {hi15} (폭 {width}) — 참고, 10-30 부터 매수 조건 아님\n"
             f"  ⑤ 오늘 수급(잠정): 외국인 {fmt(fo)} · 기관 {fmt(ins)} · 프로그램 {fmt(pg)} (참고)\n"
             f"  ⑥ 1분봉 고점 {hi:,.0f} 돌파 + 햄버거 {bv / 1e8:,.0f}억 ✅\n"
-            f"  → {decision} (①③④⑥ 이면 가상 장부·모의·실전 매수 · 1년 140건 건당 +0.81%)")
+            f"  → {decision} (①③⑥ 이면 가상 장부·모의·실전 매수 · 1년 601건 건당 +0.24%)")
 
     def _try_fill(self, now: datetime, code: str, bars: list[dict]) -> None:
         p = self.pending[code]
