@@ -31,7 +31,8 @@ class Rep:
         print(s); self.f.write(str(s) + "\n"); self.f.flush()
 
 
-R = Rep("daily_report.txt")
+PROG = os.environ.get("EARLY_PROG") == "1"     # 일별 프로그램 매매(program_daily, 2026-11-01 백필) 특징 넣기
+R = Rep("daily_report_prog.txt" if PROG else "daily_report.txt")
 
 
 def auc(y, s):
@@ -119,6 +120,25 @@ def features(df):
     X = X.merge(fl, on=["code", "date"], how="left")
     for k in ("fr", "ins", "ind", "fr5", "ins5", "ind5", "fr20", "ins20", "ind20"):
         X[k + "_r"] = X[k] / X.val
+    if PROG:
+        import duckdb
+        pc = duckdb.connect(os.path.join(E.DATA, "program_daily.duckdb"), read_only=True)
+        pg = pd.DataFrame(pc.execute("SELECT code, date, buy_amt, sell_amt, net_amt FROM program_daily").fetchall(),
+                          columns=["code", "date", "pbuy", "psell", "pnet"]).sort_values(["code", "date"])
+        pc.close()
+        for k in ("pbuy", "psell", "pnet"):
+            pg[k] = pg[k].astype(float) * 1e6     # 백만 원 → 원
+        gp = pg.groupby("code")
+        pg["pnet5"] = gp.pnet.transform(lambda x: x.rolling(5).sum())
+        pg["pnet20"] = gp.pnet.transform(lambda x: x.rolling(20).sum())
+        pb5 = gp.pbuy.transform(lambda x: x.rolling(5).sum()); ps5 = gp.psell.transform(lambda x: x.rolling(5).sum())
+        pg["pg_share5"] = pb5 / (pb5 + ps5)
+        pg["pg_streak"] = gp.pnet.transform(lambda x: (x > 0).astype(int).groupby((x <= 0).cumsum()).cumsum())
+        X = X.merge(pg[["code", "date", "pnet", "pnet5", "pnet20", "pg_streak", "pg_share5"]], on=["code", "date"], how="left")
+        vs5 = X.groupby("code").val.transform(lambda x: x.rolling(5).sum())
+        vs20 = X.groupby("code").val.transform(lambda x: x.rolling(20).sum())
+        X["pg1_r"] = X.pnet / X.val; X["pg5_r"] = X.pnet5 / vs5; X["pg20_r"] = X.pnet20 / vs20
+        X["pg_quiet"] = X.pg5_r - X.chg5          # 가격 변화보다 프로그램이 먼저 쌓인 정도
     X["date"] = pd.to_datetime(X.date)
     X = X.merge(kf, left_on="date", right_index=True, how="left")
     X["vrank"] = X.groupby("date").val.rank(ascending=False)
@@ -131,7 +151,7 @@ def features(df):
     return X
 
 
-RAW = {"date", "code", "close", "val", "fr", "ins", "ind", "fr5", "ins5", "ind5", "fr20", "ins20", "ind20", "gap_next", "m", "y", "score", "score2"}
+RAW = {"date", "code", "close", "val", "pnet", "pnet5", "pnet20", "fr", "ins", "ind", "fr5", "ins5", "ind5", "fr20", "ins20", "ind20", "gap_next", "m", "y", "score", "score2"}
 
 
 def stats(trs, title):
@@ -219,6 +239,21 @@ def main():
     stats(top_k(T[T.chg1 > 0].assign(nv=-T.vrank), "nv", 3), "대금 3위 안·상승 마감 (종가배팅 비슷, 하루 3)")
     stats(top_k(T.assign(vj=T.vrank_jump), "vj", 3), "대금 순위 급상승 1~3등 (하루 3)")
     stats(top_k(T[(T.bbw_rel < 1.2) & (T.valr20 > 2) & (T.chg1 > 0)].assign(v2=T.valr20), "v2", 3), "볼린저 좁음 + 대금 2배↑ + 상승 (하루 3)")
+    if PROG:
+        R.say("\n## 4-1) 프로그램 규칙 (하루 3, 같은 기간) — 가격은 덜 움직였는데 프로그램이 먼저 쌓인 종목")
+        Q = T[T.pg5_r.notna()]
+        R.say(f"  프로그램 자료 있는 줄 {len(Q):,} / {len(T):,}")
+        x = Q.pg5_r; hi, lo = x.quantile(0.9), x.quantile(0.1)
+        R.say(f"  5일 프로그램 순매수 비율 상위 10% {Q[x >= hi]['r_' + MAIN].mean():+.2%} · 하위 10% {Q[x <= lo]['r_' + MAIN].mean():+.2%} · 전체 {Q['r_' + MAIN].mean():+.2%}")
+        stats(top_k(Q.assign(rr=np.random.default_rng(0).random(len(Q))), "rr", 3), "(비교) 프로그램 자료 있는 종목 무작위 3")
+        quiet = Q.chg5.abs() < 0.03
+        stats(top_k(Q[quiet].assign(z=Q.pg5_r), "z", 3), "5일 가격 ±3% 안 & 5일 프로그램 순매수 비율 1~3등")
+        stats(top_k(Q[quiet & (Q.pg_streak >= 3)].assign(z=Q.pg5_r), "z", 3), "  + 3일 연속 프로그램 순매수")
+        stats(top_k(Q.assign(z=Q.pg_quiet), "z", 3), "프로그램 쌓임 − 가격 변화 1~3등")
+        stats(top_k(Q[Q.mcap >= 12].assign(z=Q.pg5_r), "z", 3), "시총 1조↑ 5일 프로그램 순매수 비율 1~3등")
+        stats(top_k(Q[quiet & (Q.pg5_r > 0) & (Q.fr5_r > 0) & (Q.ins5_r > 0)].assign(z=Q.pg5_r), "z", 3), "5일 가격 ±3% & 프로그램·외인·기관 5일 모두 + (프로그램 1~3등)")
+        for nm, mk in (("코스피 20일선 위", Q.k_ma20 >= 0), ("코스피 20일선 아래", Q.k_ma20 < 0)):
+            stats(top_k(Q[mk & quiet].assign(z=Q.pg5_r), "z", 3), f"[{nm}] 5일 가격 ±3% & 프로그램 1~3등")
 
     R.say("\n## 5) 시장 상황별 (수익 모델 하루 3, 코스피 20일선 위/아래)")
     t3 = top_k(T, "score", 3)
