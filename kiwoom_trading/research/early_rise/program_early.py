@@ -52,6 +52,12 @@ def build():
         tick = pd.DataFrame(P.execute(f"""SELECT code, tm, buy_amt, sell_amt, net_amt FROM program_tick WHERE date=? AND exchange='KRX'
                                 AND tm BETWEEN '09:00:00' AND '15:30:00' AND code IN ({','.join('?' * len(codes))})""", [d, *codes]).fetchall(),
                             columns=["code", "tm", "buy", "sell", "net"])
+        try:
+            st = pd.DataFrame(P.execute(f"""SELECT code, tm, strength, s5, s20 FROM strength_tick WHERE date=? AND tm BETWEEN '09:00:00' AND '15:30:00'
+                                AND code IN ({','.join('?' * len(codes))})""", [d, *codes]).fetchall(), columns=["code", "tm", "s", "s5", "s20"])
+        except Exception:
+            st = pd.DataFrame(columns=["code", "tm", "s", "s5", "s20"])
+        smap = {c: g.sort_values("tm") for c, g in st.groupby("code")}
         B = E.load_day(codes, d); pr = E.daily_day(E.prev_day(d))
         for c, g in tick.groupby("code"):
             b = E.regular(B[c])
@@ -66,6 +72,14 @@ def build():
             val = cl * v; cval = np.cumsum(val)
             tix = {x: i for i, x in enumerate(t)}
 
+            sg = smap.get(c)
+            stt = sg.tm.values if sg is not None else None
+
+            def st_at(tt):      # 체결강도: 그 분 전까지 마지막 값
+                if stt is None: return (np.nan, np.nan, np.nan)
+                k = np.searchsorted(stt, tt.strftime("%H:%M:%S"), side="left") - 1
+                return (sg.s.values[k], sg.s5.values[k], sg.s20.values[k]) if k >= 0 else (np.nan, np.nan, np.nan)
+
             def net_at(tt):
                 k = np.searchsorted(gt, tt.strftime("%H:%M:%S"), side="left") - 1     # 그 분 0초 전까지 체결
                 return (gn[k], gb[k]) if k >= 0 else (0.0, 0.0)
@@ -75,6 +89,7 @@ def build():
                 if j is None or j < 20 or j + 1 >= len(b): continue
                 j -= 1                                   # 그 분 전에 끝난 봉
                 n0, b0 = net_at(s)
+                s0, s5_, s20_ = st_at(s)
                 n5, b5 = net_at(t[j - 4]); n15, b15 = net_at(t[j - 14])
                 v5 = val[j - 4:j + 1].sum(); v15 = val[j - 14:j + 1].sum()
                 base = val[max(0, j - 34):j - 4].mean() * 5 if j >= 10 else np.nan
@@ -88,6 +103,7 @@ def build():
                                  ret10=cl[j] / cl[j - 10] - 1, acc5=v5 / base if base and base > 0 else np.nan,
                                  pg_r=n0 / cval[j], pg5=(n0 - n5) / v5 if v5 else np.nan, pg15=(n0 - n15) / v15 if v15 else np.nan,
                                  pgb15=(b0 - b15) / v15 if v15 else np.nan,
+                                 st=s0, st5=s5_, st20=s20_, st_d=s5_ - s20_,
                                  y=y, mae60=l[j + 1:end].min() / buy - 1, r1519=cl[k1519] / buy - 1))
         print(d, len(codes), len(rows), file=sys.stderr)
     X = pd.DataFrame(rows)
@@ -126,7 +142,7 @@ def main():
     R.say(f"체결 단위 프로그램 수급: {X.date.min()} ~ {X.date.max()} {X.date.nunique()}일, 덜 오른 시점 {len(P):,}")
     R.say(f"  기준 +5% 먼저 {P.y.mean():.2%} · 기대 손익 근사 {P.edge.mean():+.2%} · 15:19 {P.r1519.mean():+.2%}")
     R.say("\n## 1) 특징별 5분위 (기대 손익 근사 · +5% 먼저) — 시장 강/약 따로")
-    for col in ("pg_r", "pg5", "pg15", "pgb15", "acc5", "ret10"):
+    for col in ("pg_r", "pg5", "pg15", "pgb15", "st", "st5", "st_d", "acc5", "ret10"):
         x = P[col]
         if x.notna().sum() < 300: continue
         q = pd.qcut(x.rank(method="first"), 5, labels=False)
@@ -143,6 +159,10 @@ def main():
         picks(P, flat & (P.pg15 >= th), f"10분 가격 ±1.5% & 15분 프로그램 순매수 상위 {1 - q:.0%}")
         picks(P, flat & (P.pg15 >= th) & (P.pg_r > 0), f"  + 누적 프로그램 +")
         picks(P, flat & (P.pg15 >= th) & (P.acc5 >= 1.5), f"  + 대금 가속 1.5배↑")
+    for q in (0.9, 0.95):
+        th = P.st5.quantile(q)
+        picks(P, flat & (P.st5 >= th), f"10분 가격 ±1.5% & 5분 체결강도 상위 {1 - q:.0%}")
+        picks(P, flat & (P.st5 >= th) & (P.pg15 >= P.pg15.quantile(0.8)), f"  + 15분 프로그램 상위 20%")
     rng = np.random.default_rng(0)
     picks(P, pd.Series(rng.random(len(P)) < 0.02, index=P.index), "(비교) 아무 종목 하루 3")
     R.say("\n※ 20거래일 전에는 판단 못 함.")

@@ -1,6 +1,7 @@
 """종목별 시간대 프로그램 매매 (키움 ka90008) — 하루치 체결 단위 이력을 매일 밤 저장 → data/program_tick.duckdb
 (2026-11-01 사용자 '시장 흐름과 상관없이 대금·수급이 몰리는 것을 일찍 확인해 상승 종목을 조기 발견하는 기법').
 
++ 체결강도 시간별(ka10046, 날짜 칸 없음 = 마지막 거래일, 약 1분 간격) → strength_tick (2026-11-01 추가).
 ka90008 은 date 를 넣어도 **마지막 거래일** 하루치만 준다 (19:59 → 08:30 거꾸로, 프로그램 체결이 바뀔 때마다 한 줄, 지니언스 10-30 1,973줄).
 장중 10분 스냅샷(program_intraday, 전 종목)보다 훨씬 촘촘해서, 장 마감 뒤 하루 한 번 받아 두면 분 단위 수급 이력이 쌓인다.
 대상: 그날 대금 상위 TOP(주식, 우선주 제외) ∪ 전날 대금 상위 PREV — 그날 오른 종목과 '전날 정보로 고를 수 있는 종목' 둘 다.
@@ -74,6 +75,23 @@ def fetch(client, code: str, day: date, max_pages: int = 200) -> list[tuple]:
     return rows
 
 
+def fetch_strength(client, code: str, day: date, max_pages: int = 40) -> list[tuple]:
+    """ka10046 체결강도 시간별 (마지막 거래일, 약 1분 간격 08:30~19:59). 2026-11-01 추가 — 사려는 쪽이 얼마나 서두르는지."""
+    rows, cont, key = [], "N", ""
+    for _ in range(max_pages):
+        payload, cont, key = client._post("/api/dostk/mrkcond", "ka10046", {"stk_cd": code}, cont, key)
+        for r in payload.get("cntr_str_tm") or []:
+            tm = str(r.get("cntr_tm") or "")
+            if len(tm) != 6:
+                continue
+            f = lambda k: float(str(r.get(k) or "0").replace(",", "").lstrip("+") or 0)
+            rows.append((day, code, f"{tm[:2]}:{tm[2:4]}:{tm[4:]}", abs(_num(r.get("cur_prc"))), _num(r.get("acc_trde_qty")),
+                         _num(r.get("acc_trde_prica")), f("cntr_str"), f("cntr_str_5min"), f("cntr_str_20min"), f("cntr_str_60min")))
+        if cont != "Y" or not key:
+            break
+    return rows
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--top", type=int, default=400)
@@ -93,6 +111,9 @@ def main() -> None:
     conn = duckdb.connect(DB)
     conn.execute("""CREATE TABLE IF NOT EXISTS program_tick (date DATE, code VARCHAR, tm VARCHAR, price BIGINT, volume BIGINT,
                     buy_amt BIGINT, sell_amt BIGINT, net_amt BIGINT, net_qty BIGINT, exchange VARCHAR)""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS strength_tick (date DATE, code VARCHAR, tm VARCHAR, price BIGINT, acc_qty BIGINT,
+                    acc_amt BIGINT, strength DOUBLE, s5 DOUBLE, s20 DOUBLE, s60 DOUBLE)""")
+    conn.execute("CREATE TABLE IF NOT EXISTS strength_tick_done (date DATE, code VARCHAR, rows INTEGER, PRIMARY KEY (date, code))")
     conn.execute("CREATE TABLE IF NOT EXISTS program_tick_done (date DATE, code VARCHAR, rows INTEGER, done_at TIMESTAMP DEFAULT current_timestamp, PRIMARY KEY (date, code))")
     done = {c for (c,) in conn.execute("SELECT code FROM program_tick_done WHERE date = ?", [day]).fetchall()}
     todo = [c for c in codes if c not in done]
@@ -109,7 +130,21 @@ def main() -> None:
         conn.execute("INSERT OR REPLACE INTO program_tick_done (date, code, rows) VALUES (?,?,?)", [day, code, len(rows)])
         if i % 50 == 0:
             logging.info("  %s/%s (%.0f초)", i, len(todo), time.time() - t0)
-    logging.info("완료 %s종목, %.0f초", len(todo), time.time() - t0)
+    logging.info("프로그램 완료 %s종목, %.0f초", len(todo), time.time() - t0)
+    sdone = {c for (c,) in conn.execute("SELECT code FROM strength_tick_done WHERE date = ?", [day]).fetchall()}
+    stodo = [c for c in codes if c not in sdone]
+    logging.info("체결강도 %s: 남음 %s", day, len(stodo)); t1 = time.time()
+    for i, code in enumerate(stodo, 1):
+        try:
+            rows = fetch_strength(client, code, day)
+        except Exception:
+            logging.exception("ka10046 실패 %s", code); continue
+        if rows:
+            conn.executemany("INSERT INTO strength_tick VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
+        conn.execute("INSERT OR REPLACE INTO strength_tick_done VALUES (?,?,?)", [day, code, len(rows)])
+        if i % 100 == 0:
+            logging.info("  체결강도 %s/%s (%.0f초)", i, len(stodo), time.time() - t1)
+    logging.info("체결강도 완료 %s종목, %.0f초", len(stodo), time.time() - t1)
     conn.close()
 
 
