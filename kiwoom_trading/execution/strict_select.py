@@ -25,6 +25,7 @@ import duckdb
 
 from kiwoom_trading.common.daily_store import DEFAULT_DB_PATH
 from kiwoom_trading.strategies.cafe_leader.live import KIND as CAFE_KIND
+from kiwoom_trading.strategies.contra_close.live import KIND as CONTRA_KIND, NEAR_HIGH
 from kiwoom_trading.strategies.danswer.rebreak import KIND as REBREAK_KIND
 from kiwoom_trading.strategies.hong_limitup.live import HONG_KIND
 from kiwoom_trading.strategies.premarket_reclaim.live import KIND as RECLAIM_KIND
@@ -36,8 +37,9 @@ UP_RANK = 20
 RETEST_MCAP = 3e11
 CAFE_PREV_RANK = 50
 REBREAK_MCAP = 2e13      # 🌙 실전은 시총 20조↑만 (2026-10-30 사용자 '제안대로', research/closing_bet_review)
-PLAN_A = (UP_KIND, RETEST_KIND, CAFE_KIND, RECLAIM_KIND)
-PLAN_B = PLAN_A + (NEWHIGH_KIND, HONG_KIND, REBREAK_KIND)
+PLAN_A = (UP_KIND, RETEST_KIND, CAFE_KIND, RECLAIM_KIND, CONTRA_KIND)
+# 4️⃣ 고가 부근 마감(≥80%)은 모의(A)만 — 실전(B)은 조건 없이 (2026-10-31 사용자 '조건 없이 복귀', 10만 계좌 1년 161만 → 312만, 8월~ 11.3 → 11.5만)
+PLAN_B = (UP_KIND, RETEST_KIND, CAFE_KIND, RECLAIM_KIND, NEWHIGH_KIND, HONG_KIND, REBREAK_KIND)
 
 
 @dataclass
@@ -93,6 +95,10 @@ def skip_reason(ctx: Context, kind: str, code: str, reason: str, plan: tuple) ->
     if kind == REBREAK_KIND:
         mc = ctx.mcap.get(code, 0)
         return None if mc >= REBREAK_MCAP else f"{TAG} — 🌙 실전은 시총 20조↑만 (전날 시총 {mc / 1e12:,.1f}조)"
+    if kind == CONTRA_KIND:
+        m = re.search(r"고가 부근 (\d+)%", reason or "")
+        pos = int(m.group(1)) if m else -1
+        return None if pos >= NEAR_HIGH * 100 else f"{TAG} — 4️⃣ 모의는 고가 부근 마감({NEAR_HIGH:.0%}↑)만 (지금 {str(pos) + '%' if pos >= 0 else '모름'})"
     if kind == HONG_KIND:
         return None if _pos(f) else f"{TAG} — 📕 는 전날 외인 순매수 종목만 (외인 {_won(f)})"
     return None

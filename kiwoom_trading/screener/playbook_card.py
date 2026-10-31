@@ -43,7 +43,7 @@ US_NOTE = ("  간밤 미국 방향 → 코스피 시가 상승 출발 비율(5�
 
 def build_card(day: date, trend_text: Optional[str] = None, real_mode: str = "", us_text: Optional[str] = None,
                real_line: Optional[str] = None) -> str:
-    real = {"combo": "핵심 6️⃣📕5️⃣ · 보조 1️⃣2️⃣🌙(시총 20조↑) · 신호마다 종목당 3만 원(넘으면 1주) · 엄격 선정 · 15:45 실전 성과 리포트 (2026-10-31, 4️⃣7️⃣ 모의만)",
+    real = {"combo": "핵심 6️⃣📕5️⃣4️⃣ · 보조 1️⃣2️⃣🌙(시총 20조↑) · 신호마다 종목당 3만 원(넘으면 1주) · 엄격 선정 · 15:45 실전 성과 리포트 (2026-10-31, 4️⃣ 조건 없이 복귀·7️⃣ 모의만)",
             "inverse": "5️⃣ 약세장 인버스만 (10만 원 + 실현 손익)"}.get(real_mode, "꺼짐")
     trend = f"큰 흐름: {trend_text}" if trend_text else ""
     if us_text:
