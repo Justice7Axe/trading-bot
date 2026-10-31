@@ -61,24 +61,24 @@ class ContraCloseWatcher:
         n = len(xs)
         med = xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2
         picks = [i for i in stocks[:TOP_N] if i.change_rate - med >= REL_MIN and i.change_rate < LIMIT_UP and i.price]
-        near, far = [], []
+        # 2026-10-31 사용자 '조건 없이 복귀': 고가 부근 아닌 종목도 신호로 내보냄 — 실전은 모두 사고(10만 계좌 1년 161만 → 312만),
+        # 모의는 strict_select.PLAN_A 가 사유의 '고가 부근 NN%' 를 읽어 80% 미만이면 건너뜀 (지금 모의 규칙 유지)
+        far = []
         for i in picks:
             pos = self._close_pos(i.code)
+            if pos is not None:
+                self.pos[i.code] = pos
             if pos is None or pos < NEAR_HIGH:
                 far.append(f"{i.name}({'고가 부근 ' + format(pos, '.0%') if pos is not None else '시세 없음'})")
-                continue
-            self.pos[i.code] = pos
-            near.append(i)
         if far:
-            logging.info("역행 강세 종가: 고가 부근(%.0f%%↑) 아니라 뺌 %s", NEAR_HIGH * 100, ", ".join(far))
-        picks = near
+            logging.info("역행 강세 종가: 고가 부근(%.0f%%↑) 아님 — 실전만 삼, 모의는 건너뜀: %s", NEAR_HIGH * 100, ", ".join(far))
         logging.info("역행 강세 종가 %s: 주식 중앙 %+.2f%%, 대금 %s위 안 시장 대비 +%.0f%%p↑ %s종목: %s", f"{now:%H:%M}", med * 100,
                      TOP_N, REL_MIN * 100, len(picks), ", ".join(f"{i.name} {i.change_rate:+.1%}" for i in picks))
         ts = now.replace(second=0, microsecond=0, tzinfo=None)
         out = []
         for i in picks:
             reason = (f"강한 하락장 날 시장을 거스른 종목 — 전일 대비 {i.change_rate:+.1%} vs 주식 중앙 {med:+.1%} "
-                      f"(+{(i.change_rate - med) * 100:.1f}%p), 대금 {i.rank}위, 고가 부근 {self.pos.get(i.code, 0):.0%}. 종가 동시호가 매수 → 다음 날 시초가 매도 "
+                      f"(+{(i.change_rate - med) * 100:.1f}%p), 대금 {i.rank}위, " + (f"고가 부근 {self.pos[i.code]:.0%}" if i.code in self.pos else "고가 부근 모름") + ". 종가 동시호가 매수 → 다음 날 시초가 매도 "
                       f"(1년 강한 하락장 판정 54일: 고가 부근 140건 +1.48%, 조건 없이 488건 +0.90%)")
             out.append((i.code, i.name, KIND, Signal(ts, KIND, float(i.price), float(i.price), 0.0, reason)))
         return out
