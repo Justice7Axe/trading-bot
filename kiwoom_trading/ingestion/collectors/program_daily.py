@@ -39,7 +39,7 @@ def targets(top: int = 500, min_days: int = 20) -> list[str]:
 
 def fetch(client, code: str, end: str) -> list[tuple]:
     out, cont, key = [], "N", ""
-    for _ in range(60):
+    for _ in range(120):
         p, cont, key = client._post("/api/dostk/mrkcond", "ka90013", {"amt_qty_tp": "1", "stk_cd": code, "date": end}, cont, key)
         rows = p.get("stk_daly_prm_trde_trnsn") or []
         stop = False
@@ -59,7 +59,11 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--codes", default=None)
     ap.add_argument("--end", default=None, help="YYYYMMDD (기본: daily_ohlcv 마지막 날)")
+    ap.add_argument("--since", default=None, help="YYYYMMDD (기본 20241011) — 더 오래된 기간 백필 (2026-11-01)")
     a = ap.parse_args()
+    global SINCE
+    if a.since:
+        SINCE = date(int(a.since[:4]), int(a.since[4:6]), int(a.since[6:]))
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
                         handlers=[logging.StreamHandler(), logging.FileHandler(os.path.join(PROJECT_ROOT, "data", "logs", "program_daily.log"), encoding="utf-8")])
     if a.end:

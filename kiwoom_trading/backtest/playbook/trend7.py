@@ -10,14 +10,18 @@ import duckdb
 import numpy as np
 import pandas as pd
 
+import os
+
 from kiwoom_trading.backtest.playbook.paths import DAILY_DB
+
+START = os.environ.get("TREND7_START", "2024-06-01")     # 4년: TREND7_START=2022-01-01 (2026-11-01)
 
 COST = 0.0025
 BUDGET = 1_000_000
 
 _dd = duckdb.connect(DAILY_DB, read_only=True)
 df = _dd.execute("""select d.code, d.date, d.open, d.high, d.low, d.close, d.value from daily_ohlcv d join stocks s using(code)
-                    where d.date >= '2024-06-01' order by d.code, d.date""").df()
+                    where d.date >= ? order by d.code, d.date""", [START]).df()
 df["date"] = pd.to_datetime(df["date"]).dt.date
 G = {c: g.reset_index(drop=True) for c, g in df.groupby("code")}
 
@@ -37,7 +41,7 @@ def ind(g):
 
 shares = dict(_dd.execute("select code, listed_shares from stocks").fetchall())
 sector = dict(_dd.execute("select code, sector from stocks").fetchall())
-_inv = _dd.execute("select code, date, foreign_, institution from investor_daily where date >= '2025-01-01'").df()
+_inv = _dd.execute("select code, date, foreign_, institution from investor_daily where date >= ?", [START]).df()
 _inv["date"] = pd.to_datetime(_inv["date"]).dt.date
 INV = {(c, d): (f, i) for c, d, f, i in zip(_inv.code, _inv.date, _inv.foreign_, _inv.institution)}
 df["vr"] = df.groupby("date").value.rank(ascending=False, method="first")

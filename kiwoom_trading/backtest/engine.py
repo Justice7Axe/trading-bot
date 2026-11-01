@@ -23,7 +23,7 @@ DATA = os.environ.get("TRADING_DATA", r"D:\Ellie\trading\data")
 OUT = os.path.join(DATA, "danswer"); os.makedirs(OUT, exist_ok=True)
 TMP = tempfile.gettempdir()
 COST = 0.0025
-P0, P1 = date(2025, 10, 16), date(2026, 10, 22)      # 1분봉 기간 (D+1 이 있어야 하므로 10-22 까지)
+P0, P1 = date(2025, 10, 16), date(2026, 10, 29)      # 1분봉 기간 (D+1 이 있어야 하므로 마지막 날 전날까지) — 2026-11-01 10-22 → 10-29 (키움 1분봉은 1년치만 줘서 받아 둔 2025-10-15~ 가 최대)
 LIMIT = 0.295
 
 
