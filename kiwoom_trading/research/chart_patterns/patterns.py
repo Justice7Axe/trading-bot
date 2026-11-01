@@ -16,7 +16,7 @@ import pandas as pd
 from kiwoom_trading.backtest import engine as E
 
 OUT = os.path.join(E.DATA, "chart_patterns"); os.makedirs(OUT, exist_ok=True)
-SIG0 = date(2025, 4, 1)
+SIG0 = date.fromisoformat(os.environ.get("PAT_SIG0", "2025-04-01"))     # 4년: PAT_SIG0=2022-07-01 (2026-11-01)
 EXITS = {"오닐 +20/−7·40일": (0.20, 0.07, 40, False), "+10/−5·5일": (0.10, 0.05, 5, False),
          "다음 날 시가": (None, None, 1, False), "20일선 이탈 (−8%)": (None, 0.08, 60, True)}
 
@@ -29,7 +29,7 @@ class Rep:
         print(s); self.f.write(str(s) + "\n"); self.f.flush()
 
 
-R = Rep("report.txt")
+R = Rep("report" + os.environ.get("PAT_SUFFIX", "") + ".txt")
 
 
 def panel():
@@ -125,7 +125,7 @@ def main():
                 rec[en] = exit_ret(o, h, l, c, ma20, i, tp, sl, H, tr)
             base.append(rec)
     S = pd.DataFrame(sig + base)
-    S.to_parquet(os.path.join(OUT, "signals.parquet"))
+    S.to_parquet(os.path.join(OUT, "signals" + os.environ.get("PAT_SUFFIX", "") + ".parquet"))
     days = sorted(S.date.unique()); hh = days[len(days) // 2]
     R.say(f"신호 기간 {min(days)} ~ {max(days)} ({len(days)}일), 반 나눔 {hh}")
 

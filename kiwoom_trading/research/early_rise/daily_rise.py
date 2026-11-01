@@ -17,7 +17,8 @@ import pandas as pd
 from kiwoom_trading.backtest import engine as E
 
 OUT = os.path.join(E.DATA, "early_rise"); os.makedirs(OUT, exist_ok=True)
-TEST0 = "202507"
+TEST0 = os.environ.get("EARLY_TEST0", "202507")          # 4년: EARLY_TEST0=202301 EARLY_START=2022-04-01 (2026-11-01)
+START = os.environ.get("EARLY_START", "2025-01-02")
 EXITS = {"+10/−5 · 5일": (0.10, 0.05, 5), "익절 없음/−7 · 5일": (None, 0.07, 5), "+5/−3 · 3일": (0.05, 0.03, 3),
          "다음 날 시가 (1일)": (None, None, 1), "익절 없음/−10 · 10일": (None, 0.10, 10)}
 MAIN = "+10/−5 · 5일"
@@ -32,7 +33,7 @@ class Rep:
 
 
 PROG = os.environ.get("EARLY_PROG") == "1"     # 일별 프로그램 매매(program_daily, 2026-11-01 백필) 특징 넣기
-R = Rep("daily_report_prog.txt" if PROG else "daily_report.txt")
+R = Rep(("daily_report_prog" if PROG else "daily_report") + os.environ.get("EARLY_SUFFIX", "") + ".txt")
 
 
 def auc(y, s):
@@ -182,7 +183,7 @@ def main():
     df = panel()
     X = features(df)
     U = X[(X.vrank <= 500) & (X.close >= 1000) & (X.chg1 < 0.295)].copy()   # 다음 날 갭으로 미리 거르지 않음 (검토 지적: 미래 정보) — 고른 뒤 상한가 시작이면 못 산 것으로
-    U = U[U.date >= pd.Timestamp("2025-01-02")].dropna(subset=["r_" + MAIN])
+    U = U[U.date >= pd.Timestamp(START)].dropna(subset=["r_" + MAIN])
     U["m"] = U.date.dt.strftime("%Y%m")
     U["y"] = (U["r_" + MAIN] > 0.09).astype(int)
     feats = [c for c in U.columns if c not in RAW and not c.startswith("r_")]

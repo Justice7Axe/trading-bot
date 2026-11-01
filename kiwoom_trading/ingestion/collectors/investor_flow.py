@@ -30,7 +30,7 @@ FIELDS = [  # (응답 키, 컬럼)
     ("insrnc", "insurance"), ("invtrt", "trust"), ("etc_fnnc", "etc_fin"), ("bank", "bank"), ("penfnd_etc", "pension"),
     ("samo_fund", "private_eq"), ("natn", "nation"), ("etc_corp", "etc_corp"), ("natfor", "foreign_etc"),
 ]
-MAX_PAGES = 8
+MAX_PAGES = 12
 
 
 def _signed(value: Any) -> int:
@@ -108,7 +108,7 @@ def upsert(store: DailyStore, rows: list[tuple]) -> int:
     return len(rows)
 
 
-def run(codes: Optional[list[str]], since: Optional[date], update: bool) -> int:
+def run(codes: Optional[list[str]], since: Optional[date], update: bool, until: Optional[date] = None) -> int:
     client = build_client()
     store = DailyStore()
     total = 0
@@ -127,7 +127,7 @@ def run(codes: Optional[list[str]], since: Optional[date], update: bool) -> int:
             if start > datetime.now(KST).date():
                 continue
             try:
-                total += upsert(store, fetch_investor_daily(client, code, start))
+                total += upsert(store, fetch_investor_daily(client, code, start, until))
             except Exception as exc:
                 logging.warning("투자자 수급 수집 실패 %s: %s", code, exc)
             if k % 200 == 0:
@@ -145,6 +145,8 @@ def main() -> None:
     parser.add_argument("--today", action="store_true", help="마지막 거래일 전 종목 1회 조회 (ka10066)")
     parser.add_argument("--codes", default="", help="쉼표 구분 종목코드")
     parser.add_argument("--since", help="YYYYMMDD")
+    parser.add_argument("--until", help="YYYYMMDD — 이 날부터 과거로 (더 오래된 기간 백필용, 2026-11-01)")
+    parser.add_argument("--all-codes", action="store_true", help="--since 와 함께 전 종목 (이미 받은 종목도)")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     prevent_sleep_until_exit()   # 백필은 수 시간 → 실행 중 유휴 절전 방지
@@ -153,9 +155,10 @@ def main() -> None:
     if args.today:
         update_today()
         return
-    if not (args.backfill or args.update or codes):
+    until = datetime.strptime(args.until, "%Y%m%d").date() if args.until else None
+    if not (args.backfill or args.update or codes or args.all_codes):
         raise SystemExit("--backfill / --update / --codes 중 하나를 지정하세요.")
-    run(codes, since, update=args.update)
+    run(codes, since, update=args.update, until=until)
 
 
 if __name__ == "__main__":
