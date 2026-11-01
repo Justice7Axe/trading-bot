@@ -32,7 +32,7 @@ from kiwoom_trading.strategies.hong_styles.backtest import MKT, ctx, kospi_min
 
 OUT = os.path.join(E.DATA, "hong_dplus")
 os.makedirs(OUT, exist_ok=True)
-THEME = load_themes(os.path.join(E.DATA, "naver_groups.duckdb"))
+THEME = {c: {t for t in ts if not R.NON_SECTOR.search(t)} for c, ts in load_themes(os.path.join(E.DATA, "naver_groups.duckdb")).items()}
 N_MIN = 391                                   # 09:00 ~ 15:30
 T1519 = 379
 
