@@ -29,6 +29,7 @@ INDEX_DROP = -0.02                   # 코스피 −2%↓ 날 D+0 주의
 PRE_MAX = 0.05                       # NXT 프리장 +5%↑ 강세면 D+0 주의
 LIMIT_HELD = 0.29                    # 상한가 근처
 SWAP_EVERY = 10                      # 장중 대장 교체 확인 간격(분)
+SMALL_MIN, SMALL_VALUE = 0.10, 5e9   # 중소형 대장: 주도 섹터 안 시총 2조 미만 · +10%↑ · 누적 대금 50억↑ 중 등락률 1위 (대금 20위 밖이어도, 일지 '중소형 대장' 상따)
 
 
 def lead_themes(rows, themes, top=TOP, up=UP, nmin=NMIN, held=()):
