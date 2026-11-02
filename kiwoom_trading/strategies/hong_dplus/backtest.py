@@ -138,7 +138,12 @@ class Day:
         self.PC = np.array([pdd[c][3] * self.F[c] for c in self.keep])
         self.idx = {c: j for j, c in enumerate(self.keep)}
         self.CH = self.CL / self.PC[:, None] - 1
-        self.held = set(); self.lead = {}
+        self.held = set(); self.lead = {}; self.small = {}
+        small_cap = np.array([E.mcap(c, p) < R.BIG_CAP for c in self.keep])
+        members = {}
+        for j, c in enumerate(self.keep):
+            for th in THEME.get(c, ()):
+                members.setdefault(th, []).append(j)
         for i in range(0, N_MIN):
             cv = self.CV[:, i]
             top = np.argpartition(-cv, R.TOP)[:R.TOP] if len(cv) > R.TOP else np.arange(len(cv))
@@ -146,6 +151,14 @@ class Day:
             mem = set(top) | {self.idx[c] for c in self.held if self.CH[self.idx[c], i] >= R.LIMIT_HELD}
             rows = [(self.keep[j], None if np.isnan(self.CH[j, i]) else self.CH[j, i], cv[j]) for j in mem]
             self.lead[i] = R.lead_themes(rows, THEME, top=len(rows), held=())
+            sm = {}
+            for th in self.lead[i][0]:                       # 주도 섹터마다 중소형 대장 (대금 20위 밖 포함)
+                js = [j for j in members.get(th, ()) if small_cap[j] and self.CH[j, i] >= R.SMALL_MIN and self.CV[j, i] >= R.SMALL_VALUE]
+                if js:
+                    c = self.keep[max(js, key=lambda j: self.CH[j, i])]
+                    if c not in self.lead[i][1] and c not in sm:
+                        sm[c] = th
+            self.small[i] = sm
 
     def rank(self, c, i):
         j = self.idx[c]
@@ -164,7 +177,8 @@ def d0_day(d, dy=None):
     lead1519 = dy.lead[T1519][1]
     for i in range(tidx(time(*R.FIRST_BUY)), tidx(time(*R.LAST_BUY)) + 1):
         lead, leaders = dy.lead[i]
-        for c, th in leaders.items():
+        cands = [(c, th, False) for c, th in leaders.items()] + [(c, th, True) for c, th in dy.small[i].items()]
+        for c, th, is_small in cands:
             if c in seen:
                 continue
             seen.add(c)
@@ -173,7 +187,7 @@ def d0_day(d, dy=None):
             hi = E.hi_n(c, d, 250)
             kx = [kmap[n] for n in kidx if n <= i]
             pre = dy.PRE.get(c)
-            rec = dict(date=d, code=c, theme=th, n=len(lead[th]), chg=ch, rank=dy.rank(c, i), sig=ttime(i), big=big,
+            rec = dict(date=d, code=c, theme=th, n=len(lead[th]), chg=ch, rank=dy.rank(c, i), sig=ttime(i), big=big, small_lead=is_small,
                        mode="장중" if big else "상따",
                        f_recent=recent_theme(th, d), f_past=past_leader(c, d, th), f_quiet=first_big(c, d),
                        f_mcap=mc >= R.MCAP_MIN, f_index=bool(kx and kpc and kx[-1] / kpc - 1 > R.INDEX_DROP),
@@ -303,7 +317,8 @@ def report(d0, d12):
     ds = E.days()
     rp.say(f"🔺 홍인기 D+ 매매 1년 ({ds[0]} ~ {ds[-1]}, {len(ds)}일) — 섹터 지도(sectors.py), 비용 0.25%, ★ = 앞·뒤 반 모두 + & 최고 5일 빼도 +")
     examples(rp.say)
-    for mode, sel in (("시총 2조↑ 장중 매수", lambda r: r["big"]), ("시총 2조 미만 상따 (상한가 체결 가정)", lambda r: not r["big"])):
+    for mode, sel in (("시총 2조↑ 장중 매수", lambda r: r["big"]), ("시총 2조 미만 상따 (상한가 체결 가정)", lambda r: not r["big"] and not r.get("small_lead")),
+                      ("시총 2조 미만 상따 · 중소형 대장(대금 20위 밖 포함) (상한가 체결 가정)", lambda r: r.get("small_lead"))):
         rows = [r for r in d0 if sel(r)]
         allf = [r for r in rows if all(r[k] for _, k in D0_F)]
         rp.say(f"\n## D+0 · {mode} — 대장 신호 {len(rows)}건 (매수된 것 {sum(r['px'] is not None for r in rows)})")
