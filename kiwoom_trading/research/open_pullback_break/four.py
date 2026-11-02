@@ -21,7 +21,8 @@ os.makedirs(CH, exist_ok=True)
 CODES = {"000660": "SK하이닉스", "005930": "삼성전자", "042700": "한미반도체", "080220": "제주반도체"}
 
 
-def trade(c, d, full, off, prev_close, w=10, dp=0.015):
+def trade(c, d, full, off, prev_close, w=10, dp=0.015, need=None):
+    """need = 재돌파 때 함께 넘어야 할 가격 (전일 고가 등, 1분봉 가격 기준). 2026-11-03 사용자 '전일 종가 고가보다 높은 재돌파'."""
     reg = full[off:]
     first = [x for x in reg if x[0] < time(9, w)]
     if len(first) < 3:
@@ -35,7 +36,7 @@ def trade(c, d, full, off, prev_close, w=10, dp=0.015):
         low_after = x[3] if low_after is None else min(low_after, x[3])
         if low_after <= h0 * (1 - dp):
             dipped = True
-        if dipped and x[0] >= time(9, 15) and x[4] > h0:
+        if dipped and x[0] >= time(9, 15) and x[4] > h0 and (need is None or x[4] > need):
             kb = k; break
     if kb is None or kb + 1 >= len(reg):
         return dict(date=d, code=c, entry=False, h0=h0, dipped=dipped)
