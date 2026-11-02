@@ -6,6 +6,7 @@ D+0 = 주도 섹터(테마) 대장주로 첫 장대양봉이 나온 날, D+1·D+
   · 걸러내기 (강의 그대로): 최근 강했던 섹터 / 과거 대장을 했던 종목(처음 대장 X) / 장대양봉 뒤 2주(10거래일) 지난 자리 /
     시총 5천억↑ / 지수 하락 날 D+0 X / KRX 갭상승(프리장 강세) 종목 D+0 주의 / 신고가에 가까운 일봉 자리 / 끼(최근 3달 크게 오른 적).
   · D+1·D+2: D+0 에서 대장으로 마감한 종목, 갭상승 출발만, 전일 종가 지지 눌림 매수, 같은 섹터 D+ 종목 중 가장 강한 것.
+  · 섹터는 sectors.py (네이버 테마를 큰 섹터로 묶고 그룹주 더함). 시총 2조 미만 대장은 상따.
 """
 import re
 from collections import defaultdict
@@ -23,14 +24,20 @@ MCAP_MIN = 5e11                      # 시총 5천억↑
 BIG_CAP = 2e12                       # 시총 2조↑ 대형주 대장 (장중 매매+상따), 아래는 상따 위주
 NEAR_HIGH = 0.92                     # 전날까지 250일 고가의 92%↑ (신고가를 터치할 가능성 높은 자리)
 GAP_MAX = 0.05                       # D+0 KRX 갭 +5%↑ 는 주의 → 뺌
-OBSERVE, FIRST_BUY, LAST_BUY = (9, 20), (9, 30), (10, 30)
+OBSERVE, FIRST_BUY, LAST_BUY = (9, 20), (9, 30), (14, 30)   # 대부분 10시 전, 뉴스로 늦게 정해지기도 (제주반도체 5/14 14:30)
+INDEX_DROP = -0.02                   # 코스피 −2%↓ 날 D+0 주의
+PRE_MAX = 0.05                       # NXT 프리장 +5%↑ 강세면 D+0 주의
+LIMIT_HELD = 0.29                    # 상한가 근처
+SWAP_EVERY = 10                      # 장중 대장 교체 확인 간격(분)
 
 
-def lead_themes(rows, themes, top=TOP, up=UP, nmin=NMIN):
-    """rows = [(code, 등락률, 대금)] (대금 순서 무관) → (주도 테마 {테마: [(code, 등락률)]}, 대장 {code: 테마}).
-    대금 상위 top 안에서 등락률 up↑ 종목이 nmin 개↑ 인 테마가 주도 테마, 그 안 등락률 1위가 대장.
-    한 종목이 여러 테마 대장이면 +5%↑ 종목이 가장 많은 테마로."""
-    ranked = sorted(rows, key=lambda r: -(r[2] or 0))[:top]
+def lead_themes(rows, themes, top=TOP, up=UP, nmin=NMIN, held=()):
+    """rows = [(code, 등락률, 대금)] (대금 순서 무관) → (주도 섹터 {섹터: [(code, 등락률)]}, 대장 {code: 섹터}).
+    대금 상위 top 안에서 등락률 up↑ 종목이 nmin 개↑ 인 섹터가 주도 섹터, 그 안 등락률 1위가 대장.
+    held = 그날 앞서 20위 안에 들었던 종목 — 상한가(+29%↑)로 대금 순위가 밀려도 그대로 셈 (강의 4강 '상한가 들어가 이탈해도 OK').
+    한 종목이 여러 섹터 대장이면 +5%↑ 종목이 가장 많은 섹터로."""
+    srt = sorted(rows, key=lambda r: -(r[2] or 0))
+    ranked = srt[:top] + [r for r in srt[top:] if r[0] in held and r[1] is not None and r[1] >= LIMIT_HELD]
     mem = defaultdict(list)
     for code, ch, _ in ranked:
         if ch is not None and ch >= up:
