@@ -98,6 +98,10 @@ def skip_reason(ctx: Context, kind: str, code: str, reason: str, plan: tuple) ->
         return None
     f, i = ctx.flow.get(code, (None, None))
     if kind == UP_KIND:
+        # 전날 외인·기관 둘 다 순매도면 안 삼 — 모의(paper)에만 있던 규칙을 실전에도 (2026-11-04 사용자 '매매 전략에 업데이트', docs/analysis/2026-11-04_up_open_review.md:
+        # 실전 조건 1년 417건 +1.25% → 322건 +1.55%, 빠지는 95건 +0.22%(뒤 반기 −0.79%), 10만 계좌 245.2만 → 257.0만)
+        if f is not None and i is not None and f < 0 and i < 0:
+            return f"{TAG} — 1️⃣ 은 전날 외인·기관 둘 다 순매도면 안 삼 (외인 {_won(f)}, 기관 {_won(i)})"
         m = re.search(r"대금 (\d+)위", reason or "")
         rk = int(m.group(1)) if m else 999
         return None if rk <= UP_RANK else f"{TAG} — 1️⃣ 은 신호 순간 대금 {UP_RANK}위 안만 (지금 {rk}위)"
