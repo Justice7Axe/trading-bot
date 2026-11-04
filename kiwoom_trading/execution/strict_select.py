@@ -28,6 +28,7 @@ from kiwoom_trading.strategies.cafe_leader.live import KIND as CAFE_KIND
 from kiwoom_trading.strategies.contra_close.live import KIND as CONTRA_KIND, NEAR_HIGH
 from kiwoom_trading.strategies.danswer.rebreak import KIND as REBREAK_KIND
 from kiwoom_trading.strategies.hong_limitup.live import HONG_KIND
+from kiwoom_trading.strategies.inverse.live import KIND as INVERSE_GAP_KIND, WEAK_KIND
 from kiwoom_trading.strategies.premarket_reclaim.live import KIND as RECLAIM_KIND
 from kiwoom_trading.strategies.regime_plays.live import NEWHIGH_KIND, UP_KIND
 from kiwoom_trading.strategies.resistance_retest.live import RETEST_KIND
@@ -40,6 +41,10 @@ REBREAK_MCAP = 2e13      # 🌙 실전은 시총 20조↑만 (2026-10-30 사용�
 PLAN_A = (UP_KIND, RETEST_KIND, CAFE_KIND, RECLAIM_KIND, CONTRA_KIND)
 # 4️⃣ 고가 부근 마감(≥80%)은 모의(A)만 — 실전(B)은 조건 없이 (2026-10-31 사용자 '조건 없이 복귀', 10만 계좌 1년 161만 → 312만, 8월~ 11.3 → 11.5만)
 PLAN_B = (UP_KIND, RETEST_KIND, CAFE_KIND, RECLAIM_KIND, NEWHIGH_KIND, HONG_KIND, REBREAK_KIND)
+# 신규 상장 20거래일 안 종목은 모든 매매에서 뺌 (2026-11-04 사용자 '티앤이코리아·래블업 모두 상장된 지 얼마 안 된 종목 — 매매 대상에서 빼고,
+# 상장 20거래일 이내 종목은 향후 신규 종목 매매 전략에서 따로 취급'). 상장일 = stocks.list_date(키움 ka10099), 상장일을 1거래일째로 셈.
+NEW_LISTING_DAYS = 20
+ETF_KINDS = (INVERSE_GAP_KIND, WEAK_KIND)   # ETF 를 사는 매매 — stocks 표에 없어도 신규 상장으로 보지 않음
 
 
 @dataclass
@@ -48,6 +53,8 @@ class Context:
     flow: dict = field(default_factory=dict)      # code → (외인, 기관) 순매수 원
     rank: dict = field(default_factory=dict)      # code → 전날 주식 대금 순위
     mcap: dict = field(default_factory=dict)      # code → 전날 종가 × 상장주식수
+    listed: dict = field(default_factory=dict)    # code → 오늘이 상장 몇 거래일째인지 (NEW_LISTING_DAYS 안 종목만)
+    known: set = field(default_factory=set)       # stocks 표에 있는 종목 (없으면 오늘 상장했을 수 있음)
 
 
 def load_context(today: date, db_path: str = DEFAULT_DB_PATH) -> Context:
@@ -59,10 +66,17 @@ def load_context(today: date, db_path: str = DEFAULT_DB_PATH) -> Context:
             flow = {c: (f, i) for c, f, i in conn.execute("SELECT code, foreign_, institution FROM investor_daily WHERE date = ?", [fday]).fetchall()}
             rows = conn.execute("""SELECT d.code, rank() OVER (ORDER BY d.value DESC), d.close * coalesce(s.listed_shares, 0)
                                    FROM daily_ohlcv d JOIN stocks s USING(code) WHERE d.date = ? AND d.value IS NOT NULL""", [prev]).fetchall()
+            # 오늘이 상장 몇 거래일째 = 상장일부터 어제까지 거래일 수 + 1 (거래일은 삼성전자 일봉 날짜)
+            listed = {c: int(n) + 1 for c, n in conn.execute("""
+                SELECT s.code, (SELECT count(*) FROM daily_ohlcv d WHERE d.code = '005930' AND d.date >= s.list_date AND d.date < ?)
+                FROM stocks s WHERE s.list_date > ? - INTERVAL 60 DAY AND NOT coalesce(s.delisted, false)""", [today, today]).fetchall()
+                      if int(n) + 1 <= NEW_LISTING_DAYS}
+            known = {c for (c,) in conn.execute("SELECT code FROM stocks").fetchall()}
         finally:
             conn.close()
-        ctx = Context(prev, flow, {c: int(r) for c, r, _ in rows}, {c: float(m or 0) for c, _, m in rows})
-        logging.info("엄격 선정 준비: 전날 %s, 수급 %s종목 (%s), 대금 순위 %s종목", prev, len(flow), fday, len(rows))
+        ctx = Context(prev, flow, {c: int(r) for c, r, _ in rows}, {c: float(m or 0) for c, _, m in rows}, listed, known)
+        logging.info("엄격 선정 준비: 전날 %s, 수급 %s종목 (%s), 대금 순위 %s종목, 신규 상장 %s거래일 안 %s종목 뺌", prev, len(flow), fday, len(rows),
+                     NEW_LISTING_DAYS, len(listed))
         return ctx
     except Exception:
         logging.exception("엄격 선정 자료 읽기 실패 — 엄격 조건 대상 매매는 사지 않음")
@@ -75,6 +89,11 @@ def _pos(v) -> bool:
 
 def skip_reason(ctx: Context, kind: str, code: str, reason: str, plan: tuple) -> Optional[str]:
     """엄격 조건에 걸리면 이유, 통과하면 None. plan = PLAN_A(모의) / PLAN_B(실전)."""
+    if kind not in ETF_KINDS:
+        if code in ctx.listed:
+            return f"{TAG} — 신규 상장 {ctx.listed[code]}거래일째 ({NEW_LISTING_DAYS}거래일 안은 신규 종목 매매에서 따로)"
+        if ctx.known and code not in ctx.known:
+            return f"{TAG} — 상장일 모름 (오늘 상장 등 종목 목록에 없음, 신규 종목 매매에서 따로)"
     if kind not in plan:
         return None
     f, i = ctx.flow.get(code, (None, None))
