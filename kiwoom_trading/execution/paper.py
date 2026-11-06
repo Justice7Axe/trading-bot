@@ -396,8 +396,8 @@ class PaperTrader:
             if bought >= BIGCAP_MAX_WHEN_DOWN:
                 return f"강한 하락장 — 대형주 수급은 {BIGCAP_MAX_WHEN_DOWN}종목까지 (보수적 매매)"
         r = self.regime
-        if (r is not None and r.trend_weak and not r.strong_up and not t.virtual and t.kind not in (INVERSE_KIND, RETEST_KIND, CONTRA_KIND, WEAK_KIND, DANSWER_KIND, TREND_KIND, RECLAIM_KIND, CAFE_KIND, CENTER_KIND, ALIGN_KIND)
-                and not self._before_regime(tm)):
+        if (r is not None and r.trend_weak and not r.strong_up and not t.virtual and t.kind not in (INVERSE_KIND, RETEST_KIND, CONTRA_KIND, WEAK_KIND, DANSWER_KIND, TREND_KIND, CAFE_KIND, CENTER_KIND, ALIGN_KIND)
+                and not self._before_regime(tm)):   # 🔁 시가 탈환도 이제 쉼 (2026-11-06 사용자 '응 그렇게 해줘', 약세장 하락 흐름 보통 날 1년 −0.77%/건, docs/analysis/2026-11-06_reclaim_review.md)
             return f"하락 흐름 보통 날 ({r.trend_text()}) — 이 신호는 쉼 (저항 돌파·약세장 인버스만 삼)"
         if t.kind == PULLBACK_KIND:
             return "눌림 돌파는 알림만 — 1년 어떤 조건에서도 손실 (2026-10-24)"

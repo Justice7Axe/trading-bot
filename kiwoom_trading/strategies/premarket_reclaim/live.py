@@ -109,7 +109,7 @@ class ReclaimWatcher:
                 continue
             vals = [x[4] * x[5] for x in b]
             for i in after:
-                if i < 5 or b[i][0] > END:
+                if i < 5 or b[i][0] > END or b[i][0] < SETUP_AT:   # 09:11 전 봉 신호는 안 삼 — 늦게 사서 −0.19%/건, 09:11 뒤 새 신호 +0.46% (2026-11-06 사용자 '응 그렇게 해줘')
                     continue
                 avg5 = sum(vals[i - 5:i]) / 5
                 if b[i][4] > op and vals[i] >= VAL_MIN and vals[i] >= MULT * avg5:
