@@ -159,6 +159,14 @@ def main() -> int:
     except Exception:
         logging.exception("모의투자 타점 차트 생성 실패")
 
+    # 📓 매매일지 (2026-11-06 사용자 '매매일지를 보고 복기하면서 매매 전략을 개선') — 1분봉 저장 뒤, 금요일엔 주간 묶음도
+    try:
+        from kiwoom_trading.execution.journal import run_daily as write_journal
+
+        write_journal(trading_day, send_tg=not args.no_telegram)
+    except Exception:
+        logging.exception("매매일지 작성 실패")
+
     # 모의투자 하루 복기 — 한도로 못 산 신호까지 같은 규칙으로 가상 매매 (1분봉 저장 뒤), paper_review 에 누적
     try:
         from kiwoom_trading.screener.paper_review import build_review, review

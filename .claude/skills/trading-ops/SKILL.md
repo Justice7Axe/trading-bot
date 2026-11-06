@@ -9,7 +9,7 @@ description: Ellie trading 운영 — 일일 일봉 업데이트/리포트 스�
 | 작업 | 시각 | 내용 |
 |---|---|---|
 | `EllieTrading_ScreenerIntraday` | 07:50 시작, 08:00~20:00 (제한 13시간) | 1분마다 거래대금 상위 200 저장(`rank_snapshots` value_krx)·시장 분위기 판정·매매표 신호·모의투자·💰 10만 원 계좌. **종목 찾기(⚡ 장중 포착·조기 발굴 🏁🚀🌅·🔥🧩 테마·감시 목록 🎯 차트 신호)는 2026-10-25 부터 끔** (`run_intraday.DISCOVERY = False`, 사용자: "수익 나는 종목·타이밍을 못 찾았으니 버리고 매매표 각 매매가 종목을 고른다"). 20:00 📋 포착 복기도 안 보냄 |
-| `EllieTrading_DailyUpdate` | 20:00 | 일봉 업데이트 → 투자자 수급(ka10066) → 지수 일봉·1분봉(data/index.duckdb) → 65기법 리포트 → 🧱 매매표 ② 저항 돌파 다음 거래일 대상 (🔭 관심 종목·😴 쉬는 주도주는 2026-10-25 종목 찾기 중단으로 뺌, `run_intraday.DISCOVERY`) → 감시 종목 1분봉 저장(🎯 신호·모의투자 종목 포함) → 📋 포착 복기표 → 📈 모의투자 타점 차트 HTML(`data/reports/paper_chart_YYYYMMDD.html`, 텔레그램 파일 전송) |
+| `EllieTrading_DailyUpdate` | 20:00 | 일봉 업데이트 → 투자자 수급(ka10066) → 지수 일봉·1분봉(data/index.duckdb) → 65기법 리포트 → 🧱 매매표 ② 저항 돌파 다음 거래일 대상 (🔭 관심 종목·😴 쉬는 주도주는 2026-10-25 종목 찾기 중단으로 뺌, `run_intraday.DISCOVERY`) → 감시 종목 1분봉 저장(🎯 신호·모의투자 종목 포함) → 📋 포착 복기표 → 📈 모의투자 타점 차트 HTML(`data/reports/paper_chart_YYYYMMDD.html`, 텔레그램 파일 전송) → 📓 매매일지(`docs/journal/YYYY-MM-DD.md` + 실전 1분봉 차트 `data/journal/YYYYMMDD/<code>.png`, 텔레그램 요약·사진, 금요일엔 주간 `week-YYYY-Www.md`) |
 
 - 등록 스크립트: `scripts/register_daily_update_task.ps1`, `scripts/register_screener_task.ps1` (UTF-8 BOM)
 - 로그: `data/logs/daily_update_YYYYMMDD.log`, `data/logs/screener_YYYYMMDD.log`
@@ -26,6 +26,7 @@ description: Ellie trading 운영 — 일일 일봉 업데이트/리포트 스�
 - **포착·신호 알림 끝에 '📍 오늘 시장: …' 한 줄**을 붙인다 (2026-10-25 사용자, `run_intraday._tag` → `MarketRegime.day_label`). 대상: 🔥 특징주·🧩 테마 형성·🌅 프리마켓·🏁/🚀 즉시 알림·감시 추가 요약·🏁✅ 수급 확인·⚡ 장중 포착·🎯 매수 신호·🧭 장 초 급등. 09:10 전엔 '판정 전 · 상승/하락 흐름', 뒤엔 강한 상승장 / 상승 흐름 보통 날 / 하락 흐름 보통 날 / 강한 하락장. 포착 자체는 시장 상황과 무관하게 매일 돈다(모의 매수만 매매표를 따름).
 - **📡 오늘의 강세 종목** (2026-10-26 사용자, `screener/strong_list.py`, 알림만): 10:00·13:30·15:20·19:50(애프터 포함) 에 통합(KRX+NXT)·주식만(ETF·ETN·스팩 제외) 거래대금 상위 20 + 상승률 상위 15(대금 100억↑). 그날 🎯 신호가 난 종목은 시각·종류 표시. `strong_list_sent` 표로 하루 한 번씩. 키움 [0184]·[0198] 화면과 같은 기준. 포착 순간 매수 1년 백테스트가 하락 흐름·강한 하락장 날 건당 −1~−2% 라 매수와 잇지 않음.
 - **🇺🇸 간밤 미국 지수** (2026-10-27 사용자, `common/us_market.py`, 스킬 `us-overnight`): 스캐너 시작 때 나스닥·다우·나스닥100·선물을 받아 📋 카드 첫머리와 5️⃣ 인버스 매수 알림(🎯·🔴·💰)에 표시, `us_overnight` 표에 기록. 20:00 업데이트가 `index.duckdb` `us_daily` 를 이어 받음. 매수 규칙은 안 바꿈(1년 검증: 매수 전 간밤 방향으로 거르면 나아지는 매매 없음).
+- **📓 매매일지** (2026-11-06 사용자 '매매일지를 보고 복기하면서 매매 전략을 개선', `execution/journal.py`, 스킬 trade-journal): 20:00 업데이트 끝무렵 그날 시장 판정·🔴 실전 한 건씩(포착 이유·규칙대로였나·⚠️ 직접 매도면 '규칙대로였으면')·⏭ 실전 못 산 신호 결과·🟢🟣 매매별 요약·📝 복기 칸을 짧게 보내고 실전 차트는 사진(`send_telegram_photo`)으로. 매매 없는 날도 시장 판정·못 산 신호는 보냄. 미리 보기 `python -m kiwoom_trading.execution.journal [YYYYMMDD]`, 주간 `--week`, 여러 날 파일만 `--since YYYYMMDD [--until]`.
 - 4,000자 단위로 나눠 전송한다(`common/telegram.py`).
   - 일시적 네트워크 오류는 3회 재시도한다(2026-10-15 08:28 🔥 알림이 한 번 실패해 빠졌다).
   - 예외 메시지 URL 에 봇 토큰이 들어가므로 로그에는 `***` 로 가린다.
