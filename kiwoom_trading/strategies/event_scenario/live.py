@@ -31,6 +31,7 @@ SLOTS = 5
 HOLD = 5
 FETCH_AT, BUY_AT, BUY_UNTIL, REPORT_AT = time(8, 0), time(9, 0), time(9, 10), time(15, 40)
 MIN_VALUE, MIN_CAP = 1e9, 5e10
+TRUST_KIND = "자사주 신탁"   # 모의 매매 신호 종류 (2026-11-10 사용자 '모두 다 해줘' — 신탁 장부가 살 때 모의 계좌에도 넘김, 실전은 아님)
 BOOKS = {"ex": "무상 권리락", "bonus": "무상증자", "trust": "자사주 신탁", "div": "고배당 결정"}
 KIND_OF = {"bonus": "bonus", "trust": "buyback_trust", "div": "dividend"}
 # KRX 휴장일 (주말 제외) — 앞날 권리락일 짐작용. 해마다 거래소 공지로 고친다.
@@ -86,13 +87,15 @@ def ex_date(record: date, cal: list, today: date) -> Optional[date]:
 
 class EventScenarioBooks:
     def __init__(self, store, market, today: date, ctx: EventContext, notify: Optional[Callable[[str], object]] = None,
-                 events_db: Optional[str] = None, fetch: Optional[Callable] = None) -> None:
+                 events_db: Optional[str] = None, fetch: Optional[Callable] = None,
+                 on_trade: Optional[Callable[[datetime, str, str, float], object]] = None) -> None:
         from kiwoom_trading.ingestion.collectors import dart_events
         self.conn = store.conn
         self.market = market
         self.today = today
         self.ctx = ctx
         self.notify = notify or (lambda text: None)
+        self.on_trade = on_trade                # 자사주 신탁 장부가 산 순간 → 모의 매수 (run_intraday)
         self.events_db = events_db or dart_events.DB
         self.fetch = fetch or dart_events.fetch_recent
         self.books = {k: Ledger(self.conn, f"일정 {v}", TAG, today, START_CASH, SLOTS, notify=self.notify) for k, v in BOOKS.items()}
@@ -230,6 +233,11 @@ class EventScenarioBooks:
             if not tid:
                 miss.append(f"  {BOOKS[key]} {name}({code}): " + ("오늘 5종목 다 참" if lg.full() else "1주도 못 삼" if qty < 1 else "오늘 이미 삼"))
                 continue
+            if key == "trust" and self.on_trade is not None:
+                try:
+                    self.on_trade(now, code, name, float(p))
+                except Exception:
+                    logging.exception("자사주 신탁 → 모의 매수 실패")
             sell = f"권리락일 {rule[1]:%m-%d} 09:00 매도" if rule[0] == "ex" else f"{rule[1]}거래일 뒤 09:00 매도"
             lines.append(f"  {BOOKS[key]} · {name}({code}) {qty}주 × {p:,.0f}원 — {note}\n     → {sell} (손절·익절 없음)")
         if lines or miss:

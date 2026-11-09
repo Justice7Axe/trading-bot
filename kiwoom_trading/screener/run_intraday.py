@@ -66,7 +66,7 @@ from kiwoom_trading.strategies.hong_limitup.live import HONG_KIND, HongAccount, 
 from kiwoom_trading.execution.experiment_report import build as build_experiment_report
 from kiwoom_trading.strategies.cafe_leader.live import KIND as CAFE_KIND, STOP as CAFE_STOP, CafeLeaderWatcher, load_cafe_context
 from kiwoom_trading.strategies.hong_styles.live import HongStylesAccount, load_hs_context
-from kiwoom_trading.strategies.event_scenario.live import EventScenarioBooks, load_event_context
+from kiwoom_trading.strategies.event_scenario.live import TRUST_KIND, EventScenarioBooks, load_event_context
 from kiwoom_trading.screener.market_regime import MarketRegime
 from kiwoom_trading.screener.surge_groups import SurgeGroups
 from kiwoom_trading.strategies.leader_shape.live import KIND as LEADER_KIND, LeaderShapeWatcher
@@ -811,7 +811,13 @@ def main() -> int:
     events: Optional[EventScenarioBooks] = None
     if not args.once and ectx is not None:
         try:   # 📅 일정 시나리오 (DART 공시 → 무상 권리락·무상증자·자사주 신탁·고배당) 가상 장부 4개 (2026-10-29 사용자, 주문 없음)
-            events = EventScenarioBooks(store, market, now.date(), ectx, notify=None if args.no_telegram else send_telegram_message)
+            def trust_trade(t, code, name, price):   # 📅 자사주 신탁 장부가 산 순간 → 모의 매수 (2026-11-10 사용자 '모두 다 해줘', 실전은 아님)
+                sig = Signal(ts=t.replace(tzinfo=None, second=0, microsecond=0), kind=TRUST_KIND, price=price, level=price,
+                             stop=None, reason="📅 자사주 신탁 계약 체결 공시 다음 날 09:00 · 5거래일 뒤 09:00 매도 · 손절·익절 없음")
+                if trader is not None:
+                    trader.on_signals(t, [(code, name, "일정", sig)], {})
+            events = EventScenarioBooks(store, market, now.date(), ectx, notify=None if args.no_telegram else send_telegram_message,
+                                        on_trade=trust_trade)
             logging.info("일정 가상 장부: 전 거래일 %s, 보유 %s건", events.prev, sum(len(b.open_trades()) for b in events.books.values()))
         except Exception:
             logging.exception("일정 가상 장부 준비 실패")
