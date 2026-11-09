@@ -614,7 +614,18 @@ def main() -> int:
     except Exception:
         logging.exception("급등 묶음 준비 실패")
         surges = None
-    inverse = InverseGapWatcher(market, screener.hist.keys(), done=any(k == INVERSE_KIND for _, _, k in store.signal_keys(now.date())))
+    kospi_prev = None
+    try:   # 전날 코스피 등락 — 인버스 갭 '급락 다음 날 안 삼' (2026-11-09 사용자)
+        _ic = duckdb.connect(os.path.join(PROJECT_ROOT, 'data', 'index.duckdb'), read_only=True)
+        try:
+            _c = [r[0] for r in _ic.execute("SELECT close FROM idx_daily WHERE code='001' AND date < ? ORDER BY date DESC LIMIT 2", [now.date()]).fetchall()]
+        finally:
+            _ic.close()
+        kospi_prev = _c[0] / _c[1] - 1 if len(_c) == 2 else None
+        logging.info('전날 코스피 등락 %s', f'{kospi_prev:+.2%}' if kospi_prev is not None else '모름')
+    except Exception:
+        logging.exception('전날 코스피 등락 읽기 실패 — 인버스 갭 급락 거르기 안 함')
+    inverse = InverseGapWatcher(market, screener.hist.keys(), done=any(k == INVERSE_KIND for _, _, k in store.signal_keys(now.date())), prev_chg=kospi_prev)
     contra = ContraCloseWatcher(screener.hist.keys(), regime=regime, done=any(k == CONTRA_KIND for _, _, k in store.signal_keys(now.date())), market=market)
     retest: Optional[RetestWatcher] = None
     block: Optional[BlockedHighWatcher] = None

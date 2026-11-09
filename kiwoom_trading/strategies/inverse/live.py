@@ -21,11 +21,16 @@ KIND = "인버스 갭"
 CODE, NAME = "123310", "TIGER 인버스"
 START, END = time(9, 0), time(9, 5)
 GAP_DOWN = -0.01
+# 전날 코스피가 −2% 이하로 급락한 다음 날은 안 삼 (2026-11-09 사용자 '급락 다음 날은 기계적 반등 — 인버스는 손실 자초' → '응 조건 넣어줘').
+# 1년: 전날 ≤ −2% 다음 날 인버스 갭 16건 −1.25%(상한가 체결 보정해도 −0.29%) vs 그 밖의 날 33건 +0.56%. 코스피 4년: 전날 −5%↓ 다음 날 시가 갭 +1.23%, −2%↓ +0.33%.
+# docs/analysis/2026-11-09_inverse_after_drop.md. 5️⃣ 약세장 인버스는 09:10 판정이 반등 날을 이미 걸러 그대로 둠.
+PREV_DROP = -0.02
 
 
 class InverseGapWatcher:
-    def __init__(self, market: KiwoomMarket, stock_codes: Iterable[str], done: bool = False) -> None:
+    def __init__(self, market: KiwoomMarket, stock_codes: Iterable[str], done: bool = False, prev_chg: Optional[float] = None) -> None:
         self.market = market
+        self.prev_chg = prev_chg   # 전날 코스피 종가 등락 (없으면 거르지 않음)
         self.stocks = set(stock_codes)
         self.checked = done
 
@@ -41,6 +46,9 @@ class InverseGapWatcher:
         logging.info("인버스 갭 판정 %s: 대금 상위 주식 %s종목 중앙 %+.2f%% → %s", f"{now:%H:%M}", n, med * 100,
                      "인버스 매수" if med <= GAP_DOWN else "해당 없음")
         if med > GAP_DOWN:
+            return []
+        if self.prev_chg is not None and self.prev_chg <= PREV_DROP:
+            logging.info("인버스 갭: 전날 코스피 %+.1f%% — 급락 다음 날은 반등이 잦아 안 삼 (기준 %+.0f%%)", self.prev_chg * 100, PREV_DROP * 100)
             return []
         q = self.market.quote(CODE, integrated=False)
         if not q:
