@@ -25,7 +25,6 @@ from kiwoom_trading.ingestion.collectors.daily_backfill import build_client
 from kiwoom_trading.screener.conditions import format_evaluation
 from kiwoom_trading.screener.early_watch import active_rest_leaders, find_rest_leaders, format_rest_leaders
 from kiwoom_trading.screener.engine import Screener
-from kiwoom_trading.strategies.bigcap_flow.live import evaluate as evaluate_bigcap_flow, summary as bigcap_flow_summary
 from kiwoom_trading.screener.gate_flow import evaluate as evaluate_gate_flow, summary as gate_flow_summary
 from kiwoom_trading.screener.market_data import KiwoomMarket
 from kiwoom_trading.strategies.resistance_retest.live import find_retest, format_retest
@@ -53,20 +52,9 @@ def build_daily_report(save: bool = True, as_of: Optional[date] = None) -> str:
     from kiwoom_trading.screener.run_intraday import DISCOVERY
     if not DISCOVERY:
         # 종목 찾기를 끈 동안(2026-10-25 사용자 '1번'): 🔭 다음 거래일 관심 종목·😴 쉬는 주도주·조기 주도주 관문×수급은 빼고
-        # 매매표에 쓰는 🧱 저항 재시험 후보(② 저항 돌파 대상)와 대형주 수급 누적 검증만 보낸다.
-        bigcap_summary = ""
-        if save:
-            store = ScreenerStore()
-            try:
-                evaluate_bigcap_flow(store, market.client, today)
-                bigcap_summary = bigcap_flow_summary(store)
-            except Exception:
-                logging.exception("대형주 수급 평가 실패")
-            finally:
-                store.close()
+        # 매매표에 쓰는 🧱 저항 재시험 후보(② 저항 돌파 대상)만 보낸다.
+        # (🎯 대형주 수급 누적 검증은 2026-11-09 모의 매수 중단과 함께 끔 — 결과는 bigcap_flow_eval 에 남아 있음)
         lines = [f"🧱 트레이딩 전략 2️⃣ 저항 돌파 — 다음 거래일 대상 (기준 {today})", "", format_retest(retest)]
-        if bigcap_summary:
-            lines += ["", bigcap_summary]
         return "\n".join(lines)
     search_day = market.search_rank("4")
     # 조회 순위는 '현재' 기준만 제공 → 일봉 마지막 거래일과 같은 날 데이터일 때만 사용
@@ -81,7 +69,6 @@ def build_daily_report(save: bool = True, as_of: Optional[date] = None) -> str:
 
     carried: dict[str, tuple[str, int]] = {}
     gate_summary = ""
-    bigcap_summary = ""
     if save:
         store = ScreenerStore()
         try:
@@ -99,12 +86,6 @@ def build_daily_report(save: bool = True, as_of: Optional[date] = None) -> str:
                 gate_summary = gate_flow_summary(store)
             except Exception:
                 logging.exception("관문×수급 평가 실패")
-            # 대형주 수급(장중 외국인 잠정치 → +2%) — 시총 상위 100 전체 평가하고 누적 요약
-            try:
-                evaluate_bigcap_flow(store, market.client, today)
-                bigcap_summary = bigcap_flow_summary(store)
-            except Exception:
-                logging.exception("대형주 수급 평가 실패")
         finally:
             store.close()
 
@@ -125,8 +106,6 @@ def build_daily_report(save: bool = True, as_of: Optional[date] = None) -> str:
         lines.append("계속 감시 (이전 쉬는 주도주): " + ", ".join(f"{name}(D+{k})" for _, (name, k) in carried.items()))
     if gate_summary:
         lines += ["", gate_summary]
-    if bigcap_summary:
-        lines += ["", bigcap_summary]
     return "\n".join(lines)
 
 

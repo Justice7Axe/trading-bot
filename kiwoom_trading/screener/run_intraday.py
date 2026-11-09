@@ -576,12 +576,9 @@ def main() -> int:
     except Exception:
         logging.exception("장 초 공통점 준비 실패 (나머지 신호만 실행)")
         nine = None
-    try:
-        bigcap: Optional[BigcapFlowWatcher] = BigcapFlowWatcher(
-            market, store, now.date(), done={c for c, _, k in store.signal_keys(now.date()) if k == BIGCAP_KIND})
-    except Exception:
-        logging.exception("대형주 수급 준비 실패 (나머지 신호만 실행)")
-        bigcap = None
+    # 🎯 대형주 수급: 16거래일 규칙 168건 −0.07%/건(비용 뺌) — 우위 없어 2026-11-09 사용자 결정으로 모의 매수 중단.
+    #   외국인 잠정치 수집(investor_intraday)은 계속함 (제외 조건 검증용).
+    bigcap: Optional[BigcapFlowWatcher] = None
     try:
         burger: Optional[HamburgerWatcher] = HamburgerWatcher(
             client, now.date(), seen={(c, ts) for c, ts, k in store.signal_keys(now.date()) if k == BURGER_KIND})
