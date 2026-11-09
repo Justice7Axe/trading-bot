@@ -11,8 +11,9 @@ UP_MIN, LEAD_MIN = 0.04, 0.05
 
 
 def theme_leaders(rows: Iterable[tuple[str, float, float]], themes: dict, up_min: float = UP_MIN,
-                  lead_min: float = LEAD_MIN) -> dict[str, tuple[str, int, float]]:
-    """rows = [(종목코드, 등락률, 오늘 누적 대금)] → {대장 코드: (테마, +4%↑ 종목 수, 등락률)}."""
+                  lead_min: float = LEAD_MIN, by: str = "value") -> dict[str, tuple[str, int, float]]:
+    """rows = [(종목코드, 등락률, 오늘 누적 대금)] → {대장 코드: (테마, +4%↑ 종목 수, 등락률)}.
+    by = "value"(기본·실시간 규칙): 누적 대금 1위가 대장 / "chg": 등락률 1위가 대장 (연구용 비교, data/leader_rule)."""
     by_theme = defaultdict(list)
     for code, chg, value in rows:
         if chg is not None and chg >= up_min and value:
@@ -22,7 +23,7 @@ def theme_leaders(rows: Iterable[tuple[str, float, float]], themes: dict, up_min
     for th, mem in by_theme.items():
         if len(mem) < 2:
             continue
-        code, chg, _ = max(mem, key=lambda m: m[2])
+        code, chg, _ = max(mem, key=lambda m: m[1] if by == "chg" else m[2])
         if chg >= lead_min and (code not in out or len(mem) > out[code][1]):
             out[code] = (th, len(mem), chg)
     return out

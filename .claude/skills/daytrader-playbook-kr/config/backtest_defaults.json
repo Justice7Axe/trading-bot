@@ -1,0 +1,21 @@
+{
+  "_note": "포트폴리오 공통 규칙. 출처 표시는 references/00-sources-and-evidence.md 참고",
+  "KRW": {
+    "initial_equity": 30000000,
+    "risk_pct": 0.5,
+    "_risk_pct_source": "Fabio Valentini 0.25~0.5%/트레이드 (출처), 丁伟锋 3% 이하 상한 (출처). 기본 0.5%는 보수적 선택(가정)",
+    "max_positions": 3,
+    "max_losses_per_day": 3,
+    "_max_losses_source": "Fabio Valentini 하루 최대 3패 (출처)",
+    "daily_loss_limit_pct": 1.5,
+    "max_notional_pct": 100
+  },
+  "USD": {
+    "initial_equity": 50000,
+    "risk_pct": 0.25,
+    "max_positions": 1,
+    "max_losses_per_day": 3,
+    "daily_loss_limit_pct": 1.0,
+    "max_notional_pct": 1000
+  }
+}

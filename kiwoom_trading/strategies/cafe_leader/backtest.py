@@ -36,6 +36,9 @@ BAR_MULT = 2.0
 LAST_BUY = time(10, 30)
 HALF_TP = 0.025
 STOP = 0.02
+# 대장 규칙 비교용 (data/leader_rule): CAFE_LEADER_BY=chg 면 등락률 1위를 대장으로, 결과는 trades_chg.pkl·backtest_chg.txt
+LEADER_BY = os.environ.get("CAFE_LEADER_BY", "value")
+SUF = os.environ.get("CAFE_SUFFIX", "" if LEADER_BY == "value" else f"_{LEADER_BY}")
 
 
 def themes():
@@ -112,7 +115,7 @@ def day_trades(d, mkt):
     return out
 
 
-def leader_at(c, d, t, info):
+def leader_at(c, d, t, info, by=None):
     """t 시각 c 가 자기 테마 중 하나에서 대장인가: 그 테마 종목(대상 안) 중 +4%↑ 2개↑, c 가 누적 대금 1위 & +5%↑."""
     mine = THEME.get(c, ())
     rows = []
@@ -122,7 +125,7 @@ def leader_at(c, d, t, info):
         upto = [x for x in v["reg"] if x[0] <= t]
         if upto:
             rows.append((o, upto[-1][4] / v["pc"] - 1, sum(val(x) for x in v["pre"]) + sum(val(x) for x in upto)))
-    lead = theme_leaders(rows, {o: THEME.get(o, set()) & set(mine) for o, _, _ in rows})
+    lead = theme_leaders(rows, {o: THEME.get(o, set()) & set(mine) for o, _, _ in rows}, by=by or LEADER_BY)
     return (True, lead[c][1]) if c in lead else (False, 0)
 
 
@@ -157,7 +160,7 @@ def run():
         allt += day_trades(d, mkt)
         if i % 20 == 0:
             print(f"  {d} 매수 자리 누적 {len(allt)}", file=sys.stderr)
-    with open(os.path.join(OUT, "trades.pkl"), "wb") as f:
+    with open(os.path.join(OUT, f"trades{SUF}.pkl"), "wb") as f:
         pickle.dump(allt, f)
     return allt
 
@@ -179,7 +182,7 @@ def box_tags(t, n=15, width=0.30):
 
 
 def report(allt):
-    R = Rep(os.path.join(OUT, "backtest.txt"))
+    R = Rep(os.path.join(OUT, f"backtest{SUF}.txt"))
     for t in allt:
         t["box"], t["boxc"] = box_tags(t)
     days = E.days()
@@ -215,7 +218,7 @@ def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     if "--report-only" in sys.argv:
-        with open(os.path.join(OUT, "trades.pkl"), "rb") as f:
+        with open(os.path.join(OUT, f"trades{SUF}.pkl"), "rb") as f:
             report(pickle.load(f))
         return
     report(run())
