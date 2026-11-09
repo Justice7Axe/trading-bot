@@ -34,6 +34,7 @@ from typing import Any, Callable, Optional
 from kiwoom_trading.ingestion.collectors.daily_backfill import KiwoomDailyClient, _to_int
 from kiwoom_trading.strategies.hong_limitup.live import HONG_KIND
 from kiwoom_trading.strategies.inverse.live import CODE as INVERSE_CODE, WEAK_KIND, WEAK_STOP, WEAK_TP
+from kiwoom_trading.common.krx import upper_limit
 from kiwoom_trading.execution import split_exit, strict_select
 from kiwoom_trading.strategies.cafe_leader.live import KIND as CAFE_KIND
 from kiwoom_trading.strategies.contra_close.live import KIND as CONTRA_KIND
@@ -306,6 +307,9 @@ class RealTrader:
                     skipped.append(f"{name}({code}) [{label} {s.ts:%H:%M}] 신호가보다 {price / s.price - 1:+.1%} — 추격 안 함 · 포착: {(s.reason or '')[:120]}")
                     continue
                 limit = tick_up(price * (1 + LIMIT_UP))   # 현재가 +1% 지정가 — 증거금이 이 가격 기준 (시장가는 상한가 기준이라 덜 삼, 2026-10-28)
+                cap = upper_limit(base) if base else (int(s.level) if s.kind == HONG_KIND and s.level else 0)
+                if cap and limit > cap:   # 지정가가 상한가를 넘으면 주문 거부 (2026-11-09 박셀바이오 📕 4,845 > 상한가 4,835 → 5회 거부) → 상한가로
+                    limit = cap
                 qty = min(max(1, int(PER_STOCK // limit)), int(cash // limit))   # 3만 원 안에서 여러 주, 1주가 3만 원 넘으면 1주 — 예수금 안에서
                 if qty < 1:
                     skipped.append(f"{name}({code}) [{label} {s.ts:%H:%M}] 1주 {limit:,.0f}원 > 예수금 {cash:,.0f}원 · 포착: {(s.reason or '')[:120]}")
