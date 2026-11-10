@@ -96,6 +96,47 @@ def _by_kind(items: list[tuple[str, float, float]], name) -> list[tuple]:
     return rows
 
 
+# 전략 단계표 (2026-11-10 사용자 '1번' — 서태준: 소액 실전으로 확인한 뒤 자본을 늘림, 한 구간에서만 통하면 버림)
+# 단계: 가상(주문 없음) → 모의(1천만 모의 계좌) → 실전 소액(종목당 3만 원) → 증액. 올리고 내리는 건 표시만 하고 사용자가 정함.
+PROMOTE_N, PROMOTE_PF = 30, 1.2          # 다음 단계로: 그 단계 실제 매매 30건 이상 · 손익비 1.2 이상 · 앞 절반·뒤 절반 합계 둘 다 +
+DEMOTE_N, DEMOTE_PF, DEMOTE_MDD = 10, 0.8, 0.15   # 실전에서 내릴 만함: 10건 이상인데 손익비 0.8 미만, 또는 매매별 최대 낙폭 15% 넘음
+
+
+def _judge(pnls: list[float], start: float) -> tuple[str, str]:
+    n = len(pnls)
+    if not n:
+        return "자료 없음", "0건"
+    s = _stats(pnls, start)
+    half = n // 2
+    a, b = sum(pnls[:half]), sum(pnls[half:])
+    pf = f"{s['pf']:.2f}" if s["pf"] is not None else "손실 없음"
+    desc = f"{n}건 · 손익비 {pf} · 앞 절반 {_won(a)} / 뒤 절반 {_won(b)}"
+    ok = n >= PROMOTE_N and (s["pf"] is None or s["pf"] >= PROMOTE_PF) and a > 0 and b > 0
+    return ("⬆ 올릴 기준 충족" if ok else f"유지 ({max(0, PROMOTE_N - n)}건 더 필요)" if n < PROMOTE_N else "유지 (기준 못 미침)"), desc
+
+
+def _stage_rows(real: list, p_items: list, rname, pname) -> list[tuple]:
+    from kiwoom_trading.execution.real import PLAYS, REAL_OFF
+    r_by, p_by = defaultdict(list), defaultdict(list)
+    for r in real:
+        r_by[r[2]].append(r[6])
+    for k, pnl, _ in p_items:
+        p_by[k].append(pnl)
+    rows = []
+    for k in list(dict.fromkeys(list(PLAYS) + list(p_by))):
+        live = k in PLAYS and k not in REAL_OFF
+        if live:
+            v = r_by.get(k, [])
+            s = _stats(v, 30_000 * max(1, len(v))) if v else None
+            demote = bool(v) and len(v) >= DEMOTE_N and ((s["pf"] is not None and s["pf"] < DEMOTE_PF) or s["mdd"] > DEMOTE_MDD)
+            verdict, desc = _judge(v, 30_000 * max(1, len(v)))
+            rows.append((rname(k), "실전 소액", "⬇ 내릴 만함 (모의로)" if demote else verdict, "실전 " + desc))
+        else:
+            verdict, desc = _judge(p_by.get(k, []), PAPER_START)
+            rows.append((pname(k), "모의", verdict.replace("올릴", "실전 소액으로 올릴"), "모의 " + desc))
+    return rows
+
+
 def build(today: date | None = None) -> str:
     from kiwoom_trading.execution.real import PLAYS, SEED, is_paused
     from kiwoom_trading.execution.journal import KIND_LABEL as LABELS
@@ -130,6 +171,7 @@ def build(today: date | None = None) -> str:
     paper_kind = _by_kind(p_items, pname)
     p_last = p_curve[-1]
     head = ["매매", "건수", "승률", "건당 수익률", "합계 손익", "손익비"]
+    stage_rows = _stage_rows(real, p_items, rname, pname)
 
     body = f"""
 <header><h1>운용 성과</h1><p class="muted">기준 {today:%Y-%m-%d} · 매일 20:00 새로 만듦 ·
@@ -144,6 +186,9 @@ def build(today: date | None = None) -> str:
 <div class="kpi"><span>매매 수</span><b>{ps['n']}건</b></div></div>
 {_svg(p_curve, ['시작'] + [f"{d:%m-%d}" for d, _ in pdays])}
 <h3>매매별 (잔고 밖 가상 제외, 비용 0.25% 뺌)</h3>{_table(paper_kind, head)}</section>
+<section><h2>🪜 전략 단계표</h2><p class="muted">가상 → 모의 → 실전 소액(종목당 3만 원) → 증액. 올릴 기준: 그 단계 실제 매매 {PROMOTE_N}건 이상 · 손익비 {PROMOTE_PF} 이상 · 앞 절반과 뒤 절반 합계 둘 다 +.
+내릴 기준(실전): {DEMOTE_N}건 이상인데 손익비 {DEMOTE_PF} 미만, 또는 최대 낙폭 {DEMOTE_MDD:.0%} 넘음. 표시만 하고 단계는 사용자가 정함.</p>
+{_table(stage_rows, ['매매', '지금 단계', '판정', '근거'])}</section>
 <footer><p>약어 풀이</p><ul><li>PF: Profit Factor, 이익 합 ÷ 손실 합 (1보다 크면 번 돈이 잃은 돈보다 큼)</li>
 <li>MDD: Maximum Drawdown, 가장 높았던 잔고에서 가장 많이 빠진 비율</li></ul></footer>"""
     return f"""<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
