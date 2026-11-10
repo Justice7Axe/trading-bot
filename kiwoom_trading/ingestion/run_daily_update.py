@@ -167,6 +167,18 @@ def main() -> int:
     except Exception:
         logging.exception("매매일지 작성 실패")
 
+    # 📊 운용 성과 페이지 (2026-11-10 사용자 '1번' — 서태준 /performance 틀): 실전·모의 잔고 곡선·손익비·최대 낙폭·매매별
+    try:
+        from kiwoom_trading.execution.performance_page import write as write_performance
+
+        ppath = write_performance(trading_day)
+        if not args.no_telegram:
+            from kiwoom_trading.common.telegram import send_telegram_document
+
+            send_telegram_document(ppath, f"📊 {trading_day:%m-%d} 운용 성과 페이지 — 받아서 브라우저로 여세요")
+    except Exception:
+        logging.exception("운용 성과 페이지 생성 실패")
+
     # 모의투자 하루 복기 — 한도로 못 산 신호까지 같은 규칙으로 가상 매매 (1분봉 저장 뒤), paper_review 에 누적
     try:
         from kiwoom_trading.screener.paper_review import build_review, review
