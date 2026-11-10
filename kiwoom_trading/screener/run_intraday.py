@@ -94,6 +94,8 @@ def _setup_logging(now: datetime) -> None:
 
 
 STOP_WORDS = {"멈춰", "중지", "정지", "stop"}
+PAUSE_WORDS = {"실전 쉼", "실전쉼", "실전 쉬어", "실전 꺼"}      # 그날 실전 새 매수만 멈춤 (2026-11-10 사용자 '1번')
+RESUME_WORDS = {"실전 재개", "실전재개", "실전 켜"}
 STOP_CHECK_SECONDS = 5
 
 
@@ -103,7 +105,7 @@ class StopListener:
     등록된 채팅방에서, 스캐너 시작 이후에 온 메시지만 본다. '정리' 는 메시지(update_id)당 한 번만 답한다.
     """
 
-    def __init__(self, enabled: bool, on_summary=None, on_tick=None) -> None:
+    def __init__(self, enabled: bool, on_summary=None, on_tick=None, on_pause=None) -> None:
         load_env()
         self.enabled = enabled
         self.chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -111,6 +113,7 @@ class StopListener:
         self._last_check = 0.0
         self.on_summary = on_summary
         self.on_tick = on_tick            # 기다리는 동안 5초마다 호출 (모의투자 보유 종목 감시)
+        self.on_pause = on_pause          # '실전 쉼'(True) / '실전 재개'(False)
         self._handled: set = set()
 
     def requested(self) -> Optional[str]:
@@ -123,6 +126,13 @@ class StopListener:
                 continue
             if text in STOP_WORDS:
                 return msg["text"]
+            if (text in PAUSE_WORDS or text in RESUME_WORDS) and self.on_pause and msg["update_id"] not in self._handled:
+                self._handled.add(msg["update_id"])
+                try:
+                    self.on_pause(text in PAUSE_WORDS)
+                except Exception:
+                    logging.exception("'실전 쉼/재개' 처리 실패")
+                continue
             if text in SUMMARY_WORDS and self.on_summary and msg["update_id"] not in self._handled:
                 self._handled.add(msg["update_id"])
                 try:
@@ -748,6 +758,8 @@ def main() -> int:
                 if real is not None:
                     from kiwoom_trading.execution.real_report import one_line
                     rline = one_line(store.conn, real_inverse.SEED)
+                    paused = real_inverse.is_paused(store.conn, now.date())
+                    rline += ("\n⏸ 오늘 실전: 쉼" if paused else "\n▶️ 오늘 실전: 켜짐") + " — 바꾸려면 '실전 쉼' / '실전 재개' (새 매수만, 손절·매도 감시는 그대로)"
                 send_telegram_message(build_card(now.date(), regime.trend_text(), real_mode if real is not None else "",
                                                  us_ov.text() if us_ov is not None else None, rline))
                 store.conn.execute("INSERT INTO playbook_sent VALUES (?)", [now.date()])
@@ -846,7 +858,14 @@ def main() -> int:
             send_telegram_message(message, parse_mode="HTML" if "<pre>" in message else "")
         logging.info("텔레그램 '정리' 응답 전송")
 
-    listener = StopListener(enabled=not args.no_telegram, on_summary=send_summary,
+    def set_real_pause(paused: bool) -> None:
+        real_inverse.set_pause(store.conn, now.date(), paused)
+        logging.info("실전 %s (텔레그램)", "쉼" if paused else "재개")
+        held = len(real.actives()) if real is not None else 0
+        send_telegram_message(("⏸ 실전 쉼 — 오늘 새 매수만 멈춤. 손절·익절·다음 날 매도는 그대로 감시함" if paused
+                               else "▶️ 실전 재개 — 신호가 오면 다시 삼") + f" (보유 {held}종목)")
+
+    listener = StopListener(enabled=not args.no_telegram, on_summary=send_summary, on_pause=set_real_pause,
                             on_tick=(lambda: trader.tick(datetime.now(KST))) if trader else None)
     stop_command: Optional[str] = None
     try:

@@ -28,7 +28,7 @@
 import logging
 import os
 import re
-from datetime import datetime, time
+from datetime import date, datetime, time
 from typing import Any, Callable, Optional
 
 from kiwoom_trading.ingestion.collectors.daily_backfill import KiwoomDailyClient, _to_int
@@ -188,6 +188,22 @@ class RealClient(KiwoomDailyClient):
         return self.fill_info(order_no, code)[1]
 
 
+# 사람 20% 스위치 (2026-11-10 사용자 '1번' — 서태준 틀: 시스템 80%·사람 20%, 사람은 오늘 켤지/끌지만 정함).
+# 텔레그램 '실전 쉼' → 그날 새 매수만 멈춤 (손절·익절·다음 날 매도는 그대로), '실전 재개' → 다시 삼. 날마다 켜진 채로 시작.
+PAUSE_SCHEMA = "CREATE TABLE IF NOT EXISTS real_pause (date DATE PRIMARY KEY, paused BOOLEAN, ts TIMESTAMP)"
+
+
+def set_pause(conn, day: date, paused: bool) -> None:
+    conn.execute(PAUSE_SCHEMA)
+    conn.execute("INSERT OR REPLACE INTO real_pause VALUES (?, ?, ?)", [day, paused, datetime.now()])
+
+
+def is_paused(conn, day: date) -> bool:
+    conn.execute(PAUSE_SCHEMA)
+    r = conn.execute("SELECT paused FROM real_pause WHERE date = ?", [day]).fetchone()
+    return bool(r and r[0])
+
+
 def build_real_client() -> RealClient:
     return RealClient(os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com"), os.environ["KIWOOM_APP_KEY"], os.environ["KIWOOM_SECRET_KEY"])
 
@@ -272,6 +288,11 @@ class RealTrader:
         cands = sorted((x for x in items if x[3].kind in self.kinds
                         and (AFTER_BUY[0] <= tm < AFTER_BUY[1] if x[3].kind in NXT_KINDS else OPEN <= tm < LAST)), key=lambda x: x[3].ts)
         if not cands:
+            return
+        if is_paused(self.conn, self.today):
+            names = ", ".join(f"{n}[{PLAYS[s.kind][0]}]" for _, n, _, s in cands)
+            logging.info("실전 쉼 — 새 매수 안 함: %s", names)
+            self.notify(f"⏸ 실전 쉼 중이라 안 삼: {names}\n(다시 사려면 '실전 재개')"[:400])
             return
         held = self.actives()   # 2026-10-30 사용자 '하루 1종목 규칙을 없애줘' — 같은 종목만 안 겹치게, 예수금 안에서 신호마다 산다
         bought = {c for (c,) in self.conn.execute("SELECT code FROM real_trades WHERE date = ? AND status <> 'failed'", [self.today]).fetchall()}
