@@ -63,6 +63,18 @@ def build(conn, today: date, seed: float, plays: dict, cash: Optional[float] = N
         lines.append(f"   = 주문 가능 {cash:,.0f}원 + 보유 평가 {hold_val:,.0f}원")
     lines.append(f"💰 누적 실현 손익 {_won(realized)} ({_pct(realized / seed)}, {len(closed)}건)"
                  + (f" · 보유 평가 손익 {_won(hold_val - hold_cost)}" if held else ""))
+    if closed:   # 서태준 /performance 지표 (2026-11-10 사용자 '1번'): 손익비·최대 낙폭·승률
+        win = sum(r[7] for r in closed if r[7] > 0); loss = -sum(r[7] for r in closed if r[7] < 0)
+        eq = peak = seed; mdd = 0.0
+        for r in closed:
+            eq += r[7]; peak = max(peak, eq); mdd = max(mdd, 1 - eq / peak)
+        lines.append(f"📐 손익비(이익 합÷손실 합) {win / loss:.2f} · 승률 {sum(1 for r in closed if r[7] > 0) / len(closed):.0%}"
+                     f" · 최대 낙폭 −{mdd:.1%}" if loss else f"📐 손실 없음 · 승률 100%")
+    try:
+        from kiwoom_trading.execution.real import is_paused
+        lines.append("⏸ 오늘 실전: 쉼 (새 매수 안 함)" if is_paused(conn, today) else "▶️ 오늘 실전: 켜짐")
+    except Exception:
+        pass
 
     # ② 오늘
     t_buy = _rows(conn, "SELECT coalesce(name, code), kind, qty, buy_price, status FROM real_trades WHERE date = ? AND status <> 'failed' ORDER BY buy_ts", [today])
