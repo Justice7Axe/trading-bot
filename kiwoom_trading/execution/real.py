@@ -199,8 +199,10 @@ def set_pause(conn, day: date, paused: bool) -> None:
 
 
 def is_paused(conn, day: date) -> bool:
-    conn.execute(PAUSE_SCHEMA)
-    r = conn.execute("SELECT paused FROM real_pause WHERE date = ?", [day]).fetchone()
+    try:   # 읽기 전용 사본(screener_snapshot)에서도 쓰므로 표를 만들지 않음 — 없으면 켜짐
+        r = conn.execute("SELECT paused FROM real_pause WHERE date = ?", [day]).fetchone()
+    except Exception:
+        return False
     return bool(r and r[0])
 
 
