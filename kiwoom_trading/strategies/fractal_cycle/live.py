@@ -9,7 +9,7 @@ VWMA100 = Σ(종가×거래량)/Σ거래량 100일.
 A. 무너지는 국면 (실전·모의 모든 매수에서 제외):
    큰 상승 = 최근 120일 고가 H ≥ 그 앞 250일(120~370일 전) 최저가 P × 2,
    종가 < H × 0.7, MA50 < 20일 전 MA50, 종가 < MA50 < VWMA100.
-B. 바닥 매수 (모의만, 다음 날 09:00):
+B. 바닥 매수 (모의만, 다음 날 09:10~09:30 — 선별 ①~④ 통과만, 아래 상수):
    최근 120일 중 A 인 날 ≥ 60, 최근 40일 (최고가−최저가)/종가 ≤ 25%, 그 40일 안 거래량 ≥ 20일 평균 × 2 인 날 ≥ 2,
    |MA50 − 종가|/종가 ≤ 3%, |VWMA100 − 종가|/종가 ≤ 5%, 최근 3일 종가 > VWMA100,
    마지막 날 저가 ≤ VWMA100 × 1.01 이고 종가 > VWMA100 (선을 밟음).
@@ -34,8 +34,12 @@ REGULAR_DB = os.path.join(PROJECT_ROOT, "data", "daily_regular.duckdb")
 RISE, DROP_FROM_H = 2.0, 0.7
 A_MIN_DAYS, BOX_DAYS, BOX_WIDTH, VOL_MULT, VOL_DAYS = 60, 40, 0.25, 2.0, 2
 MA_NEAR, VW_NEAR, ABOVE_DAYS, TOUCH = 0.03, 0.05, 3, 0.01
-BUY_START, BUY_END = time(9, 0), time(9, 30)
-MIN_VALUE = 1e9          # 전날 대금 10억↑만 (체결 가능성)
+BUY_START, BUY_END = time(9, 10), time(9, 30)   # 선별 ④ 09:10 시장 판정 뒤, 강한 하락장 날 안 삼
+MIN_VALUE = 1e10         # 선별 ① 전날 거래대금 100억↑ (2026-11-12 사용자 '거래대금·수급·테마·시황 선별 요건')
+MAX_VALUE_RANK = 100     # 선별 ① 전날 대금 순위 100위 안
+FLOW_DAYS = 5            # 선별 ② 최근 5일 외인+기관 합계 순매수, 전날 둘 다 순매도면 제외
+THEME_UP, THEME_MIN = 0.04, 2   # 선별 ③ 같은 네이버 테마 안에서 전날 +4%↑ 종목 2개↑
+NAVER_DB = os.path.join(PROJECT_ROOT, "data", "naver_groups.duckdb")
 
 
 def _load(day: date, db_path: str = DEFAULT_DB_PATH) -> pd.DataFrame:
@@ -99,12 +103,49 @@ class FractalContext:
             if bool(r.A):
                 self.collapse[r.code] = (f"🌀 무너지는 국면 — 큰 상승 뒤 고점 −30% 아래·50일선 하락·종가 {r.close:,.0f} < 50일선 "
                                          f"{r.ma50:,.0f} < VWMA100 {r.vwma:,.0f} ({r.date:%m-%d})")
-            if bool(r.B) and (r.value or 0) >= MIN_VALUE:
+            if bool(r.B):
                 self.picks.append((r.code, r.name, float(r.close), float(r.vwma)))
             if not np.isnan(r.vwma) and r.close < r.vwma:
                 self.below_vwma.add(r.code)
-        logging.info("프랙탈: 무너지는 국면 %s종목 (매수 제외), 바닥 매수 후보 %s종목 %s", len(self.collapse), len(self.picks),
+        raw = len(self.picks)
+        self.picks = [p for p in self.picks if self._select(p[0], p[1], t, db_path)]
+        logging.info("프랙탈: 무너지는 국면 %s종목 (매수 제외), 바닥 모양 %s종목 → 선별 통과 %s종목 %s", len(self.collapse), raw, len(self.picks),
                      ", ".join(n for _, n, _, _ in self.picks))
+
+    def _select(self, code: str, name: str, t: pd.DataFrame, db_path: str) -> bool:
+        """선별 ①~③ (전날 정보). ④ 시황은 FractalWatcher 가 09:10 판정으로."""
+        try:
+            last = t["date"].max()
+            day_rows = t[t["date"] == last].sort_values("value", ascending=False)
+            rank = {c: i + 1 for i, c in enumerate(day_rows["code"])}
+            row = t[t["code"] == code].iloc[0]
+            if (row.value or 0) < MIN_VALUE or rank.get(code, 9999) > MAX_VALUE_RANK:
+                logging.info("프랙탈 선별 탈락 %s: 대금 %.0f억 · %s위 (100억↑·100위 안)", name, (row.value or 0) / 1e8, rank.get(code))
+                return False
+            conn = duckdb.connect(db_path, read_only=True)
+            try:
+                fl = conn.execute("""SELECT date, foreign_, institution FROM investor_daily WHERE code = ? AND date <= ?
+                                     ORDER BY date DESC LIMIT ?""", [code, last, FLOW_DAYS]).fetchall()
+                prev = dict(conn.execute("""SELECT code, close FROM daily_ohlcv WHERE date = (SELECT max(date) FROM daily_ohlcv WHERE date < ?)""",
+                                         [last]).fetchall())
+                lastc = dict(conn.execute("SELECT code, close FROM daily_ohlcv WHERE date = ?", [last]).fetchall())
+            finally:
+                conn.close()
+            if not fl or (fl[0][1] or 0) < 0 and (fl[0][2] or 0) < 0 or sum((f or 0) + (i or 0) for _, f, i in fl) <= 0:
+                logging.info("프랙탈 선별 탈락 %s: 수급 (전날 외인 %s·기관 %s, %s일 합 %s)", name, fl[0][1] if fl else None,
+                             fl[0][2] if fl else None, FLOW_DAYS, sum((f or 0) + (i or 0) for _, f, i in fl) if fl else None)
+                return False
+            from kiwoom_trading.common.leader import load_themes
+            themes = load_themes(NAVER_DB)
+            up = {c for c, v in lastc.items() if prev.get(c) and v / prev[c] - 1 >= THEME_UP}
+            hot = [th for th in themes.get(code, set()) if sum(1 for c, ths in themes.items() if th in ths and c in up) >= THEME_MIN]
+            if not hot:
+                logging.info("프랙탈 선별 탈락 %s: 테마 형성 없음 (테마 %s)", name, ", ".join(sorted(themes.get(code, set()))) or "없음")
+                return False
+            return True
+        except Exception:
+            logging.exception("프랙탈 선별 실패 %s", name)
+            return False
 
     def skip_reason(self, code: str) -> Optional[str]:
         return self.collapse.get(code)
@@ -113,13 +154,24 @@ class FractalContext:
 class FractalWatcher:
     """09:00~09:30 첫 확인 때 B 후보를 모의 매수 신호로 (하루 한 번)."""
 
-    def __init__(self, ctx: FractalContext, done: set) -> None:
+    def __init__(self, ctx: FractalContext, done: set, regime=None) -> None:
         self.ctx = ctx
         self.done = set(done)
+        self.regime = regime
 
     def check(self, now: datetime, value_top) -> list[tuple[str, str, str, Signal]]:
         if not (BUY_START <= now.time() <= BUY_END):
             return []
+        r = self.regime
+        if r is not None:
+            from kiwoom_trading.screener.market_regime import CHECKS
+            if CHECKS[0] not in r.done:
+                return []                          # 09:10 판정 전
+            if r.strong_down:
+                if self.ctx.picks and not self.done.issuperset(c for c, *_ in self.ctx.picks):
+                    logging.info("프랙탈 바닥: 강한 하락장 날이라 안 삼")
+                self.done.update(c for c, *_ in self.ctx.picks)
+                return []
         out = []
         for code, name, close, vwma in self.ctx.picks:
             if code in self.done:
