@@ -188,6 +188,29 @@ class RealClient(KiwoomDailyClient):
         return self.fill_info(order_no, code)[1]
 
 
+# 당일 차트 흐름 대응 — VWAP 이탈 매도 (2026-11-11 사용자 '당일 수급·차트 흐름에 바로 대응' → '가장 추천하는 기준으로 넣어줘').
+# 그날 산 실전 종목이 매수 10분 뒤부터 1분봉 종가가 그날 VWAP(거래량 가중 평균가) 아래로 5개 연속 마감하면 시장가 매도.
+# 7️⃣ 주도주 추세(며칠 보유)·🌙 종가 재돌파(애프터 매수)는 제외. 손절·익절은 그대로 먼저 봄.
+VWAP_BARS, VWAP_WAIT_MIN = 5, 10
+
+
+def vwap_break(bars: list, buy_ts: datetime, now: datetime, n: int = VWAP_BARS, wait_min: int = VWAP_WAIT_MIN) -> Optional[str]:
+    """bars = 그날 KRX 1분봉(시간 오름차순, ts = 봉 시작). 다 끝난 봉만 보고, 매수 wait_min 분 뒤 봉부터 n개 연속 VWAP 아래 마감이면 이유 문자열."""
+    from datetime import timedelta
+    done = [b for b in bars if b["ts"] + timedelta(minutes=1) <= now.replace(tzinfo=None) and b["ts"].time() >= OPEN and b["volume"]]
+    pv = vol = 0.0
+    run = []
+    for b in done:
+        pv += (b["high"] + b["low"] + b["close"]) / 3 * b["volume"]
+        vol += b["volume"]
+        run.append((b, pv / vol))
+    after = [(b, v) for b, v in run if b["ts"] >= buy_ts + timedelta(minutes=wait_min)]
+    if len(after) < n or not all(b["close"] < v for b, v in after[-n:]):
+        return None
+    b, v = after[-1]
+    return f"VWAP 이탈 — 1분봉 {n}개 연속 VWAP 아래 마감 (종가 {b['close']:,.0f} < VWAP {v:,.0f})"
+
+
 # 사람 20% 스위치 (2026-11-10 사용자 '1번' — 서태준 틀: 시스템 80%·사람 20%, 사람은 오늘 켤지/끌지만 정함).
 # 텔레그램 '실전 쉼' → 그날 새 매수만 멈춤 (손절·익절·다음 날 매도는 그대로), '실전 재개' → 다시 삼. 날마다 켜진 채로 시작.
 PAUSE_SCHEMA = "CREATE TABLE IF NOT EXISTS real_pause (date DATE PRIMARY KEY, paused BOOLEAN, ts TIMESTAMP)"
@@ -378,6 +401,20 @@ class RealTrader:
         for t in self.actives():   # 1️⃣ 은 여러 종목일 수 있다 (2026-10-28 B)
             self._tick_one(now, t)
 
+    def _vwap_reason(self, code: str, buy_ts: datetime, now: datetime) -> Optional[str]:
+        """1분에 한 번만 1분봉을 받아 VWAP 이탈을 봄 (종목별 캐시)."""
+        from kiwoom_trading.ingestion.collectors.minute_collector import fetch_minute_bars
+        key = now.strftime("%H%M")
+        cache = getattr(self, "_vwap_cache", {})
+        self._vwap_cache = cache
+        if cache.get(code, ("", None))[0] != key:
+            try:
+                cache[code] = (key, vwap_break(fetch_minute_bars(self.market.client, code, self.today, "KRX"), buy_ts, now))
+            except Exception:
+                logging.exception("실전 VWAP 확인 실패 %s", code)
+                cache[code] = (key, None)
+        return cache[code][1]
+
     def _tick_one(self, now: datetime, t: tuple) -> None:
         tid, d, code, name, kind, qty, buy_no, buy_price, sell_no, status, buy_ts = t
         label, tp, sl = PLAYS.get(kind, PLAYS[WEAK_KIND])
@@ -453,6 +490,8 @@ class RealTrader:
                         reason = f"손절 −{sl:.0%}"
                     elif tp and q.price >= buy_price * (1 + tp):
                         reason = f"익절 +{tp:.0%}"
+                if reason is None and kind not in (TREND_KIND, REBREAK_KIND) and buy_ts:
+                    reason = self._vwap_reason(code, buy_ts, now)
             if reason:
                 held = self.client.holding_qty(code)
                 sell_qty = min(qty - part, held)
