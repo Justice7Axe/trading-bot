@@ -60,6 +60,7 @@ from kiwoom_trading.strategies.premarket_reclaim.live import HALF_R as RECLAIM_H
 from kiwoom_trading.strategies.centerline.live import BUDGET as CENTER_BUDGET, KIND as CENTER_KIND, POOL as CENTER_POOL, TP as CENTER_TP
 from kiwoom_trading.strategies.event_scenario.live import HOLD as TRUST_HOLD, TRUST_KIND, is_trading
 from kiwoom_trading.strategies.fractal_cycle.live import KIND as FRACTAL_KIND
+from kiwoom_trading.strategies.kell_squeeze.live import KIND_D as KELL_D_KIND, KIND_M as KELL_M_KIND
 from kiwoom_trading.strategies.after_align.live import BUDGET as ALIGN_BUDGET, KIND as ALIGN_KIND, POOL as ALIGN_POOL, STOP as ALIGN_STOP
 from kiwoom_trading.strategies.trend_hold.live import BUDGET as TREND_BUDGET, BUY_END as TREND_BUY_END, KIND as TREND_KIND, MAX_HOLD as TREND_MAX, TREND_POOL
 from kiwoom_trading.screener.market_regime import BIGCAP_MAX_WHEN_DOWN, CHECKS, CONSERVATIVE_LOSS_LIMIT, UP_ONLY_KINDS, WINDOW_MIN
@@ -215,6 +216,14 @@ def _next_day_how(tp: Optional[float], stop: Optional[float], kind: str = "") ->
     return f"{tp_txt} / 손절 {stop:,.0f}원, 못 닿으면 다음 날 09:00 매도" if stop else f"{tp_txt}, 손절 없이 다음 날 09:00 매도"
 
 
+def _kell_how(t) -> str:
+    """📈 켈 수축 매도 설명 — t.stop 에 매수 때 돌파선(hiN)을 저장해 재시작해도 남는다."""
+    unit = "일봉" if t.mode == "KELL_D" else "30분봉"
+    line = f"돌파선 {t.stop:,.0f}" if t.stop else "돌파선"
+    when = "다음 거래일부터 09:00 에 판정" if t.mode == "KELL_D" else "30분봉이 끝날 때마다 판정, 15:19 정리 없이 들고 감"
+    return f"손절·익절 없음, {unit} 종가가 {line} 아래면 손절·EMA20 아래면 정리 ({when})"
+
+
 def _prev_gain(q) -> float:
     """전일 종가 대비 지금 등락 (기준가 없으면 0)."""
     base = getattr(q, "base_price", None) if q else None
@@ -325,6 +334,8 @@ class PaperTrader:
         self.prev_flow = load_prev_flow(today)  # 전날 외인·기관 순매수 (주도주 모양 매수 조건)
         self.strict = strict_select.load_context(today)   # 당일 매매 엄격 선정 A안 (2026-10-30 사용자)
         self.trend_picks: int = 0                  # 오늘 ⑦ 매수 대상 수 (run_intraday 가 넣어 줌) — 0 이면 ⑦ 몫을 남겨 두지 않음
+        self.kell_d_exit: dict[str, str] = {}    # 📈 켈 수축 일봉: 거래 id → 오늘 09:00 매도 사유 (run_intraday 가 스캐너 시작 때 넣어 줌)
+        self.kell_m = None                       # 📈 켈 수축 30분 KellMinuteWatcher — exits[거래 id] 로 매도 (run_intraday 가 넣어 줌)
         self.trend_exit: dict[str, tuple] = {}   # ⑦ 주도주 추세: 전날 종가가 20일선 아래인 보유 종목 → 오늘 09:00 매도 (run_intraday 가 넣어 줌)
         self.last_price: dict[str, float] = {}
         self._last_tick = 0.0
@@ -367,7 +378,7 @@ class PaperTrader:
                    flow: dict[tuple[str, datetime], tuple[float, Optional[float]]]) -> None:
         for code, name, source, s in items:
             mult = (flow.get((code, s.ts)) or (None, None))[1]
-            mode = "VWMA" if s.kind == FRACTAL_KIND else "보유일" if s.kind == TRUST_KIND else "추세" if s.kind == TREND_KIND else "다음날" if s.kind in NEXT_DAY_KINDS else "보유" if s.kind == INVERSE_KIND else "목표" if s.kind in (BIGCAP_KIND, BURGER_KIND) else "차트" if s.kind in (LEADER_KIND, NINE_KIND) else "눌림" if s.kind == PULLBACK_KIND else "추적" if mult is not None and mult >= STRONG_FLOW else "기본"
+            mode = "VWMA" if s.kind == FRACTAL_KIND else "KELL_D" if s.kind == KELL_D_KIND else "KELL_M" if s.kind == KELL_M_KIND else "보유일" if s.kind == TRUST_KIND else "추세" if s.kind == TREND_KIND else "다음날" if s.kind in NEXT_DAY_KINDS else "보유" if s.kind == INVERSE_KIND else "목표" if s.kind in (BIGCAP_KIND, BURGER_KIND) else "차트" if s.kind in (LEADER_KIND, NINE_KIND) else "눌림" if s.kind == PULLBACK_KIND else "추적" if mult is not None and mult >= STRONG_FLOW else "기본"
             t = Trade(f"{s.ts:%Y%m%d}-{code}-{s.ts:%H%M}-{s.kind}", self.today, code, name, s.kind, source, s.ts, s.price,
                       mult, mode, "skipped", stop=s.stop)
             if any(x.id == t.id for x in self.trades):
@@ -394,16 +405,16 @@ class PaperTrader:
             return f"모의 안 삼 — {t.kind}는 아침 현금을 먼저 차지해 건당 수익 큰 매매를 막음 (2026-10-29 계좌 시험)"
         if self.halted:
             return f"하루 손실 한도 -{self._loss_limit():.1%} 도달"
-        if not t.virtual and t.kind not in (BIGCAP_KIND, INVERSE_KIND, WEAK_KIND, TREND_KIND, TRUST_KIND, FRACTAL_KIND, RECLAIM_KIND, CAFE_KIND, CENTER_KIND, ALIGN_KIND) and self._before_regime(tm):   # 📍 는 09:10 전 체결도 삼(백테스트 그대로), 09:10 강한 하락장 뒤엔 아래에서 막힘
+        if not t.virtual and t.kind not in (BIGCAP_KIND, INVERSE_KIND, WEAK_KIND, TREND_KIND, TRUST_KIND, FRACTAL_KIND, KELL_D_KIND, KELL_M_KIND, RECLAIM_KIND, CAFE_KIND, CENTER_KIND, ALIGN_KIND) and self._before_regime(tm):   # 📍 는 09:10 전 체결도 삼(백테스트 그대로), 09:10 강한 하락장 뒤엔 아래에서 막힘
             return f"시장 분위기 판정({REGIME_FIRST:%H:%M}) 전 — 차트 신호는 사지 않음"
-        if self.regime is not None and self.regime.strong_down and not t.virtual and t.kind not in (RETEST_KIND, CONTRA_KIND, DANSWER_KIND, TREND_KIND, TRUST_KIND, FRACTAL_KIND, RECLAIM_KIND, CAFE_KIND, ALIGN_KIND):   # 🪜 애프터 정배열도 1년 모든 날 검증 · 🔁 시가 탈환은 1년 모든 날 검증 · 저항 돌파·디앤서 종가·주도주 추세는 모든 날, 역행 강세 종가는 강한 하락장 날 산다
+        if self.regime is not None and self.regime.strong_down and not t.virtual and t.kind not in (RETEST_KIND, CONTRA_KIND, DANSWER_KIND, TREND_KIND, TRUST_KIND, FRACTAL_KIND, KELL_D_KIND, KELL_M_KIND, RECLAIM_KIND, CAFE_KIND, ALIGN_KIND):   # 🪜 애프터 정배열도 1년 모든 날 검증 · 🔁 시가 탈환은 1년 모든 날 검증 · 저항 돌파·디앤서 종가·주도주 추세는 모든 날, 역행 강세 종가는 강한 하락장 날 산다
             if t.kind not in (BIGCAP_KIND, INVERSE_KIND):
                 return "강한 하락장 — 차트 신호는 새로 사지 않음 (보수적 매매)"
             bought = sum(1 for x in self.trades if x.date == self.today and x.kind == BIGCAP_KIND and x.buy_ts)
             if bought >= BIGCAP_MAX_WHEN_DOWN:
                 return f"강한 하락장 — 대형주 수급은 {BIGCAP_MAX_WHEN_DOWN}종목까지 (보수적 매매)"
         r = self.regime
-        if (r is not None and r.trend_weak and not r.strong_up and not t.virtual and t.kind not in (INVERSE_KIND, RETEST_KIND, CONTRA_KIND, WEAK_KIND, DANSWER_KIND, TREND_KIND, TRUST_KIND, FRACTAL_KIND, CAFE_KIND, CENTER_KIND, ALIGN_KIND)
+        if (r is not None and r.trend_weak and not r.strong_up and not t.virtual and t.kind not in (INVERSE_KIND, RETEST_KIND, CONTRA_KIND, WEAK_KIND, DANSWER_KIND, TREND_KIND, TRUST_KIND, FRACTAL_KIND, KELL_D_KIND, KELL_M_KIND, CAFE_KIND, CENTER_KIND, ALIGN_KIND)
                 and not self._before_regime(tm)):   # 🔁 시가 탈환도 이제 쉼 (2026-11-06 사용자 '응 그렇게 해줘', 약세장 하락 흐름 보통 날 1년 −0.77%/건, docs/analysis/2026-11-06_reclaim_review.md)
             return f"하락 흐름 보통 날 ({r.trend_text()}) — 이 신호는 쉼 (저항 돌파·약세장 인버스만 삼)"
         if t.kind == PULLBACK_KIND:
@@ -523,7 +534,7 @@ class PaperTrader:
         t.status, t.buy_ts, t.peak = "ordered", now.replace(tzinfo=None), float(price)
         self.last_price[t.code] = price
         how = (f"손절 -{STRONG_STOP:.0%}, +{TRAIL_START:.0%} 뒤 고점 -{TRAIL_GAP:.0%} (평소 {t.flow_mult:.1f}배)"
-               if t.mode == "추적" else "손절·익절 없음, 종가가 VWMA100 아래로 마감한 다음 날 09:00 매도" if t.mode == "VWMA" else f"손절·익절 없음, {TRUST_HOLD}거래일 뒤 09:00 매도" if t.mode == "보유일" else "손절·익절 없음, 종가가 20일선 아래면 다음 날 09:00 매도" if t.mode == "추세" else _next_day_how(NEXT_DAY_TP.get(t.kind, RETEST_TP), t.stop, t.kind) if t.mode == "다음날" else "손절 없음, 15:19 정리" if not s.stop else f"손절 {s.stop:,.0f}원 ({s.stop / price - 1:+.1%})")
+               if t.mode == "추적" else "손절·익절 없음, 종가가 VWMA100 아래로 마감한 다음 날 09:00 매도" if t.mode == "VWMA" else _kell_how(t) if t.mode in ("KELL_D", "KELL_M") else f"손절·익절 없음, {TRUST_HOLD}거래일 뒤 09:00 매도" if t.mode == "보유일" else "손절·익절 없음, 종가가 20일선 아래면 다음 날 09:00 매도" if t.mode == "추세" else _next_day_how(NEXT_DAY_TP.get(t.kind, RETEST_TP), t.stop, t.kind) if t.mode == "다음날" else "손절 없음, 15:19 정리" if not s.stop else f"손절 {s.stop:,.0f}원 ({s.stop / price - 1:+.1%})")
         logging.info("모의 매수 주문 %s %s주 (주문 %s)", t.name, t.qty, t.buy_order_no)
         self.notify(f"🟢 모의 매수 {t.name}({t.code}) {t.qty}주 × 약 {price:,}원 = {t.qty * price / 1e4:,.0f}만 원\n"
                     f"  [{t.kind} {s.ts:%H:%M}] {how} — {t.source}"
@@ -560,7 +571,7 @@ class PaperTrader:
             t.stop = t.buy_price * (1 - STRONG_STOP)
         self.last_price[t.code] = price
         how = (f"손절 -{STRONG_STOP:.0%}, +{TRAIL_START:.0%} 뒤 고점 -{TRAIL_GAP:.0%}" if t.mode == "추적"
-               else "손절·익절 없음, 종가가 VWMA100 아래로 마감한 다음 날 09:00 매도" if t.mode == "VWMA" else f"손절·익절 없음, {TRUST_HOLD}거래일 뒤 09:00 매도" if t.mode == "보유일" else "손절·익절 없음, 종가가 20일선 아래면 다음 날 09:00 매도" if t.mode == "추세"
+               else "손절·익절 없음, 종가가 VWMA100 아래로 마감한 다음 날 09:00 매도" if t.mode == "VWMA" else _kell_how(t) if t.mode in ("KELL_D", "KELL_M") else f"손절·익절 없음, {TRUST_HOLD}거래일 뒤 09:00 매도" if t.mode == "보유일" else "손절·익절 없음, 종가가 20일선 아래면 다음 날 09:00 매도" if t.mode == "추세"
                else _next_day_how(NEXT_DAY_TP.get(t.kind, RETEST_TP), t.stop, t.kind) if t.mode == "다음날"
                else "손절 없음, 15:19 정리" if not s.stop else f"손절 {s.stop:,.0f}원 ({s.stop / price - 1:+.1%})")
         logging.info("잔고 밖 가상 매수 %s %s주 × %s (%s)", t.name, t.qty, price, reason)
@@ -596,6 +607,17 @@ class PaperTrader:
             fx = getattr(self, "fractal", None)
             if t.date < self.today and fx is not None and t.code in fx.below_vwma:
                 return self._sell(now, t, "전날 종가 VWMA100 아래 마감 — 시초 매도")
+            return
+        if t.mode == "KELL_D":                                # 📈 켈 수축 일봉: 장중 손절·익절·15:19 정리 없음 — 전날 정규장 종가 < 돌파선 또는 < EMA20 이면 09:00 매도
+            why = self.kell_d_exit.get(t.id) if t.date < self.today else None
+            if why:
+                return self._sell(now, t, why)
+            return
+        if t.mode == "KELL_M":                                # 📈 켈 수축 30분: 30분봉이 끝날 때 종가 < 돌파선 또는 < EMA20 이면 매도, 15:19 정리 없이 밤을 넘김
+            km = self.kell_m
+            why = km.exits.get(t.id) if km is not None else None
+            if why:
+                return self._sell(now, t, why)
             return
         if t.mode == "보유일":                                # 📅 자사주 신탁: 손절·익절·15:19 정리 없음 — 매수일 뒤 5거래일째 09:00 매도
             held = sum(1 for k in range(1, (self.today - t.date).days + 1) if is_trading(t.date + timedelta(days=k)))
