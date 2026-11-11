@@ -59,6 +59,7 @@ from kiwoom_trading.strategies.cafe_leader.live import HALF_TP as CAFE_HALF_TP, 
 from kiwoom_trading.strategies.premarket_reclaim.live import HALF_R as RECLAIM_HALF_R, KIND as RECLAIM_KIND, TRAIL as RECLAIM_TRAIL
 from kiwoom_trading.strategies.centerline.live import BUDGET as CENTER_BUDGET, KIND as CENTER_KIND, POOL as CENTER_POOL, TP as CENTER_TP
 from kiwoom_trading.strategies.event_scenario.live import HOLD as TRUST_HOLD, TRUST_KIND, is_trading
+from kiwoom_trading.strategies.fractal_cycle.live import KIND as FRACTAL_KIND
 from kiwoom_trading.strategies.after_align.live import BUDGET as ALIGN_BUDGET, KIND as ALIGN_KIND, POOL as ALIGN_POOL, STOP as ALIGN_STOP
 from kiwoom_trading.strategies.trend_hold.live import BUDGET as TREND_BUDGET, BUY_END as TREND_BUY_END, KIND as TREND_KIND, MAX_HOLD as TREND_MAX, TREND_POOL
 from kiwoom_trading.screener.market_regime import BIGCAP_MAX_WHEN_DOWN, CHECKS, CONSERVATIVE_LOSS_LIMIT, UP_ONLY_KINDS, WINDOW_MIN
@@ -366,7 +367,7 @@ class PaperTrader:
                    flow: dict[tuple[str, datetime], tuple[float, Optional[float]]]) -> None:
         for code, name, source, s in items:
             mult = (flow.get((code, s.ts)) or (None, None))[1]
-            mode = "보유일" if s.kind == TRUST_KIND else "추세" if s.kind == TREND_KIND else "다음날" if s.kind in NEXT_DAY_KINDS else "보유" if s.kind == INVERSE_KIND else "목표" if s.kind in (BIGCAP_KIND, BURGER_KIND) else "차트" if s.kind in (LEADER_KIND, NINE_KIND) else "눌림" if s.kind == PULLBACK_KIND else "추적" if mult is not None and mult >= STRONG_FLOW else "기본"
+            mode = "VWMA" if s.kind == FRACTAL_KIND else "보유일" if s.kind == TRUST_KIND else "추세" if s.kind == TREND_KIND else "다음날" if s.kind in NEXT_DAY_KINDS else "보유" if s.kind == INVERSE_KIND else "목표" if s.kind in (BIGCAP_KIND, BURGER_KIND) else "차트" if s.kind in (LEADER_KIND, NINE_KIND) else "눌림" if s.kind == PULLBACK_KIND else "추적" if mult is not None and mult >= STRONG_FLOW else "기본"
             t = Trade(f"{s.ts:%Y%m%d}-{code}-{s.ts:%H%M}-{s.kind}", self.today, code, name, s.kind, source, s.ts, s.price,
                       mult, mode, "skipped", stop=s.stop)
             if any(x.id == t.id for x in self.trades):
@@ -381,6 +382,11 @@ class PaperTrader:
             save_trade(self.store, t)
 
     def _skip_reason(self, now: datetime, t: Trade) -> Optional[str]:
+        fx = getattr(self, "fractal", None)   # 🌀 무너지는 국면 종목은 사지 않음 (2026-11-11 사용자 '3', ETF 매매 제외)
+        if fx is not None and not t.virtual and t.kind not in (INVERSE_KIND, WEAK_KIND):
+            why = fx.skip_reason(t.code)
+            if why:
+                return why
         tm = now.time()
         if not (SESSION_OPEN <= tm < LIQUIDATE_AT or PRE[0] <= tm < PRE[1] or AFTER[0] <= tm < AFTER[1]):
             return "매수 시간 아님 (정규장 09:00~15:19, 가상 08:00~08:45·15:30~19:45)"
@@ -388,16 +394,16 @@ class PaperTrader:
             return f"모의 안 삼 — {t.kind}는 아침 현금을 먼저 차지해 건당 수익 큰 매매를 막음 (2026-10-29 계좌 시험)"
         if self.halted:
             return f"하루 손실 한도 -{self._loss_limit():.1%} 도달"
-        if not t.virtual and t.kind not in (BIGCAP_KIND, INVERSE_KIND, WEAK_KIND, TREND_KIND, TRUST_KIND, RECLAIM_KIND, CAFE_KIND, CENTER_KIND, ALIGN_KIND) and self._before_regime(tm):   # 📍 는 09:10 전 체결도 삼(백테스트 그대로), 09:10 강한 하락장 뒤엔 아래에서 막힘
+        if not t.virtual and t.kind not in (BIGCAP_KIND, INVERSE_KIND, WEAK_KIND, TREND_KIND, TRUST_KIND, FRACTAL_KIND, RECLAIM_KIND, CAFE_KIND, CENTER_KIND, ALIGN_KIND) and self._before_regime(tm):   # 📍 는 09:10 전 체결도 삼(백테스트 그대로), 09:10 강한 하락장 뒤엔 아래에서 막힘
             return f"시장 분위기 판정({REGIME_FIRST:%H:%M}) 전 — 차트 신호는 사지 않음"
-        if self.regime is not None and self.regime.strong_down and not t.virtual and t.kind not in (RETEST_KIND, CONTRA_KIND, DANSWER_KIND, TREND_KIND, TRUST_KIND, RECLAIM_KIND, CAFE_KIND, ALIGN_KIND):   # 🪜 애프터 정배열도 1년 모든 날 검증 · 🔁 시가 탈환은 1년 모든 날 검증 · 저항 돌파·디앤서 종가·주도주 추세는 모든 날, 역행 강세 종가는 강한 하락장 날 산다
+        if self.regime is not None and self.regime.strong_down and not t.virtual and t.kind not in (RETEST_KIND, CONTRA_KIND, DANSWER_KIND, TREND_KIND, TRUST_KIND, FRACTAL_KIND, RECLAIM_KIND, CAFE_KIND, ALIGN_KIND):   # 🪜 애프터 정배열도 1년 모든 날 검증 · 🔁 시가 탈환은 1년 모든 날 검증 · 저항 돌파·디앤서 종가·주도주 추세는 모든 날, 역행 강세 종가는 강한 하락장 날 산다
             if t.kind not in (BIGCAP_KIND, INVERSE_KIND):
                 return "강한 하락장 — 차트 신호는 새로 사지 않음 (보수적 매매)"
             bought = sum(1 for x in self.trades if x.date == self.today and x.kind == BIGCAP_KIND and x.buy_ts)
             if bought >= BIGCAP_MAX_WHEN_DOWN:
                 return f"강한 하락장 — 대형주 수급은 {BIGCAP_MAX_WHEN_DOWN}종목까지 (보수적 매매)"
         r = self.regime
-        if (r is not None and r.trend_weak and not r.strong_up and not t.virtual and t.kind not in (INVERSE_KIND, RETEST_KIND, CONTRA_KIND, WEAK_KIND, DANSWER_KIND, TREND_KIND, TRUST_KIND, CAFE_KIND, CENTER_KIND, ALIGN_KIND)
+        if (r is not None and r.trend_weak and not r.strong_up and not t.virtual and t.kind not in (INVERSE_KIND, RETEST_KIND, CONTRA_KIND, WEAK_KIND, DANSWER_KIND, TREND_KIND, TRUST_KIND, FRACTAL_KIND, CAFE_KIND, CENTER_KIND, ALIGN_KIND)
                 and not self._before_regime(tm)):   # 🔁 시가 탈환도 이제 쉼 (2026-11-06 사용자 '응 그렇게 해줘', 약세장 하락 흐름 보통 날 1년 −0.77%/건, docs/analysis/2026-11-06_reclaim_review.md)
             return f"하락 흐름 보통 날 ({r.trend_text()}) — 이 신호는 쉼 (저항 돌파·약세장 인버스만 삼)"
         if t.kind == PULLBACK_KIND:
@@ -517,7 +523,7 @@ class PaperTrader:
         t.status, t.buy_ts, t.peak = "ordered", now.replace(tzinfo=None), float(price)
         self.last_price[t.code] = price
         how = (f"손절 -{STRONG_STOP:.0%}, +{TRAIL_START:.0%} 뒤 고점 -{TRAIL_GAP:.0%} (평소 {t.flow_mult:.1f}배)"
-               if t.mode == "추적" else f"손절·익절 없음, {TRUST_HOLD}거래일 뒤 09:00 매도" if t.mode == "보유일" else "손절·익절 없음, 종가가 20일선 아래면 다음 날 09:00 매도" if t.mode == "추세" else _next_day_how(NEXT_DAY_TP.get(t.kind, RETEST_TP), t.stop, t.kind) if t.mode == "다음날" else "손절 없음, 15:19 정리" if not s.stop else f"손절 {s.stop:,.0f}원 ({s.stop / price - 1:+.1%})")
+               if t.mode == "추적" else "손절·익절 없음, 종가가 VWMA100 아래로 마감한 다음 날 09:00 매도" if t.mode == "VWMA" else f"손절·익절 없음, {TRUST_HOLD}거래일 뒤 09:00 매도" if t.mode == "보유일" else "손절·익절 없음, 종가가 20일선 아래면 다음 날 09:00 매도" if t.mode == "추세" else _next_day_how(NEXT_DAY_TP.get(t.kind, RETEST_TP), t.stop, t.kind) if t.mode == "다음날" else "손절 없음, 15:19 정리" if not s.stop else f"손절 {s.stop:,.0f}원 ({s.stop / price - 1:+.1%})")
         logging.info("모의 매수 주문 %s %s주 (주문 %s)", t.name, t.qty, t.buy_order_no)
         self.notify(f"🟢 모의 매수 {t.name}({t.code}) {t.qty}주 × 약 {price:,}원 = {t.qty * price / 1e4:,.0f}만 원\n"
                     f"  [{t.kind} {s.ts:%H:%M}] {how} — {t.source}"
@@ -554,7 +560,7 @@ class PaperTrader:
             t.stop = t.buy_price * (1 - STRONG_STOP)
         self.last_price[t.code] = price
         how = (f"손절 -{STRONG_STOP:.0%}, +{TRAIL_START:.0%} 뒤 고점 -{TRAIL_GAP:.0%}" if t.mode == "추적"
-               else f"손절·익절 없음, {TRUST_HOLD}거래일 뒤 09:00 매도" if t.mode == "보유일" else "손절·익절 없음, 종가가 20일선 아래면 다음 날 09:00 매도" if t.mode == "추세"
+               else "손절·익절 없음, 종가가 VWMA100 아래로 마감한 다음 날 09:00 매도" if t.mode == "VWMA" else f"손절·익절 없음, {TRUST_HOLD}거래일 뒤 09:00 매도" if t.mode == "보유일" else "손절·익절 없음, 종가가 20일선 아래면 다음 날 09:00 매도" if t.mode == "추세"
                else _next_day_how(NEXT_DAY_TP.get(t.kind, RETEST_TP), t.stop, t.kind) if t.mode == "다음날"
                else "손절 없음, 15:19 정리" if not s.stop else f"손절 {s.stop:,.0f}원 ({s.stop / price - 1:+.1%})")
         logging.info("잔고 밖 가상 매수 %s %s주 × %s (%s)", t.name, t.qty, price, reason)
@@ -586,6 +592,11 @@ class PaperTrader:
 
     def _watch(self, now: datetime, t: Trade, sess: str) -> None:
         tm = now.time()
+        if t.mode == "VWMA":                                  # 🌀 프랙탈 바닥: 손절·익절·15:19 정리 없음 — 전날 종가가 VWMA100 아래면 09:00 매도
+            fx = getattr(self, "fractal", None)
+            if t.date < self.today and fx is not None and t.code in fx.below_vwma:
+                return self._sell(now, t, "전날 종가 VWMA100 아래 마감 — 시초 매도")
+            return
         if t.mode == "보유일":                                # 📅 자사주 신탁: 손절·익절·15:19 정리 없음 — 매수일 뒤 5거래일째 09:00 매도
             held = sum(1 for k in range(1, (self.today - t.date).days + 1) if is_trading(t.date + timedelta(days=k)))
             if held >= TRUST_HOLD:
