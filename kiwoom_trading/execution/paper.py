@@ -698,7 +698,7 @@ class PaperTrader:
         save_trade(self.store, t)
         logging.info("%s 절반 매도 %s %s주 × %s", "가상" if t.virtual else "모의", t.name, t.part_qty, t.part_price)
         self.notify(f"💰 {'가상' if t.virtual else '모의'} 절반 익절 {t.name} {t.part_qty}주 × {t.part_price:,.0f}원 "
-                    f"({t.part_price / t.buy_price - 1:+.1%}) — 나머지 {t.qty - t.part_qty}주는 " + (rest or f"손절 {t.stop:,.0f}원 또는 15:19 정리"))
+                    f"({t.part_price / t.buy_price - 1:+.1%}) — 나머지 {t.qty - t.part_qty}주는 " + (rest or (f"손절 {t.stop:,.0f}원 또는 15:19 정리" if t.stop else "15:19 정리")))
 
     def _sell(self, now: datetime, t: Trade, reason: str) -> None:
         try:   # 매도 직전 시세: 실주문은 체결가를 못 받을 때 쓸 추정가, 가상은 이 값이 체결가
@@ -764,7 +764,7 @@ class PaperTrader:
                     if sl and t.mode != "추적":   # 실전처럼 손절선을 체결가 기준으로 (2026-11-10 사용자 '모두 다 해줘' — 신호가 기준이라 실전·모의 손절이 갈렸음)
                         t.stop = t.buy_price * (1 - sl)
                     t.status = "open"
-                    self.notify(f"✅ 모의 매수 체결 {t.name} {t.qty}주 × {t.buy_price:,.0f}원, 손절 {t.stop:,.0f}원")
+                    self.notify(f"✅ 모의 매수 체결 {t.name} {t.qty}주 × {t.buy_price:,.0f}원, " + (f"손절 {t.stop:,.0f}원" if t.stop else "손절 없음"))   # 📅 자사주 신탁은 손절 없음 (11-11 None 서식 오류)
                 elif timed_out:
                     t.status, t.note = "failed", "5분 안에 체결 확인 안 됨"
                     self.notify(f"⚠️ 모의 매수 미체결 {t.name} — {t.note}")
