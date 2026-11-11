@@ -332,6 +332,11 @@ class RealTrader:
             label, tp, sl = PLAYS[s.kind]
             if any(t[2] == code for t in held) or code in bought:   # real_trades id 가 날짜-종목이라 같은 날 같은 종목은 한 번
                 continue
+            fx = getattr(self, "fractal", None)
+            why = fx.skip_reason(code) if fx is not None and s.kind not in (WEAK_KIND,) else None   # 🌀 무너지는 국면 (2026-11-11 사용자 '3')
+            if why:
+                logging.info("실전 안 삼 %s [%s]: %s", name, label, why)
+                continue
             why = strict_select.skip_reason(self.strict, s.kind, code, s.reason, strict_select.PLAN_B)   # 2026-10-30 엄격 선정 B안 — 규칙상 대상 아님이라 알림 없이 로그만
             if why:
                 logging.info("실전 안 삼 %s [%s]: %s", name, label, why)
