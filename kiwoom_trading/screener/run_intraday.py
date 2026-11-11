@@ -721,7 +721,7 @@ def main() -> int:
     if not args.once:
         try:   # 🌀 프랙탈 사이클 (2026-11-11 사용자 '3'): A 무너지는 국면 종목은 실전·모의 매수 제외, B 바닥 매수는 모의만
             fctx = FractalContext(now.date())
-            fractal = FractalWatcher(fctx, done={c for c, _, k in store.signal_keys(now.date()) if k == FRACTAL_KIND})
+            fractal = FractalWatcher(fctx, done={c for c, _, k in store.signal_keys(now.date()) if k == FRACTAL_KIND}, regime=regime)
             if trader is not None:
                 trader.fractal = fctx
         except Exception:
