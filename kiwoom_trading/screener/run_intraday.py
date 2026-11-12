@@ -386,7 +386,7 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
              weak_inv: Optional[WeakInverseWatcher] = None, rebreak: Optional[ClosingRebreakWatcher] = None,
              danswer: Optional[DanswerCloseWatcher] = None, small: Optional[SmallAccount] = None, real: Optional["real_inverse.RealTrader"] = None,
              reclaim=None, center=None, fractal=None, align=None, kell_d=None, kell_m=None, ha_d=None, ha_m=None, crash=None, elog=None, dwatch: Optional[DanswerWatch] = None, strong: Optional[StrongListWatcher] = None,
-             books: tuple = (), leader_fn=None) -> int:
+             books: tuple = (), leader_fn=None, hold_check=None) -> int:
     now = datetime.now(KST)
     if real is not None:
         real.tick(now)                 # 🔴 실전 매매(6️⃣2️⃣5️⃣): 체결 확인·익절/손절·다음 날 09:00 매도 (자체 예외 처리)
@@ -448,6 +448,11 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
             regime.update(now, value_top)    # 강한 하락장 판정 (09:10~10:00) — 판정되면 모의투자가 보수적으로 산다
         except Exception:
             logging.exception("시장 분위기 판정 실패")
+    if hold_check is not None:
+        try:
+            hold_check.tick(now, value_top, trader, real)   # R2 다시 고르기 (09:10 판정 뒤 한 번) → 다음 확인에서 지금가 < 매수가면 매도
+        except Exception:
+            logging.exception("R2 다시 고르기 실패")
     if up is not None and (real is not None or trader is not None):
         # 1️⃣ 은 09:10 판정 직후 바로 주문 (2026-10-28: 신호 09:10 → 다른 판정·수급 저장을 다 돈 뒤 실전 주문 09:12:33,
         # 1년 기준 1분 늦으면 건당 −0.27%p). 실전 먼저, 그다음 모의. 이 분에 다시 check 해도 이미 판정해 빈 목록이다.
@@ -702,6 +707,14 @@ def main() -> int:
         if trader is not None:
             trader.trend_exit = texit
             trader.trend_picks = len(tpicks)
+            try:   # R4 시간 손절: 7️⃣ 산 날부터 20거래일 동안 종가가 매수가 +5% 를 못 넘으면 오늘 09:00 매도 (2026-11-13 사용자 '전부')
+                from kiwoom_trading.execution.hold_manage import get_state, time_stop_exits
+                tholds = {t.id: (t.code, t.date, get_state(store.conn, t.id)["base"] or t.buy_price)
+                          for t in trader.active() if t.kind == TREND_KIND and t.date < now.date() and t.buy_price}
+                trader.hold_time_exit = time_stop_exits(tholds, now.date())
+                logging.info("R4 시간 손절: 7️⃣ 보유 %s건 중 오늘 09:00 매도 %s", len(tholds), ", ".join(trader.hold_time_exit.values()) or "없음")
+            except Exception:
+                logging.exception("R4 시간 손절 판정 실패")
         logging.info("주도주 추세: 매수 대상 %s종목 (%s 마감 기준) %s · 보유 %s종목 중 20일선 이탈 %s", len(tpicks), tday,
                      ", ".join(f"{p.name} {p.rank}위" for p in tpicks), len(held), ", ".join(texit) or "없음")
         try:   # 📍 중심선 강한 돌파 — 시총 5천억·대금 10위 기준봉 몸통 가운데를 대금 실어 뚫으면 (모의, 2026-10-30 사용자)
@@ -810,9 +823,24 @@ def main() -> int:
                 finally:
                     rconn.close()
                 logging.info("실전 7️⃣ 보유 %s종목 중 20일선 이탈 %s", len(rheld), ", ".join(real.trend_exit) or "없음")
+            try:   # R4 시간 손절 (실전 7️⃣)
+                from kiwoom_trading.execution.hold_manage import time_stop_exits
+                rtholds = {t[0]: (t[2], t[1], t[7]) for t in real.actives() if t[4] in real_inverse.REAL_HOLD_KINDS and t[1] < now.date() and t[7]}
+                real.hold_time_exit = time_stop_exits(rtholds, now.date())
+                if rtholds:
+                    logging.info("실전 R4 시간 손절: 보유 %s건 중 오늘 09:00 매도 %s", len(rtholds), ", ".join(real.hold_time_exit.values()) or "없음")
+            except Exception:
+                logging.exception("실전 R4 시간 손절 판정 실패")
         except Exception:
             logging.exception("실전 매매 준비 실패")
             real_mode = ""
+    hold_check = None
+    if not args.once and (trader is not None or real is not None):
+        try:   # R2 다시 고르기 — 09:10 시장 판정 뒤 첫 확인 때 전날 이전 매수 보유 종목을 오늘 기준(대금 100위·전날 수급·프로그램·테마)으로 다시 봄
+            from kiwoom_trading.execution.hold_manage import HoldRecheck
+            hold_check = HoldRecheck(now.date(), store.conn, selector=ksel, regime=regime)
+        except Exception:
+            logging.exception("R2 다시 고르기 준비 실패")
     if not args.once and not args.no_telegram:
         try:   # 📋 매일 아침 오늘의 트레이딩 전략 (2026-10-25 사용자, 하루 한 번)
             store.conn.execute("CREATE TABLE IF NOT EXISTS playbook_sent (date DATE PRIMARY KEY)")
@@ -948,7 +976,7 @@ def main() -> int:
                         logging.info("오늘 데이터가 없음(휴장일로 판단, 기준일 %s) → 종료", probe[0].as_of)
                         break
                 run_once(screener, market, store, telegram=not args.no_telegram, watcher=watcher, early=early, investors=investors,
-                         themes=themes, board=board, trader=trader, leader=leader, pullback=pullback, nine=nine, bigcap=bigcap, regime=regime, inverse=inverse, contra=contra, retest=retest, up=up, block=block, newhigh=newhigh, trend=trend, surges=surges, burger=burger, weak_inv=weak_inv, rebreak=rebreak, danswer=danswer, small=small, real=real, reclaim=reclaim, center=center, align=align, fractal=fractal, kell_d=kell_d, kell_m=kell_m, ha_d=ha_d, ha_m=ha_m, crash=crash, elog=elog, dwatch=dwatch, strong=strong, books=books, leader_fn=cafe.leaders if cafe is not None else None)
+                         themes=themes, board=board, trader=trader, leader=leader, pullback=pullback, nine=nine, bigcap=bigcap, regime=regime, inverse=inverse, contra=contra, retest=retest, up=up, block=block, newhigh=newhigh, trend=trend, surges=surges, burger=burger, weak_inv=weak_inv, rebreak=rebreak, danswer=danswer, small=small, real=real, reclaim=reclaim, center=center, align=align, fractal=fractal, kell_d=kell_d, kell_m=kell_m, ha_d=ha_d, ha_m=ha_m, crash=crash, elog=elog, dwatch=dwatch, strong=strong, books=books, leader_fn=cafe.leaders if cafe is not None else None, hold_check=hold_check)
             except Exception:
                 logging.exception("스캔 실패 (다음 주기에 재시도)")
             if args.once:

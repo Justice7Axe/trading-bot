@@ -45,7 +45,8 @@ from kiwoom_trading.ingestion.collectors.daily_backfill import KiwoomDailyClient
 from kiwoom_trading.screener.daily_summary import _pct, _table
 from kiwoom_trading.screener.intraday_signals import Signal
 from kiwoom_trading.ingestion.collectors.minute_collector import fetch_minute_bars
-from kiwoom_trading.execution import strict_select
+from kiwoom_trading.execution import hold_manage, strict_select
+from kiwoom_trading.execution.hold_manage import HOLD_MODES
 from kiwoom_trading.strategies.bigcap_flow.live import KIND as BIGCAP_KIND, TARGET as BIGCAP_TARGET
 from kiwoom_trading.strategies.early_nine.live import KIND as NINE_KIND
 from kiwoom_trading.strategies.hamburger.live import KIND as BURGER_KIND
@@ -371,6 +372,8 @@ class PaperTrader:
         self.ha_d_exit: dict[str, str] = {}      # 🕯 하이킨아시 일봉: 거래 id → 오늘 09:00 색 매도 사유 (run_intraday 가 스캐너 시작 때 넣어 줌)
         self.ha_m = None                         # 🕯 하이킨아시 30분 HaMinuteWatcher — exits[거래 id] 로 색 매도 (run_intraday 가 넣어 줌)
         self.trend_exit: dict[str, tuple] = {}   # ⑦ 주도주 추세: 전날 종가가 20일선 아래인 보유 종목 → 오늘 09:00 매도 (run_intraday 가 넣어 줌)
+        self.hold_time_exit: dict[str, str] = {} # R4 시간 손절: 7️⃣ 거래 id → 오늘 09:00 매도 사유 (run_intraday 가 스캐너 시작 때 넣어 줌)
+        self.r2: dict[str, tuple] = {}           # R2 다시 고르기: 코드 → (탈락 목록, 요약) (HoldRecheck 가 09:10 판정 뒤 넣어 줌)
         self.last_price: dict[str, float] = {}
         self._last_tick = 0.0
         self._chart_checked: dict[str, datetime] = {}   # '차트' 매도: 거래별 마지막으로 본 분
@@ -522,6 +525,12 @@ class PaperTrader:
                 lead = self.lead_now.get(t.code)
                 factor *= LEAD_MULT if lead else NONLEAD_MULT
                 why = ((why + " · ") if why else "") + (f"👑 테마 대장 '{lead[0]}' → {LEAD_MULT:g}배" if lead else f"테마 대장 아님 → {NONLEAD_MULT:g}배")
+            try:   # R7: 12:00 뒤 오늘 실현 손실이면 금액을 1배 넘게 키우지 않음 (2026-11-13 사용자 '전부')
+                factor, why7 = hold_manage.r7_cap(factor, now, self._realized_today())
+                if why7:
+                    why = ((why + " · ") if why else "") + why7
+            except Exception:
+                logging.exception("R7 금액 제한 확인 실패 %s", t.name)
             t.qty = order_qty(price, int(KIND_BUDGET.get(t.kind, BUDGET_PER_STOCK) * factor * _crash_budget(t)))
             if why:
                 t.note = f"금액 {factor:g}배: {why}"
@@ -557,6 +566,13 @@ class PaperTrader:
             t.note = ((t.note + " · ") if t.note else "") + _crash_tag(t, s)
         if t.kind in (HA_D_KIND, HA_M_KIND) and s.level:
             t.note = ((t.note + " · ") if t.note else "") + f"{CRASH_TP_TAG}{s.level:,.0f}"   # 🕯 익절선 (재시작해도 note 에서 다시 읽음)
+        plan = self._plan(t, s, price)   # R1: 사기 전에 대응 계획 (손절·익절·보유·추가)을 note 에 남김, 못 만들면 안 삼
+        if not plan:
+            t.note = "대응 계획 없음 (R1)"
+            logging.info("모의 매수 건너뜀 %s [%s]: %s", t.name, t.kind, t.note)
+            self.notify(f"⏭ 모의 매수 못 함 {t.name}({t.code}) [{t.kind} {s.ts:%H:%M}] — {t.note}")
+            return
+        t.note = ((t.note + " · ") if t.note else "") + plan
         if t.virtual:
             t.status, t.buy_ts, t.buy_price, t.peak = "open", now.replace(tzinfo=None), float(price), float(price)
             if t.mode == "추적":
@@ -573,8 +589,7 @@ class PaperTrader:
         t.buy_order_no = self.mock.market_order("buy", t.code, t.qty)
         t.status, t.buy_ts, t.peak = "ordered", now.replace(tzinfo=None), float(price)
         self.last_price[t.code] = price
-        how = (f"손절 -{STRONG_STOP:.0%}, +{TRAIL_START:.0%} 뒤 고점 -{TRAIL_GAP:.0%} (평소 {t.flow_mult:.1f}배)"
-               if t.mode == "추적" else _crash_how(t) if t.mode == "CRASH" else "손절·익절 없음, 종가가 VWMA100 아래로 마감한 다음 날 09:00 매도" if t.mode == "VWMA" else _kell_how(t) if t.mode in ("KELL_D", "KELL_M") else _ha_how(t) if t.mode in ("HA_D", "HA_M") else f"손절·익절 없음, {TRUST_HOLD}거래일 뒤 09:00 매도" if t.mode == "보유일" else "손절·익절 없음, 종가가 20일선 아래면 다음 날 09:00 매도" if t.mode == "추세" else _next_day_how(NEXT_DAY_TP.get(t.kind, RETEST_TP), t.stop, t.kind) if t.mode == "다음날" else "손절 없음, 15:19 정리" if not s.stop else f"손절 {s.stop:,.0f}원 ({s.stop / price - 1:+.1%})")
+        how = self._how(t, s, price)
         logging.info("모의 매수 주문 %s %s주 (주문 %s)", t.name, t.qty, t.buy_order_no)
         self.notify(f"🟢 모의 매수 {t.name}({t.code}) {t.qty}주 × 약 {price:,}원 = {t.qty * price / 1e4:,.0f}만 원\n"
                     f"  [{t.kind} {s.ts:%H:%M}] {how} — {t.source}"
@@ -612,15 +627,44 @@ class PaperTrader:
         if t.mode == "추적":
             t.stop = t.buy_price * (1 - STRONG_STOP)
         self.last_price[t.code] = price
-        how = (f"손절 -{STRONG_STOP:.0%}, +{TRAIL_START:.0%} 뒤 고점 -{TRAIL_GAP:.0%}" if t.mode == "추적"
-               else _crash_how(t) if t.mode == "CRASH" else "손절·익절 없음, 종가가 VWMA100 아래로 마감한 다음 날 09:00 매도" if t.mode == "VWMA" else _kell_how(t) if t.mode in ("KELL_D", "KELL_M") else _ha_how(t) if t.mode in ("HA_D", "HA_M") else f"손절·익절 없음, {TRUST_HOLD}거래일 뒤 09:00 매도" if t.mode == "보유일" else "손절·익절 없음, 종가가 20일선 아래면 다음 날 09:00 매도" if t.mode == "추세"
-               else _next_day_how(NEXT_DAY_TP.get(t.kind, RETEST_TP), t.stop, t.kind) if t.mode == "다음날"
-               else "손절 없음, 15:19 정리" if not s.stop else f"손절 {s.stop:,.0f}원 ({s.stop / price - 1:+.1%})")
+        how = self._how(t, s, price)
+        plan = self._plan(t, s, price)   # R1 대응 계획 (잔고 밖 가상도 같은 계획)
+        if not plan:
+            t.virtual = t.overflow = False
+            t.status, t.buy_ts, t.buy_price, t.peak = "skipped", None, None, None
+            t.note = "대응 계획 없음 (R1)"
+            return False
+        t.note += " · " + plan
         logging.info("잔고 밖 가상 매수 %s %s주 × %s (%s)", t.name, t.qty, price, reason)
         self.notify(f"🟣 가상 매수 {t.name}({t.code}) {t.qty}주 × {price:,}원 = {t.qty * price / 1e4:,.0f}만 원 "
                     f"(모의 못 삼: {reason[:60]} → 주문 없이 기록)\n"
                     f"  [{t.kind} {s.ts:%H:%M}] {how} — {t.source}\n  포착: {(s.reason or '')[:300]}")
         return True
+
+    def _how(self, t: Trade, s: Signal, price: float) -> str:
+        """매도 규칙 설명 (매수 알림·R1 계획에 같이 씀)."""
+        return (f"손절 -{STRONG_STOP:.0%}, +{TRAIL_START:.0%} 뒤 고점 -{TRAIL_GAP:.0%}" + (f" (평소 {t.flow_mult:.1f}배)" if t.flow_mult else "")
+                if t.mode == "추적" else _crash_how(t) if t.mode == "CRASH" else "손절·익절 없음, 종가가 VWMA100 아래로 마감한 다음 날 09:00 매도" if t.mode == "VWMA" else _kell_how(t) if t.mode in ("KELL_D", "KELL_M") else _ha_how(t) if t.mode in ("HA_D", "HA_M") else f"손절·익절 없음, {TRUST_HOLD}거래일 뒤 09:00 매도" if t.mode == "보유일" else "손절·익절 없음, 종가가 20일선 아래면 다음 날 09:00 매도" if t.mode == "추세" else _next_day_how(NEXT_DAY_TP.get(t.kind, RETEST_TP), t.stop, t.kind) if t.mode == "다음날" else "손절 없음, 15:19 정리" if not s.stop else f"손절 {s.stop:,.0f}원 ({s.stop / price - 1:+.1%})")
+
+    def _plan(self, t: Trade, s: Signal, price: Optional[float]) -> Optional[str]:
+        """R1 대응 계획 한 줄 (손절가·익절·보유 규칙·추가 매수). 만들다 실패하면 None → 안 삼."""
+        try:
+            if not price:
+                return None
+            hold = self._how(t, s, price)
+            tp = (f"+{BIGCAP_TARGET:.0%} 전부" if t.mode == "목표" else f"+{HALF_TP:.0%} 절반" if t.mode == "반반"
+                  else f"+{TRAIL_START:.0%} 뒤 고점 −{TRAIL_GAP:.0%} 트레일링" if t.mode == "추적" else "")
+            if t.mode == "다음날":
+                tp_v = NEXT_DAY_TP.get(t.kind, RETEST_TP)
+                tp = f"+{UP_HALF_TP:.0%} 절반" if t.kind == UP_KIND and UP_HALF_TP else f"+{tp_v:.0%}" if tp_v is not None else ""
+            tp_r, extra = hold_manage.hold_plan_extra(t.mode, t.kind == TREND_KIND, paper=True)
+            if extra != "없음":
+                hold = f"{hold} · {extra}"
+            add = "🪃 나머지 1/2 (C·D2 신호)" if t.kind == CRASH_KIND else ("−20% 에 한 번 같은 수량(R6)" if t.mode in HOLD_MODES else "없음")
+            return hold_manage.plan_text(t.stop if t.mode != "추적" else float(price) * (1 - STRONG_STOP), ", ".join(x for x in (tp, tp_r) if x), hold, add)
+        except Exception:
+            logging.exception("R1 대응 계획 만들기 실패 %s", t.name)
+            return None
 
     # ------------------------------------------------------------ 보유·매도
     def tick(self, now: datetime, force: bool = False) -> None:
@@ -651,30 +695,34 @@ class PaperTrader:
             fx = getattr(self, "fractal", None)
             if t.date < self.today and fx is not None and t.code in fx.below_vwma:
                 return self._sell(now, t, "전날 종가 VWMA100 아래 마감 — 시초 매도")
-            return
+            return self._hold_manage(now, t, sess)            # 원래 규칙으로 안 팔면 산 뒤 관리 R3·R2 (아래도 같음)
         if t.mode in ("HA_D", "HA_M"):                       # 🕯 하이킨아시: 색 매도(일봉 09:00·30분봉 봉 끝) → 손절 S → +2R 절반 익절, 15:19 정리 없음
-            return self._ha_watch(now, t)
+            before = (t.status, t.part_qty)
+            self._ha_watch(now, t)
+            if (t.status, t.part_qty) == before:             # 이번 확인에 팔지 않았을 때만
+                self._hold_manage(now, t, sess)
+            return
         if t.mode == "KELL_D":                                # 📈 켈 수축 일봉: 장중 손절·익절·15:19 정리 없음 — 전날 정규장 종가 < 돌파선 또는 < EMA20 이면 09:00 매도
             why = self.kell_d_exit.get(t.id) if t.date < self.today else None
             if why:
                 return self._sell(now, t, why)
-            return
+            return self._hold_manage(now, t, sess)
         if t.mode == "KELL_M":                                # 📈 켈 수축 30분: 30분봉이 끝날 때 종가 < 돌파선 또는 < EMA20 이면 매도, 15:19 정리 없이 밤을 넘김
             km = self.kell_m
             why = km.exits.get(t.id) if km is not None else None
             if why:
                 return self._sell(now, t, why)
-            return
+            return self._hold_manage(now, t, sess)
         if t.mode == "보유일":                                # 📅 자사주 신탁: 손절·익절·15:19 정리 없음 — 매수일 뒤 5거래일째 09:00 매도
             held = sum(1 for k in range(1, (self.today - t.date).days + 1) if is_trading(t.date + timedelta(days=k)))
             if held >= TRUST_HOLD:
                 return self._sell(now, t, f"{TRUST_HOLD}거래일 보유 뒤 09:00 매도")
-            return
+            return self._hold_manage(now, t, sess)
         if t.mode == "추세":                                  # ⑦ 손절·익절·15:19 정리 없음 — 전날 종가 20일선 이탈 때만 09:00 매도
             brk = self.trend_exit.get(t.code) if t.date < self.today else None
             if brk:
                 return self._sell(now, t, f"20일선 이탈 ({brk[0]:%m-%d} 종가 {brk[1]:,.0f} < 20일선 {brk[2]:,.0f}) — 시초 매도")
-            return
+            return self._hold_manage(now, t, sess)            # R3 → R5 → R2 → R4
         if t.date < self.today or t.mode == "이월":
             if t.kind in OVERNIGHT_VIRTUAL and sess != "real":   # 🌙 애프터장 가상 매수는 다음 날 09:00 정규장 시세로 판다
                 return
@@ -751,6 +799,126 @@ class PaperTrader:
             return None
         buy_minute = t.buy_ts.replace(second=0, microsecond=0)
         return pullback_exit(bars, buy_minute) if t.mode == "눌림" else big_red_exit(bars, buy_minute)
+
+    # ------------------------------------------------------------ 산 뒤 관리 R2~R6 (며칠 들고 가는 매매, hold_manage.py)
+    def r2_codes(self) -> list[str]:
+        """R2 대상: 전날 이전에 산 며칠 보유 매매 (지금 들고 있는 것)."""
+        return [t.code for t in self.trades if t.status == "open" and t.mode in HOLD_MODES and t.date < self.today and t.buy_price]
+
+    def _realized_today(self, before: Optional[time] = None) -> float:
+        """오늘 실현 손익 (잔고 밖 가상 빼고, 전날 산 것도 오늘 팔았으면 포함). before 를 주면 그 시각 전에 판 것만."""
+        return sum(net_pnl(t) or 0 for t in self.trades
+                   if t.status == "closed" and not t.overflow and t.sell_ts and t.sell_ts.date() == self.today
+                   and (before is None or t.sell_ts.time() < before))
+
+    def _hold_manage(self, now: datetime, t: Trade, sess: str) -> None:
+        """원래 매도 규칙으로 안 팔린 며칠 보유 매매: R3 손실 한도(R6 추가) → R5 나눠 익절(7️⃣) → R2 다시 고르기 → R4 시간 손절(7️⃣).
+        하나가 실행되면 끝 (두 번 팔지 않음). 정규장 09:00~15:19 에만."""
+        if sess != "real" or not (SESSION_OPEN <= now.time() < LIQUIDATE_AT) or t.status != "open" or not t.buy_price or t.mode not in HOLD_MODES:
+            return
+        try:
+            q = self.market.quote(t.code, integrated=self._nxt(t))
+            if not q or not q.price:
+                return
+            price = float(q.price)
+            self.last_price[t.code] = q.price
+            st = hold_manage.get_state(self.store.conn, t.id)
+            base = st["base"] or t.buy_price
+            act = hold_manage.loss_action(price, base, st["added"], paper=True)
+            if act:                                                     # R3 (−20% → R6 추가 또는 매도, −33% → 전부 매도)
+                kind, why = act
+                if kind == "add":
+                    blocked = self._hold_add(now, t, price, st)
+                    if blocked is None:
+                        return
+                    why += f" — R6 추가 못 함({blocked}) → 매도"
+                return self._sell(now, t, why)
+            if t.mode == "추세":                                        # R5 +20·40·60% 에서 처음 수량의 1/4
+                lvl = hold_manage.tp_step(price, t.buy_price, st["steps"])
+                if lvl is not None:
+                    return self._sell_part(now, t, price, lvl, st)
+            r2 = self.r2.get(t.code) if t.date < self.today else None
+            if r2 is not None and st["r2_date"] != self.today:          # R2 하루 한 번
+                fails, text = r2
+                st["r2_date"] = self.today
+                hold_manage.put_state(self.store.conn, t.id, st)
+                logging.info("R2 다시 고르기 %s: %s · 지금가 %s / 매수가 %s", t.name, text, f"{price:,.0f}", f"{t.buy_price:,.0f}")
+                t.note = ((t.note + " · ") if t.note else "") + f"R2 {self.today:%m-%d} {text.split(' · ')[0]}"
+                save_trade(self.store, t)
+                if len(fails) >= hold_manage.R2_FAILS and price < t.buy_price:
+                    return self._sell(now, t, f"R2 다시 고르면 안 삼 — {', '.join(fails)} (지금가 {price:,.0f} < 매수가 {t.buy_price:,.0f})")
+            why = self.hold_time_exit.get(t.id) if t.mode == "추세" else None   # R4 (스캐너 시작 때 일봉으로 판정)
+            if why:
+                return self._sell(now, t, why)
+        except Exception:
+            logging.exception("산 뒤 관리 확인 실패 %s", t.name)
+
+    def _hold_add(self, now: datetime, t: Trade, price: float, st: dict) -> Optional[str]:
+        """R6 사냥꾼 추가 (모의만): 처음 수량만큼 한 번 더 삼. 산 뒤 None, 못 사면 이유 (그러면 R3 대로 매도).
+        🪃 _crash_add 처럼 가상은 기록만 합치고, 모의는 시장가 주문 뒤 수량·평균가를 추정으로 합침 (매도 때 _sell 이 계좌 보유로 다시 맞춤)."""
+        if self.halted:
+            return f"하루 손실 한도 -{self._loss_limit():.1%} 도달"
+        morning = self._realized_today(before=hold_manage.R7_AT)
+        if morning < 0:
+            return f"오늘 12:00 전 실현 손실 {morning:+,.0f}원 (R7)"
+        add = t.qty
+        if add < 1:
+            return "수량 없음"
+        if not t.virtual:
+            cash = self.mock.cash()
+            if cash < add * price:
+                return f"주문 가능 금액 부족 ({cash:,}원 < {add * price:,.0f}원)"
+            no = self.mock.market_order("buy", t.code, add)
+            logging.info("R6 모의 추가 매수 주문 %s %s주 (주문 %s)", t.name, add, no)
+        st["base"] = st["base"] or t.buy_price
+        st["added"] = True
+        hold_manage.put_state(self.store.conn, t.id, st)
+        t.buy_price = (t.buy_price * t.qty + price * add) / (t.qty + add)
+        t.qty += add
+        t.note = ((t.note + " · ") if t.note else "") + f"R6 추가 {now:%m-%d %H:%M} {add}주 × {price:,.0f} (첫 매수가 {st['base']:,.0f})"
+        save_trade(self.store, t)
+        self.notify(f"🟢 {'가상' if t.virtual else '모의'} 추가 매수 {t.name}({t.code}) {add}주 × 약 {price:,.0f}원 = {add * price / 1e4:,.0f}만 원 "
+                    f"(R6 −20% 사냥꾼 추가, 이제 {t.qty}주 · 평균 {t.buy_price:,.0f}원)\n"
+                    f"  [{t.kind}] 첫 매수가 {st['base']:,.0f}원 × 0.67 = {st['base'] * hold_manage.CUT_AT:,.0f}원 닿으면 전부 매도 (R3), 그 밖은 원래 매도 규칙")
+        return None
+
+    def _sell_part(self, now: datetime, t: Trade, price: float, lvl: float, st: dict) -> None:
+        """R5 1/4 익절 — 처음 수량(t.qty)의 1/4, 남은 수량이 2주 안 되거나 1/4 이 남은 전부면 전부 매도. 먼저 판 수량·평균가는 part_qty·part_price 에 쌓음."""
+        step = st["steps"] + 1
+        if t.virtual:
+            remaining = t.qty - (t.part_qty or 0)
+        else:
+            _, holdings = self.mock.account()
+            held = holdings.get(t.code)
+            if not held or not held[2]:
+                return
+            if (held[0] + (t.part_qty or 0), held[1]) != (t.qty, t.buy_price):   # R6 추가 등 체결 뒤 수량·평균가를 계좌에 맞춤
+                t.qty, t.buy_price = held[0] + (t.part_qty or 0), held[1]
+            remaining = min(held[0], held[2])
+        n, all_ = hold_manage.tp_qty(t.qty, remaining)
+        if all_:
+            st["steps"] = step
+            hold_manage.put_state(self.store.conn, t.id, st)
+            return self._sell(now, t, f"R5 +{lvl:.0%} 나눠 익절 {step}단계 — 남은 {remaining}주 전부")
+        px = float(price)
+        if not t.virtual:
+            try:
+                order_no = self.mock.market_order("sell", t.code, n)
+                px = self.mock.fill_price(order_no, t.code) or px
+            except Exception as exc:
+                logging.exception("R5 모의 1/4 매도 실패 %s", t.name)
+                self.notify(f"⚠️ 모의 1/4 익절 실패 {t.name}({t.code}) — 다음 확인 때 다시 시도\n  {exc}"[:300])
+                return
+        old = t.part_qty or 0
+        t.part_price = ((t.part_price or px) * old + px * n) / (old + n)
+        t.part_qty = old + n
+        st["steps"] = step
+        hold_manage.put_state(self.store.conn, t.id, st)
+        t.note = ((t.note + " · ") if t.note else "") + f"R5단계 {step} {now:%m-%d} {n}주 × {px:,.0f}"
+        save_trade(self.store, t)
+        logging.info("R5 %s 1/4 익절 %s단계 %s주 × %s", t.name, step, n, px)
+        self.notify(f"💰 {'가상' if t.virtual else '모의'} 1/4 익절 {t.name} {n}주 × {px:,.0f}원 ({px / t.buy_price - 1:+.1%}, R5 {step}단계 +{lvl:.0%}) — "
+                    f"나머지 {t.qty - t.part_qty}주는 다음 단계 또는 20일선 이탈 매도")
 
     # ------------------------------------------------------------ 🕯 하이킨아시 (모의만)
     def _ha_watch(self, now: datetime, t: Trade) -> None:

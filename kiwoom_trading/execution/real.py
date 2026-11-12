@@ -35,7 +35,7 @@ from kiwoom_trading.ingestion.collectors.daily_backfill import KiwoomDailyClient
 from kiwoom_trading.strategies.hong_limitup.live import HONG_KIND
 from kiwoom_trading.strategies.inverse.live import CODE as INVERSE_CODE, WEAK_KIND, WEAK_STOP, WEAK_TP
 from kiwoom_trading.common.krx import upper_limit
-from kiwoom_trading.execution import split_exit, strict_select
+from kiwoom_trading.execution import hold_manage, split_exit, strict_select
 from kiwoom_trading.strategies.cafe_leader.live import KIND as CAFE_KIND
 from kiwoom_trading.strategies.contra_close.live import KIND as CONTRA_KIND
 from kiwoom_trading.strategies.danswer.rebreak import KIND as REBREAK_KIND
@@ -69,6 +69,9 @@ PLAYS = {   # 종류 → (이름, 익절, 손절)
     REBREAK_KIND: ("🌙 종가 재돌파", None, None),
     TREND_KIND: ("7️⃣ 주도주 추세", None, None),         # 2026-10-30 사용자 '7번 매매를 실전으로' — 09:00 매수, 종가 20일선 이탈 다음 날 09:00 매도 (며칠~몇 주 보유)        # 2026-10-30 — 17~18시 NXT 애프터장에서 정규장 종가 위 매수, 다음 날 09:00 (1년 554건 +0.79%)
 }
+# 산 뒤 관리 R2~R5 대상 (hold_manage.py, 2026-11-13 사용자 '전부'): 매수일 뒤에도 들고 가는 실전 매매. 다른 실전 매매는 원래 규칙대로 다음 날 09:00 에 팔아 해당 없음.
+# 실전은 R6 추가 매수 없음 — R3 −20% 에 바로 매도.
+REAL_HOLD_KINDS = (TREND_KIND,)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS real_trades (    -- 🔴 실전 매매 (키움 실계좌)
@@ -242,6 +245,8 @@ class RealTrader:
         self.notify = notify or (lambda text: None)
         self.strict = strict_select.load_context(today)   # 당일 매매 엄격 선정 B안 (2026-10-30 사용자)
         self.trend_exit: dict = {}               # 7️⃣ 실전 보유 중 전날 종가 20일선 이탈 {code: (날짜, 종가, 20일선)} — run_intraday 가 넣어 줌
+        self.hold_time_exit: dict = {}           # R4 시간 손절 {real_trades.id: 사유} — run_intraday 가 스캐너 시작 때 넣어 줌
+        self.r2: dict = {}                       # R2 다시 고르기 {코드: (탈락 목록, 요약)} — HoldRecheck 가 09:10 판정 뒤 넣어 줌
         self.kinds = tuple(k for k in (kinds or PLAYS) if k not in REAL_OFF)
         self.conn.execute(SCHEMA)
         for t in self.actives():                # 들고 있는 종목은 팔 수 있게 허용
@@ -296,6 +301,15 @@ class RealTrader:
 
     def bought_today(self) -> bool:
         return bool(self.today_kinds())
+
+    def realized_today(self) -> float:
+        """오늘 판(청산 끝난) 실전 매매의 실현 손익 합계 — R7 금액 제한."""
+        return self.conn.execute("SELECT coalesce(sum(pnl), 0) FROM real_trades WHERE status = 'closed' AND CAST(sell_ts AS DATE) = ?",
+                                 [self.today]).fetchone()[0] or 0
+
+    def r2_codes(self) -> list[str]:
+        """R2 대상: 전날 이전에 산 며칠 보유 실전 매매 (7️⃣)."""
+        return [t[2] for t in self.actives() if t[4] in REAL_HOLD_KINDS and t[1] < self.today and t[9] == "open"]
 
     def _set(self, tid: str, **kw) -> None:
         cols = ", ".join(f"{k} = ?" for k in kw)
@@ -361,9 +375,26 @@ class RealTrader:
                 cap = upper_limit(base) if base else (int(s.level) if s.kind == HONG_KIND and s.level else 0)
                 if cap and limit > cap:   # 지정가가 상한가를 넘으면 주문 거부 (2026-11-09 박셀바이오 📕 4,845 > 상한가 4,835 → 5회 거부) → 상한가로
                     limit = cap
-                qty = min(max(1, int(PER_STOCK // limit)), int(cash // limit))   # 3만 원 안에서 여러 주, 1주가 3만 원 넘으면 1주 — 예수금 안에서
+                factor = 1.0   # 실전은 금액 배수가 없음 — R7(12:00 뒤 오늘 실현 손실이면 1배 넘게 안 키움) 장치만 둠 (2026-11-13)
+                try:
+                    factor, why7 = hold_manage.r7_cap(factor, now, self.realized_today())
+                    if why7:
+                        logging.info("실전 %s: %s", name, why7)
+                except Exception:
+                    logging.exception("실전 R7 확인 실패 %s", name)
+                qty = min(max(1, int(PER_STOCK * factor // limit)), int(cash // limit))   # 3만 원 안에서 여러 주, 1주가 3만 원 넘으면 1주 — 예수금 안에서
                 if qty < 1:
                     skipped.append(f"{name}({code}) [{label} {s.ts:%H:%M}] 1주 {limit:,.0f}원 > 예수금 {cash:,.0f}원 · 포착: {(s.reason or '')[:120]}")
+                    continue
+                how = (split_exit.plan_text(s.kind, price, s.stop if s.kind == RECLAIM_KIND else None)
+                       if s.kind in split_exit.KINDS else
+                       "손절·익절 없이 종가가 20일선 아래로 마감한 다음 날 09:00 매도 (며칠~몇 주 보유)" if s.kind == TREND_KIND else
+                       f"익절 +{tp:.0%} / 손절 −{sl:.0%}, 못 닿으면 다음 날 09:00 매도" if tp
+                       else f"장중 익절 없이 다음 날 09:00 시가 매도 (−{sl:.0%} 손절)" if sl
+                       else "익절·손절 없이 다음 날 09:00 시가 매도")
+                plan = self._plan(s.kind, price, s, how)   # R1: 사기 전에 대응 계획, 못 만들면 안 삼
+                if not plan:
+                    skipped.append(f"{name}({code}) [{label} {s.ts:%H:%M}] 대응 계획 없음 (R1)")
                     continue
                 self.client.allowed.add(code)
                 try:
@@ -376,16 +407,12 @@ class RealTrader:
                     qty = int(m.group(1))
                     no = self.client.limit_buy(code, qty, limit, exchange="NXT" if nxt else "KRX")
                 tid = f"{now:%Y%m%d}-{code}"
-                self.conn.execute("""INSERT OR REPLACE INTO real_trades (id, date, code, name, kind, qty, buy_order_no, buy_ts, buy_price, status, stop_px)
-                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ordered', ?)""",
+                self.conn.execute("""INSERT OR REPLACE INTO real_trades (id, date, code, name, kind, qty, buy_order_no, buy_ts, buy_price, status, stop_px, note)
+                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ordered', ?, ?)""",
                                   [tid, self.today, code, name, s.kind, qty, no, now.replace(tzinfo=None), price,
-                                   float(s.stop) if s.kind == RECLAIM_KIND and s.stop else None])
-                how = (split_exit.plan_text(s.kind, price, s.stop if s.kind == RECLAIM_KIND else None)
-                       if s.kind in split_exit.KINDS else
-                       "손절·익절 없이 종가가 20일선 아래로 마감한 다음 날 09:00 매도 (며칠~몇 주 보유)" if s.kind == TREND_KIND else
-                       f"익절 +{tp:.0%} / 손절 −{sl:.0%}, 못 닿으면 다음 날 09:00 매도" if tp
-                       else f"장중 익절 없이 다음 날 09:00 시가 매도 (−{sl:.0%} 손절)" if sl
-                       else "익절·손절 없이 다음 날 09:00 시가 매도")
+                                   float(s.stop) if s.kind == RECLAIM_KIND and s.stop else None, plan])
+                if s.kind in REAL_HOLD_KINDS:
+                    how += " · " + hold_manage.hold_plan_extra("추세", True, paper=False)[1]
                 self.notify(f"🔴 실전 매수 주문 {name}({code}) {qty}주 × 약 {price:,.0f}원 = {qty * price:,.0f}원 (지정가 {limit:,}원{', NXT 애프터마켓' if nxt else ''}, 주문 {no})\n"
                             f"  [{label} {s.ts:%H:%M}] {how}"
                             + "".join(f"\n{l}" for l in (getattr(s, "reason", "") or "").splitlines() if "🇺🇸" in l))
@@ -397,6 +424,70 @@ class RealTrader:
                 self.notify(f"⚠️ 실전 매수 실패 {name}({code}) [{label}] — {exc}"[:500])
                 continue
         self._skip_note(skipped, "")
+
+    def _plan(self, kind: str, price: float, s, how: str) -> Optional[str]:
+        """R1 대응 계획 한 줄 (real_trades.note 에 남김). 만들다 실패하면 None → 안 삼."""
+        try:
+            _, tp, sl = PLAYS[kind]
+            stop = float(s.stop) if kind == RECLAIM_KIND and s.stop else price * (1 - sl) if sl else None
+            tp_txt = (f"+{UP_HALF_TP:.0%} 절반" if kind == UP_KIND and UP_HALF_TP else f"+{tp:.0%}" if tp else "")
+            hold, add = how, "없음"
+            if kind in REAL_HOLD_KINDS:
+                tp_r, extra = hold_manage.hold_plan_extra("추세", True, paper=False)
+                tp_txt, hold = ", ".join(x for x in (tp_txt, tp_r) if x), f"{how} · {extra}"
+            return hold_manage.plan_text(stop, tp_txt, hold, add)
+        except Exception:
+            logging.exception("실전 R1 대응 계획 만들기 실패 %s", kind)
+            return None
+
+    def _hold_reason(self, now: datetime, tid: str, code: str, name: str, d: date, qty: int, part: int,
+                     buy_price: float, label: str) -> Optional[str]:
+        """며칠 보유 실전 매매(7️⃣)를 원래 규칙으로 안 팔 때: R3 −20% 매도 → R5 1/4 익절(여기서 직접 주문) → R2 다시 고르기 → R4 시간 손절.
+        팔 이유를 돌려주면 _tick_one 이 남은 수량 전부 매도. 실전은 R6 추가 매수 없음."""
+        if not (OPEN <= now.time() < LAST):
+            return None
+        try:
+            q = self.market.quote(code, integrated=False)
+            if not q or not q.price:
+                return None
+            price = float(q.price)
+            key = f"real:{tid}"
+            st = hold_manage.get_state(self.conn, key)
+            act = hold_manage.loss_action(price, buy_price, False, paper=False)
+            if act:
+                return act[1] + " — 실전은 추가 매수 없이 매도"
+            lvl = hold_manage.tp_step(price, buy_price, st["steps"])
+            if lvl is not None:
+                step = st["steps"] + 1
+                held = self.client.holding_qty(code)
+                remaining = min(qty - part, held)
+                n, all_ = hold_manage.tp_qty(qty, remaining)
+                st["steps"] = step
+                if all_:
+                    hold_manage.put_state(self.conn, key, st)
+                    return f"R5 +{lvl:.0%} 나눠 익절 {step}단계 — 남은 {remaining}주 전부"
+                self.client.allowed.add(code)
+                no = self.client.market_order("sell", code, n)   # 실패하면 예외 → 단계 저장 안 함, 다음 확인 때 다시
+                hold_manage.put_state(self.conn, key, st)
+                ppx = self.conn.execute("SELECT part_price FROM real_trades WHERE id = ?", [tid]).fetchone()[0]
+                avg = ((ppx or price) * part + price * n) / (part + n)
+                note = self.conn.execute("SELECT coalesce(note, '') FROM real_trades WHERE id = ?", [tid]).fetchone()[0]
+                self._set(tid, part_qty=part + n, part_price=avg, note=(note + " · " if note else "") + f"R5단계 {step} {now:%m-%d} {n}주 × {price:,.0f}")
+                self.notify(f"🔴 실전 1/4 익절 {name}({code}) {n}주 × 약 {price:,.0f}원 ({price / buy_price - 1:+.1%}, R5 {step}단계, 주문 {no}) [{label}]")
+                logging.info("실전 R5 1/4 익절 %s %s단계 %s주", name, step, n)
+                return None
+            r2 = self.r2.get(code) if d < self.today else None
+            if r2 is not None and st["r2_date"] != self.today:
+                fails, text = r2
+                st["r2_date"] = self.today
+                hold_manage.put_state(self.conn, key, st)
+                logging.info("실전 R2 다시 고르기 %s: %s · 지금가 %s / 매수가 %s", name, text, f"{price:,.0f}", f"{buy_price:,.0f}")
+                if len(fails) >= hold_manage.R2_FAILS and price < buy_price:
+                    return f"R2 다시 고르면 안 삼 — {', '.join(fails)} (지금가 {price:,.0f} < 매수가 {buy_price:,.0f})"
+            return self.hold_time_exit.get(tid)
+        except Exception:
+            logging.exception("실전 산 뒤 관리 확인 실패 %s", name)
+            return None
 
     # ------------------------------------------------------------ 체결 확인·매도
     def tick(self, now: datetime) -> None:
@@ -464,11 +555,14 @@ class RealTrader:
             if not (OPEN <= tm < CLOSE):
                 return
             reason = None
-            if d < self.today and kind == TREND_KIND:   # 7️⃣ 은 전날 종가가 20일선 아래일 때만 09:00 매도, 아니면 계속 들고 감 (손절·익절 없음)
-                brk = self.trend_exit.get(code)
-                if not brk:
-                    return
-                reason = f"20일선 이탈 ({brk[0]:%m-%d} 종가 {brk[1]:,.0f} < 20일선 {brk[2]:,.0f}) — 시초 매도"
+            if kind in REAL_HOLD_KINDS:   # 7️⃣ 은 전날 종가가 20일선 아래일 때만 09:00 매도, 아니면 산 뒤 관리 R3 → R5 → R2 → R4 (원래 손절·익절 없음)
+                brk = self.trend_exit.get(code) if d < self.today else None
+                if brk:
+                    reason = f"20일선 이탈 ({brk[0]:%m-%d} 종가 {brk[1]:,.0f} < 20일선 {brk[2]:,.0f}) — 시초 매도"
+                else:
+                    reason = self._hold_reason(now, tid, code, name, d, qty, part, buy_price, label)
+                    if not reason:
+                        return
             elif d < self.today:
                 reason = "다음 날 시초 매도"
             elif tm < LAST:
