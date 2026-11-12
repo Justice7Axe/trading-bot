@@ -60,6 +60,7 @@ from kiwoom_trading.strategies.fractal_cycle.live import KIND as FRACTAL_KIND, F
 from kiwoom_trading.strategies.crash_rebound.live import ADD_TAG as CRASH_ADD, HALF_TAG as CRASH_HALF, KIND as CRASH_KIND, CrashContext, CrashWatcher
 from kiwoom_trading.strategies.kell_squeeze.live import (KIND_D as KELL_D_KIND, KIND_M as KELL_M_KIND, KellDailyContext, KellDailyWatcher,
                                                          KellMinuteWatcher, KellSelector)
+from kiwoom_trading.strategies.heikin_ashi.live import KIND_D as HA_D_KIND, KIND_M as HA_M_KIND, HaDailyContext, HaDailyWatcher, HaMinuteWatcher
 from kiwoom_trading.strategies.trend_hold.live import KIND as TREND_KIND, TrendHoldWatcher, load_trend_picks, ma_breaks
 from kiwoom_trading.execution.small import SmallAccount
 from kiwoom_trading.execution import real as real_inverse
@@ -384,7 +385,7 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
              surges: Optional[SurgeGroups] = None, burger: Optional[HamburgerWatcher] = None,
              weak_inv: Optional[WeakInverseWatcher] = None, rebreak: Optional[ClosingRebreakWatcher] = None,
              danswer: Optional[DanswerCloseWatcher] = None, small: Optional[SmallAccount] = None, real: Optional["real_inverse.RealTrader"] = None,
-             reclaim=None, center=None, fractal=None, align=None, kell_d=None, kell_m=None, crash=None, elog=None, dwatch: Optional[DanswerWatch] = None, strong: Optional[StrongListWatcher] = None,
+             reclaim=None, center=None, fractal=None, align=None, kell_d=None, kell_m=None, ha_d=None, ha_m=None, crash=None, elog=None, dwatch: Optional[DanswerWatch] = None, strong: Optional[StrongListWatcher] = None,
              books: tuple = (), leader_fn=None) -> int:
     now = datetime.now(KST)
     if real is not None:
@@ -517,7 +518,7 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
         trader.lead_now = lead_now
     own_msgs: list[str] = []  # 자기 알림 문구가 있는 판정(🧭·🌙)은 🎯 묶음과 따로 보낸다
     own_ids: set = set()
-    for label, w in (("인버스 갭", inverse), ("장 초 공통점", nine), ("대형주 수급", bigcap), ("주도주 모양", leader), ("눌림 돌파", pullback), ("햄버거", burger), ("역행 강세 종가", contra), ("저항 돌파", retest), ("상승장 장 초", up), ("막힌 고점 돌파", block), ("주도주 신고가", newhigh), ("주도주 추세", trend), ("약세장 인버스", weak_inv), ("[디앤서] 종가 재돌파", rebreak), ("[디앤서] 종가 체크리스트", danswer), ("시가 탈환", reclaim), ("중심선", center), ("애프터 정배열", align), ("프랙탈 바닥", fractal), ("켈 수축 일봉", kell_d), ("켈 수축 30분", kell_m), ("급락 반등", crash)):
+    for label, w in (("인버스 갭", inverse), ("장 초 공통점", nine), ("대형주 수급", bigcap), ("주도주 모양", leader), ("눌림 돌파", pullback), ("햄버거", burger), ("역행 강세 종가", contra), ("저항 돌파", retest), ("상승장 장 초", up), ("막힌 고점 돌파", block), ("주도주 신고가", newhigh), ("주도주 추세", trend), ("약세장 인버스", weak_inv), ("[디앤서] 종가 재돌파", rebreak), ("[디앤서] 종가 체크리스트", danswer), ("시가 탈환", reclaim), ("중심선", center), ("애프터 정배열", align), ("프랙탈 바닥", fractal), ("켈 수축 일봉", kell_d), ("켈 수축 30분", kell_m), ("하이킨아시 일봉", ha_d), ("하이킨아시 30분", ha_m), ("급락 반등", crash)):
         if w is not None and hasattr(w, "cache"):
             w.cache = shared_bars
         if w is None:
@@ -538,7 +539,7 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
             except Exception:
                 logging.exception("%s 알림 문구 실패", label)
         signals += found
-    if watcher is not None or leader is not None or pullback is not None or nine is not None or bigcap is not None or inverse is not None or burger is not None or contra is not None or retest is not None or up is not None or block is not None or newhigh is not None or trend is not None or weak_inv is not None or rebreak is not None or danswer is not None or center is not None or align is not None or fractal is not None or kell_d is not None or kell_m is not None or crash is not None:
+    if watcher is not None or leader is not None or pullback is not None or nine is not None or bigcap is not None or inverse is not None or burger is not None or contra is not None or retest is not None or up is not None or block is not None or newhigh is not None or trend is not None or weak_inv is not None or rebreak is not None or danswer is not None or center is not None or align is not None or fractal is not None or kell_d is not None or kell_m is not None or ha_d is not None or ha_m is not None or crash is not None:
         if signals:
             logging.info("매수 신호 %s건: %s", len(signals), ", ".join(f"{n} {s.kind} {s.ts:%H:%M}" for _, n, _, s in signals))
             flow = watcher.flow if watcher is not None else {}
@@ -731,6 +732,7 @@ def main() -> int:
             logging.exception("프랙탈 사이클 준비 실패")
     kell_d: Optional[KellDailyWatcher] = None
     kell_m: Optional[KellMinuteWatcher] = None
+    ksel: Optional[KellSelector] = None
     if not args.once:
         try:   # 📈 켈 수축 돌파 (2026-11-12 사용자, 모의만): 일봉 15:15 한 번 · 30분봉 봉 끝날 때마다, 선별(대금 100억·100위·수급·테마·09:10 시황) 통과만
             ksel = KellSelector(now.date())
@@ -746,6 +748,24 @@ def main() -> int:
                 logging.info("켈 수축 일봉 보유 %s건 중 오늘 09:00 매도 %s", len(kheld), ", ".join(trader.kell_d_exit.values()) or "없음")
         except Exception:
             logging.exception("켈 수축 돌파 준비 실패")
+    ha_d: Optional[HaDailyWatcher] = None
+    ha_m: Optional[HaMinuteWatcher] = None
+    if not args.once:
+        try:   # 🕯 하이킨아시 (2026-11-12 사용자 '둘다', 모의만): 켈과 같은 선별 + 프로그램 순매수 안 줄어듦, 더블 하이킨아시 보라→주황 매수
+            hsel = ksel if ksel is not None else KellSelector(now.date())
+            hctx = HaDailyContext(now.date())
+            hkeys = store.signal_keys(now.date())
+            ha_d = HaDailyWatcher(hctx, hsel, market, store=store, done={c for c, _, k in hkeys if k == HA_D_KIND}, regime=regime)
+            ha_m = HaMinuteWatcher(client, now.date(), hsel, src=kell_m, store=store, regime=regime,   # 30분봉 캐시는 켈 30분과 같이 씀
+                                   done={(c, ts) for c, ts, k in hkeys if k == HA_M_KIND},
+                                   held=(lambda: [(t.id, t.code) for t in trader.active() if t.kind == HA_M_KIND]) if trader is not None else None)
+            if trader is not None:
+                hheld = {t.id: t.code for t in trader.active() if t.kind == HA_D_KIND and t.date < now.date()}
+                trader.ha_d_exit = hctx.exits(hheld) if hheld else {}
+                trader.ha_m = ha_m
+                logging.info("하이킨아시 일봉 보유 %s건 중 오늘 09:00 매도 %s", len(hheld), ", ".join(trader.ha_d_exit.values()) or "없음")
+        except Exception:
+            logging.exception("하이킨아시 준비 실패")
     crash: Optional[CrashWatcher] = None
     if not args.once:
         try:   # 🪃 급락 반등 (2026-11-12 사용자 '1번', 모의만): 대금 30위·시총 2천억·수급·프로그램·테마 선별 → 1분봉 VWMA100 아래 급락 뒤 A·C·D 신호
@@ -928,7 +948,7 @@ def main() -> int:
                         logging.info("오늘 데이터가 없음(휴장일로 판단, 기준일 %s) → 종료", probe[0].as_of)
                         break
                 run_once(screener, market, store, telegram=not args.no_telegram, watcher=watcher, early=early, investors=investors,
-                         themes=themes, board=board, trader=trader, leader=leader, pullback=pullback, nine=nine, bigcap=bigcap, regime=regime, inverse=inverse, contra=contra, retest=retest, up=up, block=block, newhigh=newhigh, trend=trend, surges=surges, burger=burger, weak_inv=weak_inv, rebreak=rebreak, danswer=danswer, small=small, real=real, reclaim=reclaim, center=center, align=align, fractal=fractal, kell_d=kell_d, kell_m=kell_m, crash=crash, elog=elog, dwatch=dwatch, strong=strong, books=books, leader_fn=cafe.leaders if cafe is not None else None)
+                         themes=themes, board=board, trader=trader, leader=leader, pullback=pullback, nine=nine, bigcap=bigcap, regime=regime, inverse=inverse, contra=contra, retest=retest, up=up, block=block, newhigh=newhigh, trend=trend, surges=surges, burger=burger, weak_inv=weak_inv, rebreak=rebreak, danswer=danswer, small=small, real=real, reclaim=reclaim, center=center, align=align, fractal=fractal, kell_d=kell_d, kell_m=kell_m, ha_d=ha_d, ha_m=ha_m, crash=crash, elog=elog, dwatch=dwatch, strong=strong, books=books, leader_fn=cafe.leaders if cafe is not None else None)
             except Exception:
                 logging.exception("스캔 실패 (다음 주기에 재시도)")
             if args.once:
