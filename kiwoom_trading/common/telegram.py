@@ -6,6 +6,7 @@
 """
 import logging
 import os
+import re
 import time
 
 import requests
@@ -36,6 +37,24 @@ def is_configured() -> bool:
     return bool(os.getenv("TELEGRAM_TOKEN") and os.getenv("TELEGRAM_CHAT_ID"))
 
 
+_BARE_AMP = re.compile(r"&(?!(?:amp|lt|gt|quot|#\d+|#x[0-9a-fA-F]+);)")
+_ALLOWED_TAG = re.compile(r"</?(?:pre|b|i|u|s|code|a)(?:\s[^>]*)?>")
+
+
+def _escape_html_text(text: str) -> str:
+    """HTML 모드에서 허용 태그(<pre>·<b> 등)는 두고, 그 밖의 '<'·'>'·'&' 를 바꿈.
+    (2026-11-12 15:40 모의 마감 리포트가 '종가 24,100 < 50일선' 같은 사유 문구의 '<' 때문에 400 실패)"""
+    def esc(part: str) -> str:   # 이미 바꿔 둔 글(&lt; 등, daily_summary 의 html.escape)은 그대로
+        return _BARE_AMP.sub("&amp;", part).replace("<", "&lt;").replace(">", "&gt;")
+    out, pos = [], 0
+    for m in _ALLOWED_TAG.finditer(text):
+        out.append(esc(text[pos:m.start()]))
+        out.append(m.group(0))
+        pos = m.end()
+    out.append(esc(text[pos:]))
+    return "".join(out)
+
+
 def send_telegram_message(text: str, parse_mode: str = "") -> bool:
     """전송 성공 시 True. 설정이 없거나 실패하면 로그만 남기고 False (수집 작업을 멈추지 않는다).
 
@@ -49,6 +68,8 @@ def send_telegram_message(text: str, parse_mode: str = "") -> bool:
         return False
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
+    if parse_mode.upper() == "HTML":
+        text = _escape_html_text(text)
     for chunk in (_split(text) if not parse_mode else [text]):
         for attempt in range(1, SEND_RETRIES + 1):        # 일시적 네트워크 오류로 알림이 사라지지 않도록 재시도
             try:
