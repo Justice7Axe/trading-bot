@@ -196,8 +196,8 @@ class KellSelector:
         logging.info("켈 선별 준비: 주식 %s종목, 전날 수급 %s종목 (%s), 테마 소속 %s종목, 신규 상장 %s종목 뺌",
                      len(self.names), len(self.flow), fday, len(self.themes), len(self.listed))
 
-    def pick(self, value_top: list, limit: int = MAX_CANDS) -> list:
-        """value_top(RankItem) → 선별 ①②③⑥ 통과 종목 (대금 순, 최대 limit)."""
+    def pick(self, value_top: list, limit: int = MAX_CANDS, theme: bool = True) -> list:
+        """value_top(RankItem) → 선별 ①②③⑥ 통과 종목 (대금 순, 최대 limit). theme=False 면 ③ 테마 형성 조건 없이 ①②⑥ 만 (📏 변동성 돌파)."""
         stocks = [x for x in sorted(value_top, key=lambda x: -(x.trade_value or 0))
                   if x.code in self.names and not is_etf(x.name) and _plain(x.code, x.name)]
         up = {x.code for x in value_top if (x.change_rate or 0) >= THEME_UP}
@@ -212,7 +212,7 @@ class KellSelector:
             f, i = self.flow.get(x.code, (None, None))
             if f is not None and i is not None and f < 0 and i < 0:
                 continue
-            if not any(count.get(th, 0) >= THEME_MIN for th in self.themes.get(x.code, ())):
+            if theme and not any(count.get(th, 0) >= THEME_MIN for th in self.themes.get(x.code, ())):
                 continue
             if x.code in self.listed:
                 continue
