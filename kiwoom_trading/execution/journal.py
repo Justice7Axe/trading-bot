@@ -6,6 +6,8 @@
   3. 실전 못 산 신호: 이유 + 그날 종가(또는 다음 날 시가) → 놓친 기회인지 피한 손실인지
   4. 🟢 모의 · 🟣 가상: 매매별 묶음 요약 + 눈에 띄는 것
   5. 📝 복기 칸: 손절·직접 매도(규칙대로였으면)·손절선 1% 안 접근·놓친 +5%·연속 손실
+     + 실전 손실 건마다 원인 한 줄 (2026-11-14 사용자 승인): 매도 사유 · 산 뒤 최고 수익률 · 신호가 대비 체결가 · 매수일 시장 분위기 · 보유 시간
+       — 기록(real_trades·buy_signals·1분봉·market_regime)에서 계산되는 사실만, 추측 원인은 안 씀.
 출력: docs/journal/YYYY-MM-DD.md (문서 문체), 텔레그램은 짧은 요약 + 실전 차트 사진.
 주간: --week → docs/journal/week-YYYY-Www.md.
 
@@ -222,6 +224,9 @@ class RealItem:
     rule_alt: str = ""
     rule_alt_pnl: Optional[float] = None
     chart: str = ""
+    buy_date: Optional[date] = None
+    sig_price: Optional[float] = None    # 신호가 (real_trades.signal_price, 없으면 buy_signals 가격)
+    cause: str = ""                      # 실전 손실 원인 한 줄
 
     @property
     def ret(self) -> Optional[float]:
@@ -477,6 +482,62 @@ def _chart(ctx: Ctx, it: RealItem, d: date) -> str:
     return path
 
 
+def _sell_kind(reason: str) -> str:
+    r = reason or ""
+    if "직접" in r or "사용자" in r:
+        return "사용자 직접 매도"
+    if r.startswith("VWAP"):
+        return "VWAP 이탈 매도"
+    if "손절" in r:
+        return "손절 매도"
+    if "시초" in r or "09:00" in r or "다음 날" in r:
+        return "다음 날 09:00 매도"
+    return f"매도 사유 '{r}'" if r else "매도 사유 기록 없음"
+
+
+def _hold_text(a: Optional[datetime], b: Optional[datetime]) -> str:
+    if not a or not b or b < a:
+        return ""
+    m = int((b - a).total_seconds() // 60)
+    if m < 60:
+        return f"보유 {m}분"
+    if m < 24 * 60:
+        return f"보유 {m // 60}시간 {m % 60}분"
+    return f"보유 {m // (24 * 60)}일 {m % (24 * 60) // 60}시간"
+
+
+def _loss_cause(ctx: Ctx, it: RealItem, d: date, regime_today: str) -> str:
+    """실전 손실 한 건의 원인 한 줄 — 기록에서 계산되는 사실만 (추측 금지)."""
+    parts = [_sell_kind(it.reason)]
+    bdate = it.buy_date or (it.buy_ts.date() if it.buy_ts else d)
+    extra = ctx.q(ctx.scr, "SELECT signal_price, peak FROM real_trades WHERE code = ? AND date = ? AND status = 'closed'", [it.code, bdate])
+    sig_col, peak_col = (extra[0] if extra else (None, None))
+    # 산 뒤 최고 — 실전이 1분마다 본 최고값(peak)과 매수~매도 사이 1분봉 고가 중 큰 값
+    hi = peak_col or None
+    if it.buy_ts and it.sell_ts:
+        day = it.buy_ts.date()
+        while day <= it.sell_ts.date():
+            _, rows = ctx.bars(it.code, day, "KRX")
+            hs = [r[2] for r in rows if r[0] + timedelta(minutes=1) > it.buy_ts and r[0] < it.sell_ts and r[2]]
+            if hs:
+                hi = max(hi or 0, max(hs))
+            day += timedelta(days=1)
+    if hi and it.buy_price:
+        pr = hi / it.buy_price - 1
+        parts.append(f"산 뒤 한 번도 +1% 못 감 (최고 {_pct(pr)})" if pr < 0.01 else f"산 뒤 최고 {_pct(pr)} 까지 갔다가 손실로 끝남")
+    sp = sig_col or it.sig_price
+    if sp and it.buy_price:
+        g = it.buy_price / sp - 1
+        parts.append(f"신호가 {sp:,.0f}보다 {g:.1%} 비싸게 삼" if g >= 0.001 else f"신호가 {sp:,.0f}보다 {-g:.1%} 싸게 삼" if g <= -0.001
+                     else "신호가와 거의 같은 값에 삼")
+    rg = regime_today if bdate == d else _market(ctx, bdate, _log_lines(bdate))[0]   # 매수일 판정 (표 → 그날 로그)
+    parts.append(f"매수일 시장 분위기 {rg}" if rg else "매수일 시장 분위기 기록 없음")
+    h = _hold_text(it.buy_ts, it.sell_ts)
+    if h:
+        parts.append(h)
+    return "원인: " + " · ".join(parts)
+
+
 def _real(ctx: Ctx, d: date, charts: bool) -> tuple[list[RealItem], list[str]]:
     rows = ctx.q(ctx.scr, """SELECT code, coalesce(name, code), kind, qty, buy_ts, buy_price, sell_ts, sell_price, coalesce(reason, ''), pnl, status, date
                              FROM real_trades
@@ -490,7 +551,8 @@ def _real(ctx: Ctx, d: date, charts: bool) -> tuple[list[RealItem], list[str]]:
         sold_today = bool(sts and sts.date() == d)
         it.role = ("그날 사고 그날 팜" if bdate == d and sold_today else "그날 판 것 (전에 산 것)" if sold_today
                    else "그날 사서 들고 넘김" if bdate == d else "들고 있음")
-        it.signal, _ = _signal_reason(ctx, bdate, code, it.kind, bts)
+        it.signal, it.sig_price = _signal_reason(ctx, bdate, code, it.kind, bts)
+        it.buy_date = bdate
         if sold_today:
             it.flag = _rule_flag(why)
         else:
@@ -653,10 +715,18 @@ def collect(ctx: Ctx, d: date, charts: bool = True) -> DayJournal:
         j.missed = _missed(ctx, d, logs, bought)
     j.groups = _groups(ctx, d)
     j.streaks = _streaks(ctx, d)
+    for it in j.real:   # 그날 끝난 실전 손실 건마다 원인 한 줄
+        if it.sell_ts and it.sell_ts.date() == d and it.pnl is not None and it.pnl < 0:
+            try:
+                it.cause = _loss_cause(ctx, it, d, j.regime)
+            except Exception:
+                logging.exception("일지 손실 원인 계산 실패 %s", it.code)
     # 복기 칸
     rv = []
     for it in j.real:
         tag = f"{it.name} [{label(it.kind)}]"
+        if it.cause:
+            rv.append(f"실전 손실 {tag} {_pct(it.ret)} {_won(it.pnl)} — {it.cause}")
         if it.flag.startswith("손절"):
             rv.append(f"손절: {tag} {_pct(it.ret)} {_won(it.pnl)} — 매수 때 시장 '{j.regime or '판정 없음'}', 포착 이유가 맞았는지 차트로 확인할 것")
         if "직접 매도" in it.flag:
@@ -712,6 +782,8 @@ def render_md(j: DayJournal) -> str:
         else:
             L.append(f"- 매도: {it.sell_ts:%m-%d %H:%M} · {_px(it.sell_price)}원 · 이유: {it.reason}")
             L.append(f"- 손익: {_won(it.pnl)} ({_pct(it.ret)}, 비용 포함)")
+            if it.cause:
+                L.append(f"- {it.cause}")
             L.append(f"- 규칙대로였나: {it.flag}")
         if it.rule_alt:
             L.append(f"- {it.rule_alt}")
@@ -786,6 +858,8 @@ def render_tg(j: DayJournal) -> str:
                     L.append(f"  {head} {it.name} [{label(it.kind)}] {_px(it.buy_price)} 보유{ev}")
                 else:
                     L.append(f"  {head} {it.name} [{label(it.kind)}] {_px(it.buy_price)} → {_px(it.sell_price)} {_pct(it.ret)} {_won(it.pnl)} — {it.reason}")
+                if it.cause:
+                    L.append("     " + it.cause)
                 if it.rule_alt:
                     L.append("     " + it.rule_alt.split(" · 직접")[0])
         if j.missed:

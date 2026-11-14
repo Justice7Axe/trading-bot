@@ -1,4 +1,11 @@
-"""🔴 실전 매매 — 키움 실계좌로 6️⃣ 주도주 신고가 · 2️⃣ 저항 돌파 · 5️⃣ 약세장 인버스 · 📕 홍인기 상한가 풀림 중 그날 먼저 온 신호를 산다
+"""🔴 실전 매매 — 2026-11-16 부터 실전 매수는 1️⃣ 상승장 장 초 · 🪜 애프터 정배열 두 매매만 (REAL_ON, 2026-11-14 사용자 승인 '개선점과 앞으로 할 일').
+  나머지(6️⃣ 주도주 신고가·📕 상한가 풀림·5️⃣ 약세장 인버스·4️⃣ 역행 강세 종가·2️⃣ 저항 돌파·🌙 종가 재돌파·7️⃣ 주도주 추세 등)는 실전에서 끄고 모의·가상은 그대로.
+  🪜 애프터 정배열 실전 = 모의와 같은 규칙: 익절 없음 · 손절 매수(체결)가 −3% · 못 닿으면 다음 날 09:00 시가 매도 (+ 공통 VWAP 5봉 이탈 매도).
+  실전 자동 멈춤 (auto_stop_check): 2026-11-16 이후 실전 끝난 매매 5연패 또는 이번 주(월~금) 실현 손익 ≤ 시드의 −3% → 새 매수 멈춤,
+  보유 종목 매도는 계속, 다시 켜는 건 사용자가 텔레그램 '실전 재개' (자동 재개 없음).
+  체결 차이 기록: real_trades.signal_price·order_price·fill_price·ask1·bid1 / sell_signal_price·sell_order_price·sell_ask1·sell_bid1.
+
+(아래는 지난 기록) 키움 실계좌로 6️⃣ 주도주 신고가 · 2️⃣ 저항 돌파 · 5️⃣ 약세장 인버스 · 📕 홍인기 상한가 풀림 중 그날 먼저 온 신호를 산다
 (2026-10-25 사용자: "10만 원 시드로 실전 매매, 월요일부터" → 처음엔 5️⃣ 만, 같은 날 "인버스 타이밍이 아니면 다른 기법도 — 6️⃣2️⃣5️⃣ 로 넓혀라".
  2026-10-27 사용자: "홍인기 매매를 바로 실전에 — 6️⃣2️⃣5️⃣ 와 하나로 합침" → 📕 를 네 번째 신호로 추가,
  같은 날 "1 을 실전에도 매매 적용" → 1️⃣ 상승장 장 초(강한 상승장 09:10 대금 40위·시가 위)를 다섯 번째로 추가 — 익절 없음 · −4% · 다음 날 09:00).
@@ -28,13 +35,14 @@
 import logging
 import os
 import re
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from typing import Any, Callable, Optional
 
 from kiwoom_trading.ingestion.collectors.daily_backfill import KiwoomDailyClient, _to_int
 from kiwoom_trading.strategies.hong_limitup.live import HONG_KIND
 from kiwoom_trading.strategies.inverse.live import CODE as INVERSE_CODE, WEAK_KIND, WEAK_STOP, WEAK_TP
 from kiwoom_trading.common.krx import upper_limit
+from kiwoom_trading.strategies.after_align.live import KIND as ALIGN_KIND, STOP as ALIGN_STOP
 from kiwoom_trading.execution import hold_manage, split_exit, strict_select
 from kiwoom_trading.strategies.cafe_leader.live import KIND as CAFE_KIND
 from kiwoom_trading.strategies.contra_close.live import KIND as CONTRA_KIND
@@ -53,7 +61,7 @@ PER_STOCK = 30_000            # 2026-10-30 사용자: 종목당 3만 원 안에�
 LIMIT_UP = 0.01               # 2026-10-28 사용자 '증거금 문제 해소': 매수는 시장가(상한가 기준 증거금) 대신 현재가 +1% 지정가
 FILL_WAIT_SEC = 120           # 지정가가 2분 안에 다 안 채워지면 남은 수량 취소
 ETF_CODES = {INVERSE_CODE}
-REAL_OFF = (RECLAIM_KIND, CAFE_KIND, TREND_KIND, UP_KIND)   # 1️⃣: 2026-11-10 사용자 '모두 다 해줘' — 실전이 살 수 있는 5.5만 원 이하 종목은 모의에서도 9건 −0.82%(모의 수익은 5.5만↑ 29건에서 나옴), 실전 3건 −903원 → 모의에서만. # 4️⃣ 는 같은 날 계좌 시뮬로 다시 넣음(아래 2026-10-31 '조건 없이 복귀'). 7️⃣: 2026-10-31 사용자 '추천대로' — 4️⃣ 최고 5일 빼면 −·최근 3달 −0.61%, 7️⃣ 45건뿐·앞뒤 검증 못 함·모의 계좌 계산 −171만 → 모의에서만 쌓음 (6️⃣📕5️⃣ 핵심, 1️⃣2️⃣🌙 보조). # ☕: 2026-10-30 사용자 '☕는 실전에서 빼자' — 94% 가 1주 3만 원 넘어 1주씩만 사고 절반 익절이 안 됨, 1년 실전 새 규칙 −3~−9만 (research/strict_select). 🔁: 2026-10-29 사용자 '권장대로': 🔁 은 09:0x 에 먼저 와 하루 1칸을 차지 → 6️⃣·📕 를 못 삼 (1년 시드 10만 34만 → 562만, research/account_alloc)
+# REAL_OFF = PLAYS 정의 뒤에서 REAL_ON 으로 계산 (2026-11-14). 옛 기록: (RECLAIM_KIND, CAFE_KIND, TREND_KIND, UP_KIND)   # 1️⃣: 2026-11-10 사용자 '모두 다 해줘' — 실전이 살 수 있는 5.5만 원 이하 종목은 모의에서도 9건 −0.82%(모의 수익은 5.5만↑ 29건에서 나옴), 실전 3건 −903원 → 모의에서만. # 4️⃣ 는 같은 날 계좌 시뮬로 다시 넣음(아래 2026-10-31 '조건 없이 복귀'). 7️⃣: 2026-10-31 사용자 '추천대로' — 4️⃣ 최고 5일 빼면 −·최근 3달 −0.61%, 7️⃣ 45건뿐·앞뒤 검증 못 함·모의 계좌 계산 −171만 → 모의에서만 쌓음 (6️⃣📕5️⃣ 핵심, 1️⃣2️⃣🌙 보조). # ☕: 2026-10-30 사용자 '☕는 실전에서 빼자' — 94% 가 1주 3만 원 넘어 1주씩만 사고 절반 익절이 안 됨, 1년 실전 새 규칙 −3~−9만 (research/strict_select). 🔁: 2026-10-29 사용자 '권장대로': 🔁 은 09:0x 에 먼저 와 하루 1칸을 차지 → 6️⃣·📕 를 못 삼 (1년 시드 10만 34만 → 562만, research/account_alloc)
 OPEN, LAST, CLOSE = time(9, 0), time(15, 19), time(15, 30)
 AFTER_BUY = (time(17, 0), time(18, 0))   # 🌙 종가 재돌파: NXT 애프터마켓 매수 시간 (2026-10-30 사용자 '키움 실계좌로 NXT 애프터장 거래가 된다, 종목별로 다름')
 NXT_KINDS = (REBREAK_KIND,)               # NXT 거래소로 주문하는 매매 (지정가 = 통합 현재가 +1%), 다음 날 09:00 매도는 KRX
@@ -67,8 +75,13 @@ PLAYS = {   # 종류 → (이름, 익절, 손절)
     CAFE_KIND: ("☕ 카페 테마 대장", None, None),
     CONTRA_KIND: ("4️⃣ 역행 강세 종가", None, None),   # 2026-10-31 실전 복귀·고가 부근 조건 없이 (10만 1년: 4️⃣ 없음 153만 · 고가 부근만 161만 · 조건 없이 312만, research/early_rise/apply 계좌 시뮬)      # 2026-10-30 사용자 '제안대로' — 강한 하락장 15:15~15:19 매수, 다음 날 09:00 (1년 422건 +0.85%)
     REBREAK_KIND: ("🌙 종가 재돌파", None, None),
+    ALIGN_KIND: ("🪜 애프터 정배열", None, ALIGN_STOP),   # 2026-11-14 사용자 승인 — 모의와 같은 규칙(익절 없음·−3%·다음 날 09:00)으로 실전에 추가
     TREND_KIND: ("7️⃣ 주도주 추세", None, None),         # 2026-10-30 사용자 '7번 매매를 실전으로' — 09:00 매수, 종가 20일선 이탈 다음 날 09:00 매도 (며칠~몇 주 보유)        # 2026-10-30 — 17~18시 NXT 애프터장에서 정규장 종가 위 매수, 다음 날 09:00 (1년 554건 +0.79%)
 }
+# 실전 매수는 이 두 매매만 (2026-11-14 사용자 승인, 11-16 부터): 1️⃣ 상승장 장 초(기존 실전 조건 그대로 — 외인·기관 둘 다 매도 제외 등) · 🪜 애프터 정배열.
+# 나머지는 실전에서 끄고 모의·가상은 그대로. 실전 실적 12건 3승 9패·7연패 뒤 범위를 좁혀 새로 시작.
+REAL_ON = (UP_KIND, ALIGN_KIND)
+REAL_OFF = tuple(k for k in PLAYS if k not in REAL_ON)
 # 산 뒤 관리 R2~R5 대상 (hold_manage.py, 2026-11-13 사용자 '전부'): 매수일 뒤에도 들고 가는 실전 매매. 다른 실전 매매는 원래 규칙대로 다음 날 09:00 에 팔아 해당 없음.
 # 실전은 R6 추가 매수 없음 — R3 −20% 에 바로 매도.
 REAL_HOLD_KINDS = (TREND_KIND,)
@@ -98,6 +111,15 @@ ALTER TABLE real_trades ADD COLUMN IF NOT EXISTS part_qty INTEGER;     -- 1️�
 ALTER TABLE real_trades ADD COLUMN IF NOT EXISTS part_price DOUBLE;
 ALTER TABLE real_trades ADD COLUMN IF NOT EXISTS peak DOUBLE;           -- 매수 뒤 가장 높은 값 (트레일링용)
 ALTER TABLE real_trades ADD COLUMN IF NOT EXISTS stop_px DOUBLE;        -- 🔁 처음 손절가 (흔들기 저가)
+ALTER TABLE real_trades ADD COLUMN IF NOT EXISTS signal_price DOUBLE;   -- 매수 신호가 (신호가 난 봉·판정 가격)
+ALTER TABLE real_trades ADD COLUMN IF NOT EXISTS order_price DOUBLE;    -- 매수 주문가 (지정가 = 현재가 +1% 호가 올림, 상한가로 자름)
+ALTER TABLE real_trades ADD COLUMN IF NOT EXISTS fill_price DOUBLE;     -- 실제 평균 체결가 (체결 확인 뒤 buy_price 도 같은 값으로 바뀜, 주문 때 buy_price 는 주문 순간 현재가)
+ALTER TABLE real_trades ADD COLUMN IF NOT EXISTS ask1 DOUBLE;           -- 매수 주문 순간 매도 1호가 (ka10004 sel_fpr_bid, 조회 실패면 NULL)
+ALTER TABLE real_trades ADD COLUMN IF NOT EXISTS bid1 DOUBLE;           -- 매수 주문 순간 매수 1호가 (ka10004 buy_fpr_bid)
+ALTER TABLE real_trades ADD COLUMN IF NOT EXISTS sell_signal_price DOUBLE;   -- 매도 판단 순간 현재가 (손절·VWAP·다음 날 09:00 등 매도하기로 한 때의 KRX 현재가)
+ALTER TABLE real_trades ADD COLUMN IF NOT EXISTS sell_order_price DOUBLE;    -- 매도 주문가 — 지금 매도는 전부 시장가라 NULL (지정가 매도가 생기면 그 값)
+ALTER TABLE real_trades ADD COLUMN IF NOT EXISTS sell_ask1 DOUBLE;      -- 매도 주문 순간 매도 1호가
+ALTER TABLE real_trades ADD COLUMN IF NOT EXISTS sell_bid1 DOUBLE;      -- 매도 주문 순간 매수 1호가 (시장가 매도는 보통 여기 근처에서 체결)
 CREATE TABLE IF NOT EXISTS real_liquidations (date DATE, code VARCHAR, name VARCHAR, qty INTEGER, order_no VARCHAR, ts TIMESTAMP, note VARCHAR);
 """
 
@@ -190,6 +212,12 @@ class RealClient(KiwoomDailyClient):
     def fill_price(self, order_no: str, code: str) -> Optional[float]:
         return self.fill_info(order_no, code)[1]
 
+    def best_quote(self, code: str) -> tuple[Optional[float], Optional[float]]:
+        """(매도 1호가, 매수 1호가) — ka10004 주식호가요청 (KRX). 체결 차이 기록용, 값이 없으면 None."""
+        payload, _, _ = self._post("/api/dostk/mrkcond", "ka10004", {"stk_cd": code})
+        ask, bid = (abs(_to_int(payload.get(k)) or 0) for k in ("sel_fpr_bid", "buy_fpr_bid"))
+        return (float(ask) if ask else None), (float(bid) if bid else None)
+
 
 # 당일 차트 흐름 대응 — VWAP 이탈 매도 (2026-11-11 사용자 '당일 수급·차트 흐름에 바로 대응' → '가장 추천하는 기준으로 넣어줘').
 # 그날 산 실전 종목이 매수 10분 뒤부터 1분봉 종가가 그날 VWAP(거래량 가중 평균가) 아래로 5개 연속 마감하면 시장가 매도.
@@ -222,14 +250,86 @@ PAUSE_SCHEMA = "CREATE TABLE IF NOT EXISTS real_pause (date DATE PRIMARY KEY, pa
 def set_pause(conn, day: date, paused: bool) -> None:
     conn.execute(PAUSE_SCHEMA)
     conn.execute("INSERT OR REPLACE INTO real_pause VALUES (?, ?, ?)", [day, paused, datetime.now()])
+    if not paused:   # '실전 재개' = 자동 멈춤도 풂 (연패·주간 손실은 이때부터 다시 셈)
+        clear_auto_stop(conn, datetime.now())
 
 
 def is_paused(conn, day: date) -> bool:
+    """그날 '실전 쉼' 이거나 실전 자동 멈춤이 걸려 있으면 True."""
     try:   # 읽기 전용 사본(screener_snapshot)에서도 쓰므로 표를 만들지 않음 — 없으면 켜짐
         r = conn.execute("SELECT paused FROM real_pause WHERE date = ?", [day]).fetchone()
     except Exception:
-        return False
-    return bool(r and r[0])
+        r = None
+    return bool(r and r[0]) or bool(auto_stop_active(conn))
+
+
+# 실전 자동 멈춤 (2026-11-14 사용자 승인 '개선점과 앞으로 할 일' 2번).
+# 실전 끝난 매매가 5연패가 되거나 이번 주(월~금) 실전 실현 손익이 시드의 −3% 이하가 되면(먼저 오는 것) 새 매수를 멈추고 텔레그램 한 번.
+# 보유 종목 매도는 계속. 판정은 매도 체결 확정 때와 스캐너 시작 때. 주가 바뀌어도 자동으로 다시 켜지 않음 — 사용자가 '실전 재개'.
+# 셈은 AUTO_START(이 규칙 시작일, 범위를 1️⃣·🪜 로 바꾼 새 출발) 이후 실전 매매부터, '실전 재개' 뒤에는 그 시각부터 다시.
+AUTO_START = date(2026, 11, 16)
+AUTO_STREAK = 5
+AUTO_WEEK_LOSS = 0.03
+AUTO_SCHEMA = "CREATE TABLE IF NOT EXISTS real_auto_stop (ts TIMESTAMP, reason VARCHAR, cleared_ts TIMESTAMP)"
+
+
+def auto_stop_active(conn) -> Optional[str]:
+    """걸려 있는 자동 멈춤 사유 (없으면 None). 표가 없어도(읽기 전용 사본) None."""
+    try:
+        r = conn.execute("SELECT reason FROM real_auto_stop WHERE cleared_ts IS NULL ORDER BY ts DESC LIMIT 1").fetchone()
+    except Exception:
+        return None
+    return r[0] if r else None
+
+
+def clear_auto_stop(conn, now: datetime) -> None:
+    conn.execute(AUTO_SCHEMA)
+    conn.execute("UPDATE real_auto_stop SET cleared_ts = ? WHERE cleared_ts IS NULL", [now.replace(tzinfo=None)])
+
+
+def auto_stop_reason(conn, today: date) -> Optional[str]:
+    """지금 멈춰야 하면 사유 문장('머리 — 설명'), 아니면 None. 기록만 읽음."""
+    conn.execute(AUTO_SCHEMA)
+    base = datetime.combine(AUTO_START, time(0, 0))
+    last = conn.execute("SELECT max(cleared_ts) FROM real_auto_stop").fetchone()[0]
+    if last and last > base:
+        base = last
+    rows = conn.execute("""SELECT pnl, sell_ts FROM real_trades WHERE status = 'closed' AND pnl IS NOT NULL AND sell_ts >= ? AND date >= ?
+                           ORDER BY sell_ts""", [base, AUTO_START]).fetchall()   # 11-16 전에 산 것은 새 출발 셈에 안 넣음
+    n = 0
+    for p, _ in reversed(rows):
+        if p > 0:
+            break
+        n += 1
+    if n >= AUTO_STREAK:
+        return f"{n}연패 — 실전 끝난 매매가 {n}번 연속 손실(합 {sum(p for p, _ in rows[-n:]):+,.0f}원)"
+    week0 = datetime.combine(today - timedelta(days=today.weekday()), time(0, 0))
+    wk = [p for p, ts in rows if ts >= week0]
+    week = sum(wk)
+    if wk and week <= -SEED * AUTO_WEEK_LOSS:
+        return (f"이번 주 손실 {week:+,.0f}원 — 이번 주 실전 실현 손익 {week:+,.0f}원이 "
+                f"시드 {SEED:,}원의 −{AUTO_WEEK_LOSS:.0%}({-SEED * AUTO_WEEK_LOSS:+,.0f}원) 이하")
+    return None
+
+
+def auto_stop_check(conn, today: date, now: datetime, notify: Optional[Callable[[str], Any]] = None) -> Optional[str]:
+    """자동 멈춤 판정. 이미 걸려 있으면 오늘도 '쉼'으로 맞추고(알림 없음) 사유를 돌려줌, 새로 걸리면 기록·쉼·알림 한 번."""
+    cur = auto_stop_active(conn)
+    if not cur:
+        cur = auto_stop_reason(conn, today)
+        if not cur:
+            return None
+        conn.execute("INSERT INTO real_auto_stop VALUES (?, ?, NULL)", [now.replace(tzinfo=None), cur])
+        logging.warning("실전 자동 멈춤: %s", cur)
+        if notify:
+            head, _, body = cur.partition(" — ")
+            notify(f"🛑 실전 자동 멈춤 — {head}\n"
+                   f"{body}이라 실전 새 매수를 멈춤.\n"
+                   f"들고 있는 종목의 손절·매도는 그대로 함. 주가 바뀌어도 저절로 다시 켜지지 않음.\n"
+                   f"다시 사려면 텔레그램에 '실전 재개' 라고 보내 주세요.")
+    conn.execute(PAUSE_SCHEMA)
+    conn.execute("INSERT OR REPLACE INTO real_pause VALUES (?, ?, ?)", [today, True, datetime.now()])
+    return cur
 
 
 def build_real_client() -> RealClient:
@@ -252,6 +352,14 @@ class RealTrader:
         for t in self.actives():                # 들고 있는 종목은 팔 수 있게 허용
             if hasattr(self.client, "allowed"):
                 self.client.allowed.add(t[2])
+        self.check_auto_stop(datetime.now())    # 스캐너 시작 때 자동 멈춤 판정 (이미 걸려 있으면 오늘도 쉼)
+
+    def check_auto_stop(self, now: datetime) -> Optional[str]:
+        try:
+            return auto_stop_check(self.conn, self.today, now, self.notify)
+        except Exception:
+            logging.exception("실전 자동 멈춤 판정 실패")
+            return None
 
     # ------------------------------------------------------------ 한 번 전체 정리
     def liquidate_once(self, now: datetime) -> None:
@@ -330,8 +438,10 @@ class RealTrader:
             return
         if is_paused(self.conn, self.today):
             names = ", ".join(f"{n}[{PLAYS[s.kind][0]}]" for _, n, _, s in cands)
-            logging.info("실전 쉼 — 새 매수 안 함: %s", names)
-            self.notify(f"⏸ 실전 쉼 중이라 안 삼: {names}\n(다시 사려면 '실전 재개')"[:400])
+            auto = auto_stop_active(self.conn)
+            logging.info("실전 쉼 — 새 매수 안 함%s: %s", f" (자동 멈춤: {auto})" if auto else "", names)
+            self.notify(((f"🛑 실전 자동 멈춤 중이라 안 삼 ({auto.split(' — ')[0]}): {names}" if auto else f"⏸ 실전 쉼 중이라 안 삼: {names}")
+                         + "\n(다시 사려면 '실전 재개')")[:400])
             return
         held = self.actives()   # 2026-10-30 사용자 '하루 1종목 규칙을 없애줘' — 같은 종목만 안 겹치게, 예수금 안에서 신호마다 산다
         bought = {c for (c,) in self.conn.execute("SELECT code FROM real_trades WHERE date = ? AND status <> 'failed'", [self.today]).fetchall()}
@@ -397,6 +507,7 @@ class RealTrader:
                     skipped.append(f"{name}({code}) [{label} {s.ts:%H:%M}] 대응 계획 없음 (R1)")
                     continue
                 self.client.allowed.add(code)
+                ask1, bid1 = self._book(code)   # 체결 차이 기록용 주문 순간 1호가 (실패해도 삼)
                 try:
                     no = self.client.limit_buy(code, qty, limit, exchange="NXT" if nxt else "KRX")
                 except RuntimeError as exc:   # '[2000](855056:매수증거금이 부족합니다. 46주 매수가능)' (2026-10-26)
@@ -407,10 +518,12 @@ class RealTrader:
                     qty = int(m.group(1))
                     no = self.client.limit_buy(code, qty, limit, exchange="NXT" if nxt else "KRX")
                 tid = f"{now:%Y%m%d}-{code}"
-                self.conn.execute("""INSERT OR REPLACE INTO real_trades (id, date, code, name, kind, qty, buy_order_no, buy_ts, buy_price, status, stop_px, note)
-                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ordered', ?, ?)""",
+                self.conn.execute("""INSERT OR REPLACE INTO real_trades (id, date, code, name, kind, qty, buy_order_no, buy_ts, buy_price, status, stop_px, note,
+                                                                         signal_price, order_price, ask1, bid1)
+                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ordered', ?, ?, ?, ?, ?, ?)""",
                                   [tid, self.today, code, name, s.kind, qty, no, now.replace(tzinfo=None), price,
-                                   float(s.stop) if s.kind == RECLAIM_KIND and s.stop else None, plan])
+                                   float(s.stop) if s.kind == RECLAIM_KIND and s.stop else None, plan,
+                                   float(s.price) if s.price else None, float(limit), ask1, bid1])
                 if s.kind in REAL_HOLD_KINDS:
                     how += " · " + hold_manage.hold_plan_extra("추세", True, paper=False)[1]
                 self.notify(f"🔴 실전 매수 주문 {name}({code}) {qty}주 × 약 {price:,.0f}원 = {qty * price:,.0f}원 (지정가 {limit:,}원{', NXT 애프터마켓' if nxt else ''}, 주문 {no})\n"
@@ -424,6 +537,17 @@ class RealTrader:
                 self.notify(f"⚠️ 실전 매수 실패 {name}({code}) [{label}] — {exc}"[:500])
                 continue
         self._skip_note(skipped, "")
+
+    def _book(self, code: str) -> tuple[Optional[float], Optional[float]]:
+        """주문 순간 (매도 1호가, 매수 1호가) — 기록용이라 실패하면 (None, None)."""
+        fn = getattr(self.client, "best_quote", None)
+        if fn is None:
+            return None, None
+        try:
+            return fn(code)
+        except Exception:
+            logging.warning("실전 호가 조회 실패 %s (체결 차이 기록만 빠짐)", code)
+            return None, None
 
     def _plan(self, kind: str, price: float, s, how: str) -> Optional[str]:
         """R1 대응 계획 한 줄 (real_trades.note 에 남김). 만들다 실패하면 None → 안 삼."""
@@ -535,7 +659,7 @@ class RealTrader:
                     qty = got
                     self._set(tid, qty=got)
                 if px and got >= qty:
-                    self._set(tid, buy_price=px, status="open")
+                    self._set(tid, buy_price=px, fill_price=px, peak=px, status="open")
                     self.notify(f"🔴 실전 매수 체결 {name} {qty}주 × {px:,.0f}원 [{label}] — "
                                 + (f"손절 {px * (1 - sl):,.0f}원" if sl else "손절 없음")
                                 + (f" · {px * (1 + UP_HALF_TP):,.0f}원에 절반 익절, 남은 절반 트레일링" if kind == UP_KIND and UP_HALF_TP
@@ -551,10 +675,12 @@ class RealTrader:
                     self._set(tid, sell_price=px, pnl=pnl, status="closed")
                     self.notify(f"🔴 실전 매도 체결 {name} {qty}주 × {px:,.0f}원 [{label}] — {px / buy_price - 1 - _cost(code):+.2%} ({pnl:+,.0f}원)\n"
                                 f"  실전 누적 실현 손익 {self.realized():+,.0f}원")
+                    self.check_auto_stop(now)   # 매도 체결 확정 때 자동 멈춤 판정 (5연패 · 이번 주 −3%)
                 return
             if not (OPEN <= tm < CLOSE):
                 return
             reason = None
+            q = None
             if kind in REAL_HOLD_KINDS:   # 7️⃣ 은 전날 종가가 20일선 아래일 때만 09:00 매도, 아니면 산 뒤 관리 R3 → R5 → R2 → R4 (원래 손절·익절 없음)
                 brk = self.trend_exit.get(code) if d < self.today else None
                 if brk:
@@ -585,6 +711,9 @@ class RealTrader:
                     elif act == "sell":
                         reason = why
                 elif q and q.price:
+                    if float(q.price) > (peak or buy_price):   # 산 뒤 가장 높은 값 — 일지 손실 원인('산 뒤 최고 수익률')용
+                        peak = float(q.price)
+                        self._set(tid, peak=peak)
                     if sl and q.price <= buy_price * (1 - sl):
                         reason = f"손절 −{sl:.0%}"
                     elif tp and q.price >= buy_price * (1 + tp):
@@ -599,8 +728,16 @@ class RealTrader:
                     self.notify(f"⚠️ 실전 매도 못 함 {name}({code}) — 계좌 매도 가능 {held}주 (직접 확인 필요)")
                     return
                 self.client.allowed.add(code)
+                sig_px = None   # 매도 판단 순간 현재가 (체결 차이 기록용)
+                try:
+                    sq = q if (q is not None and getattr(q, "price", None)) else self.market.quote(code, integrated=False)
+                    sig_px = float(sq.price) if sq and sq.price else None
+                except Exception:
+                    logging.warning("실전 매도 판단가 조회 실패 %s", code)
+                sask, sbid = self._book(code)
                 no = self.client.market_order("sell", code, sell_qty)
-                self._set(tid, sell_order_no=no, sell_ts=now.replace(tzinfo=None), reason=reason, status="selling", qty=sell_qty + part)
+                self._set(tid, sell_order_no=no, sell_ts=now.replace(tzinfo=None), reason=reason, status="selling", qty=sell_qty + part,
+                          sell_signal_price=sig_px, sell_order_price=None, sell_ask1=sask, sell_bid1=sbid)
                 self.notify(f"🔴 실전 매도 주문 {name}({code}) {sell_qty}주 [{label}] — {reason} (주문 {no})")
                 logging.info("실전 매도 주문 %s %s주 %s", name, sell_qty, reason)
         except Exception as exc:
