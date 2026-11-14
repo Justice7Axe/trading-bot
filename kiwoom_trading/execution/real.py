@@ -43,6 +43,7 @@ from kiwoom_trading.strategies.hong_limitup.live import HONG_KIND
 from kiwoom_trading.strategies.inverse.live import CODE as INVERSE_CODE, WEAK_KIND, WEAK_STOP, WEAK_TP
 from kiwoom_trading.common.krx import upper_limit
 from kiwoom_trading.strategies.after_align.live import KIND as ALIGN_KIND, STOP as ALIGN_STOP
+from kiwoom_trading.common import cafe_universe
 from kiwoom_trading.execution import hold_manage, split_exit, strict_select
 from kiwoom_trading.strategies.cafe_leader.live import KIND as CAFE_KIND
 from kiwoom_trading.strategies.contra_close.live import KIND as CONTRA_KIND
@@ -458,6 +459,10 @@ class RealTrader:
                 continue
             fx = getattr(self, "fractal", None)
             why = fx.skip_reason(code) if fx is not None and s.kind not in (WEAK_KIND,) else None   # 🌀 무너지는 국면 (2026-11-11 사용자 '3')
+            if why:
+                logging.info("실전 안 삼 %s [%s]: %s", name, label, why)
+                continue
+            why = cafe_universe.skip_reason(code, s.kind, self.today)   # ☕ 하승훈 카페 핫이슈 종목만 (2026-11-13 사용자, 쿠키 없음·실패·0종목이면 제한 안 함, 인버스 예외)
             if why:
                 logging.info("실전 안 삼 %s [%s]: %s", name, label, why)
                 continue

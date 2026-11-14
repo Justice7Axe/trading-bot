@@ -11,6 +11,7 @@
 - 완료 후 65기법 일일 리포트(오늘 포착/매수 대기/보유 중/오늘 청산)와 주도주 스크리너 다음날 관심 종목을
   텔레그램으로 전송, 실패 시 실패 알림 전송.
 - 마지막으로 그날 매수 신호 감시 종목의 1분봉(KRX/통합/NXT)을 minute_ohlcv 에 저장.
+- 금요일엔 맨 끝에 20:30 까지 기다렸다 전체 매매일지·성과 보고서(full_report, HTML+PDF)를 만들어 텔레그램 파일로 보냄.
 - 로그: data/logs/daily_update_YYYYMMDD.log
 """
 import argparse
@@ -18,7 +19,7 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, time as dtime
 
 import duckdb
 
@@ -32,6 +33,8 @@ from kiwoom_trading.common.telegram import send_telegram_message
 from kiwoom_trading.ingestion.collectors import daily_krx_update
 
 
+WEEKLY_REPORT_DAY = 4                 # 금요일 (월=0)
+WEEKLY_REPORT_AT = dtime(20, 30)      # 일봉 업데이트 흐름이 일찍 끝나면 이 시각까지 기다렸다 만듦
 LOCK_RETRY_COUNT = 6
 LOCK_RETRY_WAIT_SECONDS = 300
 
@@ -192,6 +195,22 @@ def main() -> int:
             store.close()
     except Exception:
         logging.exception("모의투자 복기 실패")
+
+    # 📚 매주 금요일 20:30 전체 매매일지·성과 보고서 (HTML + PDF, '이번 주' 절 포함) → 텔레그램 파일 (2026-11-14 사용자 승인)
+    if now.weekday() == WEEKLY_REPORT_DAY:
+        try:
+            wait = (datetime.combine(now.date(), WEEKLY_REPORT_AT, tzinfo=now.tzinfo) - datetime.now(KST)).total_seconds()
+            if wait > 0:
+                logging.info("주간 보고서: %s 까지 %.0f분 기다림", WEEKLY_REPORT_AT.strftime("%H:%M"), wait / 60)
+                time.sleep(wait)
+            from kiwoom_trading.execution.full_report import run_weekly
+
+            paths = run_weekly(now.date(), send=not args.no_telegram)
+            logging.info("주간 보고서: %s", ", ".join(paths))
+        except Exception:
+            logging.exception("주간 보고서 생성·전송 실패")
+            if not args.no_telegram:
+                send_telegram_message("⚠️ 주간 매매일지·성과 보고서 만들기 실패 — 로그 확인 (daily_update 로그)")
     return 0
 
 

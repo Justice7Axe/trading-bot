@@ -10,6 +10,9 @@
     python -m kiwoom_trading.execution.full_report                       # data/reports/trading_journal_YYYYMMDD.html·.pdf
     python -m kiwoom_trading.execution.full_report --root D:/Ellie/trading --out D:/Ellie/trading/data/reports
     python -m kiwoom_trading.execution.full_report --no-pdf              # HTML 만
+    python -m kiwoom_trading.execution.full_report --send                # 만들고 텔레그램 파일 전송
+매주 금요일 20:30 run_daily_update 끝에서 run_weekly() 가 만들어 보냄. 맨 앞 '이번 주' 절 = 이번 주 성과·실전 체결 차이·시드 증액 기준.
+🧾 매매별 가상 계좌(paper_account_trades)는 다른 구분과 겹치므로 따로 셈 (Data.accounts).
 PDF 는 같은 내용을 인쇄용 HTML 로 만든 뒤 Edge(또는 Chrome) headless --print-to-pdf 로 찍음. 쪽 나누기와 쪽마다 약어 풀이는 인쇄용 HTML 안의 스크립트가 함.
 """
 from __future__ import annotations
@@ -49,7 +52,15 @@ ABBR = {
     "VWAP": "Volume Weighted Average Price, 거래량 가중 평균 가격",
     "ETF": "Exchange Traded Fund, 상장지수펀드",
 }
-SECTION_LABEL = {"real": "🔴 실전", "paper": "🟢 모의", "virtual": "🟣 가상"}
+SECTION_LABEL = {"real": "🔴 실전", "paper": "🟢 모의", "virtual": "🟣 가상", "account": "🧾 매매별 가상 계좌"}
+ACCOUNT_TABLE = "paper_account_trades"     # paper.ACCOUNT_TABLE
+ACCOUNT_START = 1_000_000                  # paper.ACCOUNT_START (매매 하나당)
+try:
+    from kiwoom_trading.execution.paper import ACCOUNT_START, ACCOUNT_TABLE   # noqa: F811
+except Exception:
+    pass
+FILL_COLS = ("signal_price", "order_price", "fill_price", "ask1", "bid1", "sell_signal_price", "sell_order_price")
+SEED_WEEKS, SEED_PF, SEED_N = 4, 1.2, 30   # 시드 증액 기준: 최근 4주 연속 주간 PF 1.2 이상 · 4주 합계 30건 이상 (2026-11-14 사용자)
 EDGE_PATHS = (r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe", r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
               r"C:\Program Files\Google\Chrome\Application\chrome.exe")
 
@@ -150,6 +161,9 @@ class Data:
         J.DATA = os.path.join(root, "data")          # 일지 모듈의 자료 위치를 이 보고서 기준으로 (워크트리에서 돌려도 본 폴더 자료)
         self.ctx = J.Ctx(self.db_path)
         self.trades: list[Trade] = []
+        self.accounts: list[Trade] = []          # 🧾 매매별 가상 계좌 (trades 와 따로)
+        self.fill_cols: list[str] = []
+        self.fill_rows: list[tuple] = []
         self.skipped: dict[str, int] = defaultdict(int)
         self.failed = 0
         self.paper_days: list[tuple[date, int]] = []
@@ -196,6 +210,20 @@ class Data:
                 FROM ledger_trades ORDER BY buy_ts"""):
             self.trades.append(Trade("virtual", "가상 장부", J.book_label(book or "?"), code, name, qty or 0, bts, bp, sts, sp, pnl, reason,
                                      "closed" if (status == "closed" and pnl is not None) else "open", d))
+        # 🧾 매매별 가상 계좌 (매매마다 100만 원, paper.AccountTrader) — 다른 구분과 섞지 않고 따로 둠 (표가 없으면 빈 목록)
+        for (d, code, name, kind, status, qty, bts, bp, sts, sp, why, pq, pp, note) in q(scr, f"""
+                SELECT date, code, coalesce(name, code), kind, status, qty, buy_ts, buy_price, sell_ts, sell_price, coalesce(sell_reason, ''),
+                       part_qty, part_price, coalesce(note, '') FROM {ACCOUNT_TABLE} WHERE buy_price IS NOT NULL AND status IN ('open', 'closed')
+                ORDER BY buy_ts"""):
+            pnl = J._paper_net(qty, bp, sp, pq, pp) if status == "closed" else None
+            st = "closed" if (status == "closed" and pnl is not None) else "open"
+            self.accounts.append(Trade("account", "매매별 가상 계좌", J.label(kind), code, name, qty or 0, bts, bp, sts, sp, pnl, why, st, d, note=note))
+        # 실전 체결 차이 칸 (다른 작업이 real_trades 에 넣는 중 — 없으면 '기록 없음')
+        cols = {r[0] for r in q(scr, "SELECT column_name FROM information_schema.columns WHERE table_name = 'real_trades'")}
+        self.fill_cols = [c for c in FILL_COLS if c in cols]
+        if self.fill_cols:
+            self.fill_rows = q(scr, f"""SELECT date, coalesce(name, code), kind, buy_price, sell_price, {", ".join(self.fill_cols)}
+                                         FROM real_trades WHERE status <> 'failed' AND buy_price IS NOT NULL ORDER BY buy_ts""")
         # 신호 기록 전부 (건너뜀 포함) — '개선점' 절의 모의 계좌 자금·자리 부족 셈에 씀
         self.signal_rows = q(scr, """
                 SELECT kind, status, coalesce(note, ''), coalesce(virtual, false), coalesce(overflow, false), code, signal_ts, buy_ts, sell_ts, date
@@ -208,7 +236,7 @@ class Data:
                 m = re.fullmatch(r"(\d{4})-(\d\d)-(\d\d)\.md", f)
                 if m:
                     self.journal_files.add(date(int(m[1]), int(m[2]), int(m[3])))
-        for t in self.trades:
+        for t in self.trades + self.accounts:
             t.regime = self.regime(t.buy_date)
 
     def closed(self, group: Optional[str] = None) -> list[Trade]:
@@ -417,6 +445,8 @@ class Report:
         self.s_real = stats([t.pnl for t in self.real], REAL_SEED)
         self.s_paper = stats([t.pnl for t in self.paper], PAPER_START)
         self.s_virt = stats([t.pnl for t in self.virt])
+        self.acct = sorted([t for t in data.accounts if t.closed], key=lambda t: t.sell_ts)
+        self.s_acct = stats([t.pnl for t in self.acct])
         starts = [t.buy_date for t in data.trades] + [d for d, _ in data.paper_days]
         ends = [t.sell_ts.date() for t in self.all_closed]
         self.first, self.last = min(starts), max(ends + [d for d, _ in data.paper_days])
@@ -484,13 +514,15 @@ class Report:
                ("🔴 실전 합계", f"{won(sr['sum'])} (시드 {REAL_SEED:,.0f}원 대비 {sr['sum'] / REAL_SEED:+.1%})"),
                ("🟢 모의 계좌 평가 자산", f"{self.paper_asset_last:,.0f}원 ({self.paper_asset_last / PAPER_START - 1:+.1%})"),
                ("🟣 가상 합계", won(sv["sum"])),
-               ("끝난 매매 수", f"실전 {sr['n']} · 모의 {sp['n']} · 가상 {sv['n']}건")]
+               ("🧾 매매별 가상 계좌 합계", f"{won(self.s_acct['sum'])} ({len({t.kind for t in self.d.accounts})}개 계좌)"),
+               ("끝난 매매 수", f"실전 {sr['n']} · 모의 {sp['n']} · 가상 {sv['n']} · 매매별 계좌 {self.s_acct['n']}건")]
         kp = '<div class="kpis">' + "".join(f'<div class="kpi"><span>{esc(a)}</span><b>{esc(b)}</b></div>' for a, b in kpi) + "</div>"
         rows = [stat_row("🔴 실전 (키움 실계좌)", sr, [pct(-sr["mdd_pct"]) + " (시드 기준)"]),
                 stat_row("🟢 모의 (키움 모의 계좌)", sp, [pct(-self.paper_asset_mdd) + " (평가 자산 기준)"]),
-                stat_row("🟣 가상 (주문 없음)", sv, ["— (시작 금액이 장부마다 달라 원으로만)"])]
+                stat_row("🟣 가상 (주문 없음)", sv, ["— (시작 금액이 장부마다 달라 원으로만)"]),
+                stat_row("🧾 매매별 가상 계좌 (주문 없음)", self.s_acct, [f"— (계좌마다 {ACCOUNT_START / 1e4:,.0f}만 원, 3절 표)"])]
         t = table(STAT_HEAD + ["MDD (비율)"], rows, num_cols=(1, 2, 3, 4, 5, 6, 7, 8, 9),
-                  cls_cols={4: [sr["sum"], sp["sum"], sv["sum"]], 5: [sr["avg"], sp["avg"], sv["avg"]]})
+                  cls_cols={4: [sr["sum"], sp["sum"], sv["sum"], self.s_acct["sum"]], 5: [sr["avg"], sp["avg"], sv["avg"], self.s_acct["avg"]]})
         n_open = defaultdict(int)
         for x in opn:
             n_open[x.group] += 1
@@ -500,7 +532,8 @@ class Report:
 <div class="note"><b>세 가지 구분</b>
 <div>🔴 실전: 키움 실계좌에서 실제 돈으로 사고판 매매. 시드 {REAL_SEED:,.0f}원, 종목당 3만 원 안. 손익은 수수료·세금 어림값을 뺀 값임.</div>
 <div>🟢 모의: 키움 모의 계좌({PAPER_START / 1e4:,.0f}만 원 시작)에서 정규장에 실제 주문을 넣은 매매. 손익은 매수 금액의 0.25% 를 비용으로 뺀 값임.</div>
-<div>🟣 가상: 주문 없이 그때 시세로 사고판 것으로 적은 매매. NXT 프리·애프터장 가상 체결, 모의 계좌 잔고·보유 한도로 못 사서 따로 적은 '잔고 밖' 매매, 매매법별 가상 장부(☕ 카페 테마 대장·📕 홍인기 상한가 풀림·📅 일정 등)를 모두 묶음.</div></div>
+<div>🟣 가상: 주문 없이 그때 시세로 사고판 것으로 적은 매매. NXT 프리·애프터장 가상 체결, 모의 계좌 잔고·보유 한도로 못 사서 따로 적은 '잔고 밖' 매매, 매매법별 가상 장부(☕ 카페 테마 대장·📕 홍인기 상한가 풀림·📅 일정 등)를 모두 묶음.</div>
+<div>🧾 매매별 가상 계좌: 모의 매수 신호 전부를 매매마다 따로 둔 {ACCOUNT_START / 1e4:,.0f}만 원 계좌에 같은 규칙으로 적은 것 (2026-11-16 시작, 주문 없음). 계좌 안에서만 돈·자리(동시 5종목, 종목당 20만 원)를 봐서 다른 매매와 다투지 않음. 위 세 구분과 겹치므로 따로 셈.</div></div>
 <div class="note"><b>숫자 읽는 법</b>
 <div>승률: 이긴 건수 ÷ 끝난 건수. 이긴 건 = 손익이 0원보다 큰 것.</div>
 <div>손익비: 이긴 매매 평균 이익 ÷ 진 매매 평균 손실. 1보다 크면 한 번 이길 때 버는 돈이 한 번 질 때 잃는 돈보다 큼.</div>
@@ -519,7 +552,28 @@ class Report:
 <h3>🔴 실전 매매별</h3>{self.kind_table(self.real)}
 <h3>🟢 모의 매매별</h3>{self.kind_table(self.paper)}
 <p class="muted">모의에서 신호가 났지만 사지 않은 신호 수 (매매별): {esc(' · '.join(f'{k} {v}건' for k, v in sorted(self.d.skipped.items(), key=lambda kv: -kv[1])))}</p>
-<h3>🟣 가상 매매별 (세부 구분 포함)</h3>{self.kind_table(self.virt, with_sub=True)}"""
+<h3>🟣 가상 매매별 (세부 구분 포함)</h3>{self.kind_table(self.virt, with_sub=True)}
+<h3>🧾 매매별 가상 계좌</h3>{self.account_table(self.acct)}"""
+
+    def account_table(self, trades: list[Trade]) -> str:
+        """매매별 가상 계좌 표 — 매매 하나 = 계좌 하나, 잔고 = 시작 금액 + 끝난 매매 손익."""
+        held = defaultdict(int)
+        for t in self.d.accounts:
+            if not t.closed:
+                held[t.kind] += 1
+        if not trades and not held:
+            return "<p class=\"muted\">아직 기록 없음 (2026-11-16 월요일부터 쌓임).</p>"
+        rows, vals = [], []
+        items = by_key(trades, lambda t: t.kind)
+        for k in held:
+            if k not in dict(items):
+                items.append((k, stats([])))
+        for k, st in items:
+            rows.append(stat_row(k, st, [f"{ACCOUNT_START + st['sum']:,.0f}원", f"{held.get(k, 0)}"]))
+            vals.append(st["sum"])
+        return (f"<p class=\"muted\">매매마다 {ACCOUNT_START:,.0f}원으로 시작한 가상 계좌. 체결은 신호 때 현재가, 매도는 그 매매의 모의 매도 규칙 그대로, 비용 0.25% 뺌. "
+                "잔고는 들고 있는 종목의 평가 손익을 넣지 않은 값임.</p>"
+                + table(["매매"] + STAT_HEAD[1:] + ["계좌 잔고", "보유 중"], rows, num_cols=(1, 2, 3, 4, 5, 6, 7, 8, 9, 10), cls_cols={4: vals}))
 
     def sec_flow(self, for_pdf: bool = False) -> str:
         series = [("🔴 실전 누적 손익 (매도한 날 기준)", self.cum_points(self.real), 0.0),
@@ -705,8 +759,105 @@ class Report:
 <li>보고서 만든 시각: {datetime.now():%Y-%m-%d %H:%M}. 다시 만들기: <code>python -m kiwoom_trading.execution.full_report</code></li>
 </ul>"""
 
+    # 이번 주 ----------------------------------------------------------------
+    def week_range(self) -> tuple[date, date]:
+        mon = self.today - timedelta(days=self.today.weekday())
+        return mon, mon + timedelta(days=4)
+
+    def sec_week(self) -> str:
+        mon, fri = self.week_range()
+        inwk = lambda ts: [t for t in ts if mon <= t.sell_ts.date() <= fri]
+        groups = [("🔴 실전", inwk(self.real)), ("🟢 모의", inwk(self.paper)), ("🟣 가상", inwk(self.virt)), ("🧾 매매별 가상 계좌", inwk(self.acct))]
+        sts = [(nm, stats([t.pnl for t in ts])) for nm, ts in groups]
+        summary = table(STAT_HEAD, [stat_row(nm, st) for nm, st in sts], num_cols=(1, 2, 3, 4, 5, 6, 7, 8),
+                        cls_cols={4: [st["sum"] for _, st in sts], 5: [st["avg"] for _, st in sts]})
+        kinds = ""
+        for nm, ts in groups:
+            if ts:
+                kinds += f"<h3>{esc(nm)} 매매별 (이번 주)</h3>" + (self.account_table(ts) if nm.startswith("🧾") else self.kind_table(ts))
+        return f"""
+<p>{mon:%Y-%m-%d}(월) ~ {fri:%Y-%m-%d}(금) 에 판 매매만 모음. 매주 금요일 20:30 에 이 보고서를 새로 만들어 텔레그램으로 보냄.</p>
+<h3>구분별 이번 주 성과</h3>{summary}
+{kinds or '<p class="muted">이번 주 끝난 매매 없음.</p>'}
+<h3>실전 체결 차이 (이번 주 산 실전 매매)</h3>{self.fill_html(mon, fri)}
+<h3>시드 증액 기준 판정</h3>{self.seed_html()}"""
+
+    def fill_html(self, mon: date, fri: date) -> str:
+        """신호가·주문가·체결가·호가로 실전 체결 차이를 봄. 칸이 없거나 값이 없으면 '기록 없음'."""
+        cols = self.d.fill_cols
+        if not cols:
+            return "<p class=\"muted\">기록 없음 — real_trades 에 신호가·주문가·체결가·호가 칸이 아직 없음 (칸이 생기면 다음 보고서부터 나옴).</p>"
+        rows, buy_gap, sell_gap, spread = [], [], [], []
+        for r in self.d.fill_rows:
+            d, name, kind, bp, sp = r[:5]
+            v = dict(zip(cols, r[5:]))
+            if not (mon <= d <= fri):
+                continue
+            sig, fill = v.get("signal_price"), v.get("fill_price") or bp
+            ssig = v.get("sell_signal_price")
+            a1, b1 = v.get("ask1"), v.get("bid1")
+            g1 = (fill / sig - 1) if (sig and fill) else None
+            g2 = (sp / ssig - 1) if (sp and ssig) else None
+            g3 = ((a1 - b1) / b1) if (a1 and b1) else None
+            if g1 is None and g2 is None and g3 is None and not v.get("order_price") and not v.get("sell_order_price"):
+                continue
+            buy_gap += [g1] if g1 is not None else []
+            sell_gap += [g2] if g2 is not None else []
+            spread += [g3] if g3 is not None else []
+            rows.append([f"{d:%m-%d}", J.label(kind), name, px(sig), px(v.get("order_price")), px(fill), pct(g1, 2), px(ssig), px(v.get("sell_order_price")),
+                         px(sp), pct(g2, 2), pct(g3, 2)])
+        if not rows:
+            return "<p class=\"muted\">기록 없음 — 이번 주 실전 매매에 체결 차이 값이 적힌 것이 없음.</p>"
+        avg = lambda xs: (sum(xs) / len(xs)) if xs else None
+        return (f"<p>산 값이 신호가보다 평균 {pct(avg(buy_gap), 2)} ({len(buy_gap)}건), 판 값이 매도 신호가보다 평균 {pct(avg(sell_gap), 2)} ({len(sell_gap)}건), "
+                f"살 때 매도 1호가와 매수 1호가 차이는 평균 {pct(avg(spread), 2)} 임. 산 값 차이는 + 일수록 비싸게 샀고, 판 값 차이는 − 일수록 싸게 판 것임.</p>"
+                + table(["산 날", "매매", "종목", "신호가", "주문가", "체결가", "체결−신호", "매도 신호가", "매도 주문가", "판 값", "판 값−매도 신호", "호가 차이"],
+                        rows, num_cols=tuple(range(3, 12)), tcls="wide"))
+
+    def seed_rows(self, trades: list[Trade]) -> list[tuple[str, list, int, bool]]:
+        """매매별 최근 4주(이번 주 포함) 주간 PF → (매매, [주간 PF 4개(옛 주 → 이번 주)], 4주 건수, 기준 충족)."""
+        mon = self.today - timedelta(days=self.today.weekday())
+        weeks = [mon - timedelta(days=7 * k) for k in range(SEED_WEEKS - 1, -1, -1)]
+        per = defaultdict(lambda: defaultdict(list))
+        for t in trades:
+            wk = t.sell_ts.date() - timedelta(days=t.sell_ts.date().weekday())
+            if wk in weeks:
+                per[t.kind][wk].append(t.pnl)
+        out = []
+        for k, byw in per.items():
+            pfs = []
+            for w in weeks:
+                xs = byw.get(w, [])
+                gw, gl = sum(x for x in xs if x > 0), -sum(x for x in xs if x < 0)
+                pfs.append(None if not xs else (gw / gl if gl else (float("inf") if gw > 0 else 0.0)))
+            n = sum(len(v) for v in byw.values())
+            ok = n >= SEED_N and all(p is not None and p >= SEED_PF for p in pfs)
+            out.append((k, pfs, n, ok))
+        return sorted(out, key=lambda r: (not r[3], -r[2]))
+
+    def seed_html(self) -> str:
+        mon0 = self.today - timedelta(days=self.today.weekday())
+        head = [f"{mon0 - timedelta(days=7 * k):%m-%d} 주" for k in range(SEED_WEEKS - 1, -1, -1)]
+        parts, passed = [], []
+        for nm, ts in (("🧾 매매별 가상 계좌", self.acct), ("🟢 모의", self.paper)):
+            rows = self.seed_rows(ts)
+            passed += [f"{k} ({nm})" for k, _, _, ok in rows if ok]
+            if rows:
+                fmt = lambda p: "거래 없음" if p is None else "손실 없음" if p == float("inf") else f"{p:.2f}"
+                parts.append(f"<h3>{esc(nm)} 기준 (시드 증액)</h3>" + table(["매매"] + head + ["4주 건수", "판정"],
+                                                              [[k] + [fmt(p) for p in pfs] + [f"{n}", "충족" if ok else "아직"] for k, pfs, n, ok in rows],
+                                                              num_cols=tuple(range(1, SEED_WEEKS + 2))))
+        mon = self.today - timedelta(days=self.today.weekday())
+        first = mon - timedelta(days=7 * (SEED_WEEKS - 1))
+        verdict = ("<p><b>기준 충족: " + esc(" · ".join(passed)) + "</b> — 시드를 늘릴지는 사용자가 정함.</p>") if passed else "<p><b>기준 충족: 아직 없음.</b></p>"
+        return (f"<p>기준: {first:%m-%d} 주부터 이번 주까지 {SEED_WEEKS}주 연속으로 주간 PF 가 {SEED_PF} 이상이고, {SEED_WEEKS}주 동안 끝난 매매가 {SEED_N}건 이상인 매매. "
+                "매매별 가상 계좌 기준과 키움 모의 계좌 기준을 따로 봄. 거래가 없는 주가 있으면 연속이 끊긴 것으로 봄. 손실이 하나도 없는 주는 통과로 셈.</p>"
+                + verdict + "".join(parts))
+
     def sections(self, for_pdf: bool = False) -> list[tuple[str, str]]:
-        return [("1. 요약", self.sec_summary()),
+        mon, fri = self.week_range()
+        return [(f"이번 주 ({mon:%m-%d} ~ {fri:%m-%d})", self.sec_week()),
+                ("1. 요약", self.sec_summary()),
                 ("2. 개선점과 앞으로 할 일", Plan(self).html()),
                 ("3. 매매별 성과", self.sec_kinds()),
                 ("4. 날짜별 손익 흐름", self.sec_flow(for_pdf)),
@@ -740,7 +891,7 @@ r.dataset.theme=d==='dark'?'light':'dark';localStorage.setItem(k,r.dataset.theme
         secs = self.sections(True)
         blocks = [f'<h1 class="doc">📚 {esc(self.title())}</h1><p class="muted">{self.today:%Y-%m-%d} 기준 · 실제 기록만 씀 (백테스트 없음) · 🔴 실전 · 🟢 모의 · 🟣 가상</p>']
         for i, (t, b) in enumerate(secs):
-            cls_ = ' class="newpage"' if (t.startswith("부록") or t.startswith("2. ") or t.startswith("3. ")) else ""
+            cls_ = ' class="newpage"' if (t.startswith("부록") or t.startswith("1. ") or t.startswith("2. ") or t.startswith("3. ")) else ""
             blocks.append(f"<h2{cls_}>{esc(t)}</h2>{b}")
         flow = "".join(blocks).replace('<div class="scroll">', "").replace("</table></div>", "</table>")
         abbr_js = "[" + ",".join(f"[{_js(k)},{_js(v)}]" for k, v in ABBR.items()) + "]"
@@ -1392,6 +1543,7 @@ def print_pdf(html_text: str, out_pdf: str) -> None:
     exe = find_browser()
     if not exe:
         raise RuntimeError("Edge·Chrome 을 찾지 못해 PDF 를 못 만듦")
+    out_pdf = os.path.abspath(out_pdf)    # 브라우저는 다른 폴더에서 돌므로 절대 경로로
     with tempfile.TemporaryDirectory() as tmp:
         src = os.path.join(tmp, "print.html")
         with open(src, "w", encoding="utf-8") as f:
@@ -1406,37 +1558,73 @@ def print_pdf(html_text: str, out_pdf: str) -> None:
         raise RuntimeError("PDF 만들기 실패")
 
 
+def resolve_root(root: str) -> str:
+    """자료 폴더. .claude/worktrees/<이름> 에서 돌리면 본 폴더 자료를 씀."""
+    if not os.path.exists(os.path.join(root, "data", "screener.duckdb")) and not os.path.exists(os.path.join(root, "data", "screener_snapshot.duckdb")):
+        main_root = os.path.abspath(os.path.join(root, "..", "..", ".."))
+        if os.path.exists(os.path.join(main_root, "data", "screener.duckdb")):
+            return main_root
+    return root
+
+
+def build_files(today: date, root: str = PROJECT_ROOT, out_dir: Optional[str] = None, pdf: bool = True) -> list[str]:
+    """trading_journal_YYYYMMDD.html (+ .pdf) 를 만들고 경로 목록을 돌려줌. DB 는 읽기 전용."""
+    root = resolve_root(root)
+    out_dir = out_dir or os.path.join(root, "data", "reports")
+    os.makedirs(out_dir, exist_ok=True)
+    data = Data(root)
+    paths = []
+    try:
+        rep = Report(data, today)
+        base = os.path.join(out_dir, f"trading_journal_{today:%Y%m%d}")
+        with open(base + ".html", "w", encoding="utf-8") as f:
+            f.write(rep.build_html())
+        paths.append(base + ".html")
+        if pdf:
+            ph = rep.build_print_html()
+            with open(base + ".print.html", "w", encoding="utf-8") as f:
+                f.write(ph)
+            print_pdf(ph, base + ".pdf")
+            os.remove(base + ".print.html")
+            paths.append(base + ".pdf")
+    finally:
+        data.ctx.close()
+    return paths
+
+
+def run_weekly(today: date, send: bool = True, root: str = PROJECT_ROOT) -> list[str]:
+    """매주 금요일 20:30 (run_daily_update 끝): 보고서를 만들어 텔레그램 매매 알림 봇으로 파일 전송. PDF 가 실패하면 HTML 만 보냄."""
+    try:
+        paths = build_files(today, root)
+    except Exception:
+        import logging
+        logging.exception("주간 보고서 PDF 만들기 실패 — HTML 만 만듦")
+        paths = build_files(today, root, pdf=False)
+    if send:
+        from kiwoom_trading.common.telegram import send_telegram_document
+        mon = today - timedelta(days=today.weekday())
+        for p in paths:
+            kind = "PDF (인쇄용 A4)" if p.endswith(".pdf") else "HTML (받아서 브라우저로 열기)"
+            send_telegram_document(p, f"📚 주간 매매일지·성과 보고서 {mon:%m-%d} ~ {today:%m-%d} — {kind}. 맨 앞 '이번 주' 절: 실전·모의·매매별 가상 계좌 성과, 실전 체결 차이, 시드 증액 기준")
+    return paths
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="전체 매매일지·성과 보고서 (HTML + PDF)")
     ap.add_argument("--root", default=PROJECT_ROOT, help="자료가 있는 저장소 폴더 (data/·docs/journal)")
     ap.add_argument("--out", default=None, help="저장 폴더 (기본 <root>/data/reports)")
     ap.add_argument("--date", default=None, help="파일 이름 날짜 YYYYMMDD (기본 오늘)")
     ap.add_argument("--no-pdf", action="store_true")
+    ap.add_argument("--send", action="store_true", help="만든 파일을 텔레그램 매매 알림 봇으로 보냄")
     a = ap.parse_args()
-    root = a.root
-    if not os.path.exists(os.path.join(root, "data", "screener.duckdb")) and not os.path.exists(os.path.join(root, "data", "screener_snapshot.duckdb")):
-        main_root = os.path.abspath(os.path.join(root, "..", "..", ".."))     # .claude/worktrees/<이름> 에서 돌리면 본 폴더 자료
-        if os.path.exists(os.path.join(main_root, "data", "screener.duckdb")):
-            root = main_root
     today = datetime.strptime(a.date, "%Y%m%d").date() if a.date else date.today()
-    out_dir = a.out or os.path.join(root, "data", "reports")
-    os.makedirs(out_dir, exist_ok=True)
-    data = Data(root)
-    try:
-        rep = Report(data, today)
-        base = os.path.join(out_dir, f"trading_journal_{today:%Y%m%d}")
-        with open(base + ".html", "w", encoding="utf-8") as f:
-            f.write(rep.build_html())
-        print(base + ".html")
-        if not a.no_pdf:
-            ph = rep.build_print_html()
-            with open(base + ".print.html", "w", encoding="utf-8") as f:
-                f.write(ph)
-            print_pdf(ph, base + ".pdf")
-            os.remove(base + ".print.html")
-            print(base + ".pdf")
-    finally:
-        data.ctx.close()
+    paths = build_files(today, a.root, a.out, pdf=not a.no_pdf)
+    for p in paths:
+        print(p)
+    if a.send:
+        from kiwoom_trading.common.telegram import send_telegram_document
+        for p in paths:
+            send_telegram_document(p, f"📚 매매일지·성과 보고서 {today:%Y-%m-%d}")
 
 
 if __name__ == "__main__":

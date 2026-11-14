@@ -40,6 +40,7 @@ from kiwoom_trading.screener.early_watch import EarlyDetector, EarlyHit, format_
 from kiwoom_trading.screener.engine import Screener
 from kiwoom_trading.screener.market_data import KiwoomMarket
 from kiwoom_trading.execution.paper import PaperTrader, build_mock_client, mock_configured
+from kiwoom_trading.common import cafe_universe
 from dataclasses import replace
 from kiwoom_trading.screener.intraday_signals import QualityConfig, Signal
 from kiwoom_trading.strategies.bigcap_flow.live import KIND as BIGCAP_KIND, BigcapFlowWatcher
@@ -374,6 +375,28 @@ LEDGER_SINK: list[str] = []          # 15:40 가상 장부 요약을 모았다�
 LEDGER_DIGEST_AT = dtime(15, 42)
 
 
+def _all_trades(trader, accounts_first: bool = False) -> list:
+    """키움 모의 기록 + 매매별 가상 계좌 기록 (매도 판단 재료를 계좌 보유까지 같이 만들 때)."""
+    if trader is None:
+        return []
+    acct = list(trader.accounts.trades) if getattr(trader, "accounts", None) is not None else []
+    return acct + list(trader.trades) if accounts_first else list(trader.trades) + acct
+
+
+def _all_active(trader) -> list:
+    return [t for t in _all_trades(trader) if t.status in ("ordered", "open", "selling")]
+
+
+def _cafe_card_line(now: datetime) -> str:
+    """아침 📋 카드 한 줄: '☕ 카페 종목 N개 안에서만 매수' 또는 '☕ 카페 제한 꺼짐(쿠키 없음)'."""
+    try:
+        u = cafe_universe.load(day=now.date())
+        return u.card_line() if u is not None else "☕ 카페 제한 꺼짐(아직 못 가져옴) — 모든 종목 매수 가능"
+    except Exception:
+        logging.exception("카페 종목 카드 줄 실패")
+        return "☕ 카페 제한 꺼짐(읽기 실패)"
+
+
 def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, telegram: bool,
              watcher: Optional[SignalWatcher] = None, early: Optional[EarlyRunner] = None,
              investors: Optional[InvestorRecorder] = None, themes: Optional[ThemeRunner] = None,
@@ -389,6 +412,10 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
              reclaim=None, center=None, fractal=None, align=None, kell_d=None, kell_m=None, ha_d=None, ha_m=None, crash=None, vb=None, elog=None, dwatch: Optional[DanswerWatch] = None, strong: Optional[StrongListWatcher] = None,
              books: tuple = (), leader_fn=None, hold_check=None) -> int:
     now = datetime.now(KST)
+    try:
+        cafe_universe.maybe_refresh(now)   # ☕ 08:40 에 카페 종목 한 번 더
+    except Exception:
+        logging.exception("카페 종목 다시 가져오기 실패")
     if real is not None:
         real.tick(now)                 # 🔴 실전 매매(6️⃣2️⃣5️⃣): 체결 확인·익절/손절·다음 날 09:00 매도 (자체 예외 처리)
     if small is not None:
@@ -578,6 +605,10 @@ def main() -> int:
         logging.info("주말이라 종료")
         return 0
     prevent_sleep_until_exit()  # 08:00~20:00 실행 중 유휴 절전으로 멈추지 않도록
+    try:   # ☕ 하승훈 카페 핫이슈 테마 체크 최근 글 2개 종목 (07:50 시작 때 한 번 + 08:40 한 번, run_once 가 maybe_refresh) — 실전·모의 매수 범위
+        cafe_universe.refresh(now)
+    except Exception:
+        logging.exception("카페 종목 가져오기 실패 — 제한 안 함")
 
     client = build_client()
     market = KiwoomMarket(client)
@@ -684,7 +715,7 @@ def main() -> int:
             rcands = load_reclaim_cands(dconn, now.date())
             euniv = load_early_universe(dconn, now.date())
             tday, tpicks = load_trend_picks(dconn, now.date())
-            held = [t.code for t in trader.active() if t.kind == TREND_KIND and t.date < now.date()] if trader is not None else []
+            held = list(dict.fromkeys(t.code for t in _all_active(trader) if t.kind == TREND_KIND and t.date < now.date()))   # 매매별 가상 계좌 보유 포함
             texit = ma_breaks(dconn, held, now.date()) if held else {}
             dctx = load_danswer_context(dconn, now.date())
             jctx = load_jh_context(dconn, now.date())
@@ -711,7 +742,7 @@ def main() -> int:
             try:   # R4 시간 손절: 7️⃣ 산 날부터 20거래일 동안 종가가 매수가 +5% 를 못 넘으면 오늘 09:00 매도 (2026-11-13 사용자 '전부')
                 from kiwoom_trading.execution.hold_manage import get_state, time_stop_exits
                 tholds = {t.id: (t.code, t.date, get_state(store.conn, t.id)["base"] or t.buy_price)
-                          for t in trader.active() if t.kind == TREND_KIND and t.date < now.date() and t.buy_price}
+                          for t in _all_active(trader) if t.kind == TREND_KIND and t.date < now.date() and t.buy_price}
                 trader.hold_time_exit = time_stop_exits(tholds, now.date())
                 logging.info("R4 시간 손절: 7️⃣ 보유 %s건 중 오늘 09:00 매도 %s", len(tholds), ", ".join(trader.hold_time_exit.values()) or "없음")
             except Exception:
@@ -754,9 +785,9 @@ def main() -> int:
             kkeys = store.signal_keys(now.date())
             kell_d = KellDailyWatcher(kctx, ksel, market, done={c for c, _, k in kkeys if k == KELL_D_KIND}, regime=regime)
             kell_m = KellMinuteWatcher(client, now.date(), ksel, regime=regime, done={(c, ts) for c, ts, k in kkeys if k == KELL_M_KIND},
-                                       held=(lambda: [(t.id, t.code, t.stop) for t in trader.active() if t.kind == KELL_M_KIND]) if trader is not None else None)
+                                       held=(lambda: [(t.id, t.code, t.stop) for t in _all_active(trader) if t.kind == KELL_M_KIND]) if trader is not None else None)
             if trader is not None:
-                kheld = {t.id: (t.code, t.stop) for t in trader.active() if t.kind == KELL_D_KIND and t.date < now.date()}
+                kheld = {t.id: (t.code, t.stop) for t in _all_active(trader) if t.kind == KELL_D_KIND and t.date < now.date()}
                 trader.kell_d_exit = kctx.exits(kheld) if kheld else {}
                 trader.kell_m = kell_m
                 logging.info("켈 수축 일봉 보유 %s건 중 오늘 09:00 매도 %s", len(kheld), ", ".join(trader.kell_d_exit.values()) or "없음")
@@ -772,9 +803,9 @@ def main() -> int:
             ha_d = HaDailyWatcher(hctx, hsel, market, store=store, done={c for c, _, k in hkeys if k == HA_D_KIND}, regime=regime)
             ha_m = HaMinuteWatcher(client, now.date(), hsel, src=kell_m, store=store, regime=regime,   # 30분봉 캐시는 켈 30분과 같이 씀
                                    done={(c, ts) for c, ts, k in hkeys if k == HA_M_KIND},
-                                   held=(lambda: [(t.id, t.code) for t in trader.active() if t.kind == HA_M_KIND]) if trader is not None else None)
+                                   held=(lambda: [(t.id, t.code) for t in _all_active(trader) if t.kind == HA_M_KIND]) if trader is not None else None)
             if trader is not None:
-                hheld = {t.id: t.code for t in trader.active() if t.kind == HA_D_KIND and t.date < now.date()}
+                hheld = {t.id: t.code for t in _all_active(trader) if t.kind == HA_D_KIND and t.date < now.date()}
                 trader.ha_d_exit = hctx.exits(hheld) if hheld else {}
                 trader.ha_m = ha_m
                 logging.info("하이킨아시 일봉 보유 %s건 중 오늘 09:00 매도 %s", len(hheld), ", ".join(trader.ha_d_exit.values()) or "없음")
@@ -788,7 +819,7 @@ def main() -> int:
                                  done={(c, ts) for c, ts, k in store.signal_keys(now.date()) if k == CRASH_KIND},
                                  held=(lambda day=now.date(): {t.code: ("closed" if t.status not in ("ordered", "open", "selling") else
                                                                        "half" if CRASH_HALF in (t.note or "") and CRASH_ADD not in (t.note or "") and not t.part_qty else "full")
-                                                              for t in trader.trades if t.kind == CRASH_KIND and t.date == day and t.buy_ts}) if trader is not None else None)
+                                                              for t in _all_trades(trader, accounts_first=True) if t.kind == CRASH_KIND and t.date == day and t.buy_ts}) if trader is not None else None)
         except Exception:
             logging.exception("급락 반등 준비 실패")
     vb: Optional[VbWatcher] = None
@@ -859,8 +890,9 @@ def main() -> int:
                     rline = one_line(store.conn, real_inverse.SEED)
                     paused = real_inverse.is_paused(store.conn, now.date())
                     rline += ("\n⏸ 오늘 실전: 쉼" if paused else "\n▶️ 오늘 실전: 켜짐") + " — 바꾸려면 '실전 쉼' / '실전 재개' (새 매수만, 손절·매도 감시는 그대로)"
-                send_telegram_message(build_card(now.date(), regime.trend_text(), real_mode if real is not None else "",
-                                                 us_ov.text() if us_ov is not None else None, rline))
+                card = build_card(now.date(), regime.trend_text(), real_mode if real is not None else "",
+                                  us_ov.text() if us_ov is not None else None, rline)
+                send_telegram_message(card + "\n" + _cafe_card_line(now))   # ☕ 카페 종목 제한 켜짐·꺼짐 한 줄
                 store.conn.execute("INSERT INTO playbook_sent VALUES (?)", [now.date()])
         except Exception:
             logging.exception("트레이딩 전략 전송 실패")
