@@ -20,6 +20,7 @@ DB = os.path.join(PROJECT_ROOT, "data", "screener.duckdb")
 SNAPSHOT = os.path.join(PROJECT_ROOT, "data", "screener_snapshot.duckdb")
 OUT = os.path.join(PROJECT_ROOT, "data", "reports", "performance.html")
 PAPER_START = 10_000_000
+ACCOUNT_TABLE, ACCOUNT_START = "paper_account_trades", 1_000_000   # paper.ACCOUNT_TABLE · ACCOUNT_START (매매별 가상 계좌)
 
 
 def _connect():
@@ -137,6 +138,22 @@ def _stage_rows(real: list, p_items: list, rname, pname) -> list[tuple]:
     return rows
 
 
+def _account_rows(acct: list, name) -> list[tuple]:
+    """매매별 가상 계좌 → 매매별 행 (건수·승률·건당 수익률·합계·손익비·잔고·보유 중)."""
+    closed, held = [], defaultdict(int)
+    for k, q, bp, sp, pq, pp, st in acct:
+        if st != "closed" or not sp or not q:
+            held[k] += 1
+            continue
+        part = min(pq or 0, q)
+        pnl = (sp - bp) * (q - part) + ((pp or sp) - bp) * part - bp * q * 0.0025
+        closed.append((k, pnl, pnl / (bp * q)))
+    rows = [r + (f"{ACCOUNT_START + sum(p for k, p, _ in closed if name(k) == r[0]):,.0f}원", held.pop(next((k for k in list(held) if name(k) == r[0]), None), 0))
+            for r in _by_kind(closed, name)]
+    rows += [(name(k), 0, "—", "—", _won(0), "—", f"{ACCOUNT_START:,.0f}원", n) for k, n in held.items()]
+    return rows
+
+
 def build(today: date | None = None) -> str:
     from kiwoom_trading.execution.real import PLAYS, SEED, is_paused
     from kiwoom_trading.execution.journal import KIND_LABEL as LABELS
@@ -148,6 +165,11 @@ def build(today: date | None = None) -> str:
         paper = conn.execute("""SELECT kind, qty, buy_price, sell_price FROM paper_trades
                                 WHERE sell_price IS NOT NULL AND buy_price IS NOT NULL AND NOT coalesce(virtual, false)""").fetchall()
         pdays = conn.execute("SELECT date, asset_end FROM paper_days WHERE asset_end IS NOT NULL ORDER BY date").fetchall()
+        try:   # 🧾 매매별 가상 계좌 (매매마다 100만 원, paper.AccountTrader) — 표가 없으면 빈 목록
+            acct = conn.execute(f"""SELECT kind, qty, buy_price, sell_price, part_qty, part_price, status FROM {ACCOUNT_TABLE}
+                                    WHERE buy_price IS NOT NULL AND status IN ('open', 'closed')""").fetchall()
+        except Exception:
+            acct = []
         paused = is_paused(conn, today)
     finally:
         conn.close()
@@ -172,6 +194,7 @@ def build(today: date | None = None) -> str:
     p_last = p_curve[-1]
     head = ["매매", "건수", "승률", "건당 수익률", "합계 손익", "손익비"]
     stage_rows = _stage_rows(real, p_items, rname, pname)
+    a_rows = _account_rows(acct, pname)
 
     body = f"""
 <header><h1>운용 성과</h1><p class="muted">기준 {today:%Y-%m-%d} · 매일 20:00 새로 만듦 ·
@@ -186,6 +209,9 @@ def build(today: date | None = None) -> str:
 <div class="kpi"><span>매매 수</span><b>{ps['n']}건</b></div></div>
 {_svg(p_curve, ['시작'] + [f"{d:%m-%d}" for d, _ in pdays])}
 <h3>매매별 (잔고 밖 가상 제외, 비용 0.25% 뺌)</h3>{_table(paper_kind, head)}</section>
+<section><h2>🧾 매매별 가상 계좌 (매매마다 {ACCOUNT_START:,.0f}원)</h2>
+<p class="muted">모의 매수 신호 전부를 매매마다 따로 둔 가상 계좌에 같은 규칙으로 적음 (주문 없음, 비용 0.25% 뺌). 계좌 안에서만 돈·자리를 봐서 다른 매매와 다투지 않음. 잔고 = 시작 금액 + 끝난 매매 손익.</p>
+{_table(a_rows, head + ['계좌 잔고', '보유 중']) if a_rows else '<p class="muted">아직 기록 없음 (2026-11-16 월요일부터 쌓임)</p>'}</section>
 <section><h2>🪜 전략 단계표</h2><p class="muted">가상 → 모의 → 실전 소액(종목당 3만 원) → 증액. 올릴 기준: 그 단계 실제 매매 {PROMOTE_N}건 이상 · 손익비 {PROMOTE_PF} 이상 · 앞 절반과 뒤 절반 합계 둘 다 +.
 내릴 기준(실전): {DEMOTE_N}건 이상인데 손익비 {DEMOTE_PF} 미만, 또는 최대 낙폭 {DEMOTE_MDD:.0%} 넘음. 표시만 하고 단계는 사용자가 정함.</p>
 {_table(stage_rows, ['매매', '지금 단계', '판정', '근거'])}</section>
