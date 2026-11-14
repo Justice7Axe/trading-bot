@@ -196,6 +196,10 @@ class Data:
                 FROM ledger_trades ORDER BY buy_ts"""):
             self.trades.append(Trade("virtual", "가상 장부", J.book_label(book or "?"), code, name, qty or 0, bts, bp, sts, sp, pnl, reason,
                                      "closed" if (status == "closed" and pnl is not None) else "open", d))
+        # 신호 기록 전부 (건너뜀 포함) — '개선점' 절의 모의 계좌 자금·자리 부족 셈에 씀
+        self.signal_rows = q(scr, """
+                SELECT kind, status, coalesce(note, ''), coalesce(virtual, false), coalesce(overflow, false), code, signal_ts, buy_ts, sell_ts, date
+                FROM paper_trades WHERE status <> 'failed'""")
         self.paper_days = [(d, a) for d, a in q(scr, "SELECT date, asset_end FROM paper_days WHERE asset_end IS NOT NULL ORDER BY date")]
         self.liquidations = q(scr, "SELECT date, name, code, qty, note FROM real_liquidations ORDER BY ts")
         jdir = os.path.join(self.root, "docs", "journal")
@@ -504,6 +508,7 @@ class Report:
 <div>MDD: 누적 손익이 가장 높았던 때에서 가장 많이 빠진 폭. 원 단위는 끝난 매매 순서대로 쌓은 값이고, 모의 비율은 매일 평가 자산(들고 있는 종목 평가 포함) 기준임.</div></div>
 {kp}
 <h3>구분별 요약 (끝난 매매만)</h3>{t}
+<p><b>개선점과 앞으로 할 일은 바로 다음 2절에 정리함 (가장 먼저 볼 곳).</b></p>
 <p class="muted">아직 들고 있는 것: 실전 {n_open['real']}건 · 모의 {n_open['paper']}건 · 가상 {n_open['virtual']}건 (부록 C). 신호는 났지만 한도·조건으로 모의에서 사지 않은 신호 {skipped:,}건은 매매가 아니라 숫자에서 뺌.
 실전 시드 대비 수익률은 합계 손익 ÷ 시드 {REAL_SEED:,.0f}원으로 계산함.</p>"""
 
@@ -662,7 +667,7 @@ class Report:
         if same:
             both_l.append("실전과 모의에서 함께 돈 매매의 합계: " + " · ".join(same) + ". 실전은 종목당 3만 원, 모의는 종목당 100만 원 안이라 금액 크기가 다름.")
         ul = lambda xs: "<ul class=\"obs\">" + "".join(f"<li>{esc(x)}</li>" for x in xs) + "</ul>"
-        return ("<p>기록에서 바로 보이는 사실만 적음. 규칙을 바꾸자는 내용은 넣지 않음.</p>"
+        return ("<p>기록에서 바로 보이는 사실만 적음. 개선 방향과 앞으로 할 일은 2절에 있음.</p>"
                 f"<h3>잘된 점</h3>{ul(good)}<h3>안된 점</h3>{ul(bad)}<h3>함께 볼 것</h3>{ul(both_l)}")
 
     def _journal_rows(self, trades: list[Trade]) -> tuple[list, list]:
@@ -702,11 +707,12 @@ class Report:
 
     def sections(self, for_pdf: bool = False) -> list[tuple[str, str]]:
         return [("1. 요약", self.sec_summary()),
-                ("2. 매매별 성과", self.sec_kinds()),
-                ("3. 날짜별 손익 흐름", self.sec_flow(for_pdf)),
-                ("4. 매도 사유 · 보유 시간 · 시장 분위기별", self.sec_analysis()),
-                ("5. 실전 매매일지 (전 건)", self.sec_real_journal()),
-                ("6. 잘된 점 · 안된 점 (기록에서 보이는 사실)", self.sec_observe()),
+                ("2. 개선점과 앞으로 할 일", Plan(self).html()),
+                ("3. 매매별 성과", self.sec_kinds()),
+                ("4. 날짜별 손익 흐름", self.sec_flow(for_pdf)),
+                ("5. 매도 사유 · 보유 시간 · 시장 분위기별", self.sec_analysis()),
+                ("6. 실전 매매일지 (전 건)", self.sec_real_journal()),
+                ("7. 잘된 점 · 안된 점 (기록에서 보이는 사실)", self.sec_observe()),
                 ("부록 A. 🟢 모의 매매일지 (전 건)", self.sec_paper_journal()),
                 ("부록 B. 🟣 가상 매매일지 (전 건)", self.sec_virtual_journal()),
                 ("부록 C. 아직 들고 있는 것 · 자료 설명", self.sec_open_and_notes())]
@@ -734,7 +740,7 @@ r.dataset.theme=d==='dark'?'light':'dark';localStorage.setItem(k,r.dataset.theme
         secs = self.sections(True)
         blocks = [f'<h1 class="doc">📚 {esc(self.title())}</h1><p class="muted">{self.today:%Y-%m-%d} 기준 · 실제 기록만 씀 (백테스트 없음) · 🔴 실전 · 🟢 모의 · 🟣 가상</p>']
         for i, (t, b) in enumerate(secs):
-            cls_ = ' class="newpage"' if i in (6, 7, 8) else ""
+            cls_ = ' class="newpage"' if (t.startswith("부록") or t.startswith("2. ") or t.startswith("3. ")) else ""
             blocks.append(f"<h2{cls_}>{esc(t)}</h2>{b}")
         flow = "".join(blocks).replace('<div class="scroll">', "").replace("</table></div>", "</table>")
         abbr_js = "[" + ",".join(f"[{_js(k)},{_js(v)}]" for k, v in ABBR.items()) + "]"
@@ -744,6 +750,502 @@ r.dataset.theme=d==='dark'?'light':'dark';localStorage.setItem(k,r.dataset.theme
 var ABBR={abbr_js};
 {PAGINATE_JS}
 </script></body></html>"""
+
+
+# ------------------------------------------------------------------ 2절 개선점과 앞으로 할 일
+# 근거는 모두 위 Data 가 읽은 실제 매매 기록에서 셈. 판단(무엇을 켜고 끌지)은 사용자 몫이라 선택지로만 적음.
+MIN_N = 20                    # 판정에 필요한 끝난 건수 (모의 + 가상)
+ETF_MOVE_LIMIT = 0.10         # 1배 인버스 ETF 가 하루 만에 ±10% 넘게 움직인 기록은 체결 기록 이상으로 보고 평균에서 뺌
+UP_REAL_PRICE = 55_000        # 1️⃣ 상승장 장 초를 실전에서 뺄 때 쓴 기준 — 실전 계좌가 살 수 있는 값 (real.REAL_OFF 주석)
+try:
+    from kiwoom_trading.execution.real import ETF_CODES as _ETF, PLAYS as _PLAYS, REAL_OFF as _REAL_OFF
+    REAL_ON_LABELS = [lb for k, (lb, _, _) in _PLAYS.items() if k not in _REAL_OFF]
+    REAL_OFF_LABELS = [_PLAYS[k][0] for k in _REAL_OFF if k in _PLAYS]
+except Exception:
+    _ETF, REAL_ON_LABELS, REAL_OFF_LABELS = {"123310"}, [], []
+# 모의 매수까지 이미 꺼진 매매 (코드 기준) — 판정표에서 '이미 멈춤' 으로만 표시하고 다시 제안하지 않음
+PAPER_STOPPED = {
+    "🎯 돌파 후 눌림": "10-25 장중 종목 찾기 끔 (run_intraday.DISCOVERY = False) — 신호가 안 남",
+    "🎯 지지 반등": "10-25 장중 종목 찾기 끔 (run_intraday.DISCOVERY = False) — 신호가 안 남",
+    "🎯 눌림 돌파": "10-24 모의 매수 끔, 알림만 (paper.py)",
+    "🎯 대형주 수급": "11-09 모의 매수 끔 (PR #191)",
+    "3️⃣ 막힌 고점 돌파": "10-29 모의 안 삼 (paper.MOCK_OFF)",
+    "🧭 디앤서 14:30 주도주 종가": "10-25 알림만 (paper.py)",
+    "💰 10만 원 계좌": "가상 장부 끔 (PR #133)",
+}
+
+
+def base_kind(k: str) -> str:
+    """같은 매매의 다른 장부 이름을 하나로 (☕ 가상 장부·📕 수급 확인/없이·📅 일정)."""
+    k = re.sub(r" \((가상 장부|수급 확인|수급 없이)\)$", "", k)
+    return k.replace("📅 일정 ", "📅 ")
+
+
+def odd_fill(t: Trade) -> bool:
+    return t.code in _ETF and t.ret is not None and abs(t.ret) >= ETF_MOVE_LIMIT
+
+
+def gross(b: Optional[float], s: Optional[float]) -> Optional[float]:
+    return (s / b - 1) if (b and s) else None
+
+
+def kst(ts: list[Trade]) -> dict:
+    s = stats([t.pnl for t in ts])
+    rs = [t.ret for t in ts if t.ret is not None]
+    s["ret"] = sum(rs) / len(rs) if rs else None
+    return s
+
+
+def card(title: str, problem: str, direction: str, todo: str) -> str:
+    return (f'<div class="card"><b>{esc(title)}</b>'
+            f'<div><span class="tag t1">기록에서 드러난 문제</span>{esc(problem)}</div>'
+            f'<div><span class="tag t2">개선 방향</span>{esc(direction)}</div>'
+            f'<div><span class="tag t3">앞으로 할 일</span>{esc(todo)}</div></div>')
+
+
+def names(xs: list[str]) -> str:
+    return " · ".join(xs) if xs else "없음"
+
+
+class Plan:
+    def __init__(self, rep: "Report") -> None:
+        self.r = rep
+        self.d = rep.d
+        self.R = rep.real
+        self.P = [t for t in rep.paper if not odd_fill(t)]
+        self.V = [t for t in rep.virt if not odd_fill(t)]
+        self.odd = [t for t in rep.paper + rep.virt if odd_fill(t)]
+        self._a()
+        self._b()
+        self._c()
+        self._d()
+
+    # A. 실전과 모의 ------------------------------------------------------
+    def _a(self) -> None:
+        by = lambda ts: {k: [t for t in ts if base_kind(t.kind) == k] for k in {base_kind(t.kind) for t in ts}}
+        self.kR, self.kP, self.kV = by(self.R), by(self.P), by(self.V)
+        self.kP_raw = by(self.r.paper)
+        others = [t for t in self.r.paper + self.r.virt if t.sub != "가상 장부"]
+        self.pairs = []
+        for t in sorted(self.R, key=lambda t: t.buy_ts or datetime.min):
+            for p in others:
+                if p.code == t.code and p.buy_date == t.buy_date:
+                    self.pairs.append((t, p))
+        same = [(a, b) for a, b in self.pairs if base_kind(a.kind) == base_kind(b.kind) and not odd_fill(b)]
+        self.same_pairs = same
+        gaps = [gross(b.buy_price, a.buy_price) for a, b in same if a.buy_price and b.buy_price]
+        self.buy_gap = sum(gaps) / len(gaps) if gaps else None
+        self.buy_gap_max = max((abs(g) for g in gaps), default=None)
+        se = [(a, b) for a, b in same if sell_cat(a.reason) == sell_cat(b.reason)]
+        de = [(a, b) for a, b in same if sell_cat(a.reason) != sell_cat(b.reason)]
+        diff = lambda xs: (sum(gross(a.buy_price, a.sell_price) - gross(b.buy_price, b.sell_price) for a, b in xs) / len(xs)) if xs else None
+        self.same_exit, self.diff_exit = se, de
+        self.same_exit_diff, self.diff_exit_diff = diff(se), diff(de)
+
+    def sec_a(self) -> str:
+        rows, c1 = [], []
+        for k in sorted(self.kR, key=lambda k: -len(self.kR[k])):
+            sr = kst(self.kR[k])
+            sp = kst(self.kP[k]) if k in self.kP else None
+            sv = kst(self.kV[k]) if k in self.kV else None
+            gap = (sr["ret"] - sp["ret"]) if (sp and sr["ret"] is not None and sp["ret"] is not None) else None
+            note = ""
+            raw = self.kP_raw.get(k, [])
+            if len(raw) != (len(self.kP.get(k, []))):
+                note = f" (이상 체결 빼기 전 {pct(kst(raw)['ret'], 2)})"
+            rows.append([k, f"{sr['n']}", pct(sr["ret"], 2), f"{sp['n']}" if sp else "0", (pct(sp["ret"], 2) + note) if sp else "기록 없음",
+                         f"{sv['n']}" if sv else "0", pct(sv["ret"], 2) if sv else "기록 없음", pct(gap, 2) if gap is not None else "—"])
+            c1.append(gap * 1e4 if gap is not None else None)
+        t1 = table(["매매", "실전 건수", "실전 건당", "모의 건수", "모의 건당", "가상 건수", "가상 건당", "실전 − 모의"], rows,
+                   num_cols=(1, 2, 3, 5, 6, 7), cls_cols={7: c1})
+        prs, cc = [], []
+        for a, b in self.pairs:
+            ga, gb = gross(a.buy_price, a.sell_price), gross(b.buy_price, b.sell_price)
+            tag = "" if base_kind(a.kind) == base_kind(b.kind) else " (다른 매매)"
+            if odd_fill(b):
+                tag += " (이상 체결)"
+            mins = ((a.buy_ts - b.buy_ts).total_seconds() / 60) if (a.buy_ts and b.buy_ts) else None
+            dd = (ga - gb) if (ga is not None and gb is not None) else None
+            prs.append([f"{a.buy_date:%m-%d}", a.name, ("raw", f"{esc(a.kind)}<br>{esc(b.kind + (' · ' + b.sub if b.sub != '모의' else '') + tag)}"),
+                        ("raw", f"{px(a.buy_price)} / {px(b.buy_price)}<br>{esc(pct(gross(b.buy_price, a.buy_price), 2))} · {'—' if mins is None else f'{mins:+.0f}분'}"),
+                        f"{px(a.sell_price)} / {px(b.sell_price)}",
+                        ("raw", f"{esc(pct(ga, 2))} / {esc(pct(gb, 2) if gb is not None else '아직 보유')}<br><span class='{cls(dd * 1e4 if dd is not None else None)}'>{esc(pct(dd, 2))}</span>"),
+                        ("raw", f"{esc(sell_cat(a.reason))}<br>{esc(sell_cat(b.reason) if b.closed else '—')}")])
+        t2 = table(["산 날", "종목", "매매 (위 🔴 실전 · 아래 🟢 모의·🟣 가상)", "산 값 실전 / 모의 (차이 · 산 시각 차이)", "판 값 실전 / 모의",
+                    "손익률 실전 / 모의 (차이)", "매도 사유 (위 실전 · 아래 모의)"], prs, num_cols=(3, 4, 5), tcls="pairs")
+        odd = "".join(f"{t.name} {t.kind} {t.buy_date:%m-%d} 산 값 {px(t.buy_price)} → 판 값 {px(t.sell_price)} ({pct(t.ret)})" for t in self.odd)
+        se, de = self.same_exit, self.diff_exit
+        k5 = "5️⃣ 약세장 인버스"
+        p5 = kst(self.kP.get(k5, [])) if k5 in self.kP else None
+        p5raw = kst(self.kP_raw.get(k5, [])) if k5 in self.kP_raw else None
+        r5 = kst(self.kR[k5]) if k5 in self.kR else None
+        txt5 = ""
+        if p5 and p5raw and r5:
+            txt5 = (f"{k5}는 모의 건당 {pct(p5raw['ret'], 2)} 로 보였지만 이상 체결 1건을 빼면 {p5['n']}건 {pct(p5['ret'], 2)} 로 실전({r5['n']}건 {pct(r5['ret'], 2)})과 같은 쪽(손실)임. ")
+        no_paper = [k for k in self.kR if k not in self.kP]
+        prob = (f"{txt5}실전과 모의가 같은 날 같은 종목을 같은 매매로 산 {len(self.same_pairs)}건에서 산 값 차이는 평균 {pct(self.buy_gap, 2)} (가장 클 때 {pct(self.buy_gap_max, 2)}) 로 작음. "
+                f"손익률 차이는 매도 사유가 같은 {len(se)}건은 평균 {pct(self.same_exit_diff, 2)}, 매도 사유가 다른 {len(de)}건은 평균 {pct(self.diff_exit_diff, 2)} 임. "
+                f"실전에서 산 매매 중 {names(no_paper)}는 모의 계좌 기록이 하나도 없어 실전과 견줄 수 없음.")
+        return f"""
+<h3>A. 실전과 모의의 차이</h3>
+<p class="muted">손익률은 같은 매매 이름으로 묶은 건당 평균임 (실전은 비용 뺀 값, 모의는 0.25% 뺀 값). 아래 짝 표의 손익률은 두 쪽을 똑같이 비용 빼기 전 값(판 값 ÷ 산 값 − 1)으로 견줌.</p>
+{t1}
+<p class="muted">체결 기록 이상: {esc(odd or '없음')} — 1배 인버스 ETF 가 하룻밤에 ±{ETF_MOVE_LIMIT:.0%} 넘게 움직인 기록이라 이 절의 평균·판정에서 뺌.</p>
+<h3>같은 날 같은 종목을 실전·모의 둘 다 산 건</h3>{t2}
+{card("A. 실전과 모의가 갈리는 곳", prob,
+      "체결 값은 거의 같으니 실전·모의 결과 차이는 '언제 팔았나' 와 '모의에서 아예 못 산 매매' 에서 생김. 매도 규칙을 실전·모의에 똑같이 맞추고, 실전 매매는 모의에도 반드시 기록이 남게 해야 함.",
+      "매주 금요일 이 표를 다시 봄. 매도 사유가 다른 짝이 나오면 그 주에 어느 쪽 규칙이 바뀌었는지 확인함. 실전 매매 중 모의 기록이 없는 매매는 아래 '앞으로 할 일 3' 의 매매별 가상 계좌로 먼저 기록을 쌓음.")}"""
+
+    # B. 실전 손익 구조 ---------------------------------------------------
+    def _b(self) -> None:
+        R = sorted(self.R, key=lambda t: t.sell_ts)
+        self.Rs = R
+        self.wins = [t for t in R if t.pnl > 0]
+        self.losses = [t for t in R if t.pnl <= 0]
+        run = mx = 0
+        mx_end = None
+        for t in R:
+            run = run + 1 if t.pnl <= 0 else 0
+            if run > mx:
+                mx, mx_end = run, t.sell_ts
+        self.max_streak, self.max_streak_end, self.cur_streak = mx, mx_end, run
+        self.cur_streak_sum = sum(t.pnl for t in R[len(R) - run:]) if run else 0.0
+        self.cur_streak_from = R[len(R) - run].sell_ts if run else None
+        wk = defaultdict(list)
+        for t in R:
+            wk[t.sell_ts.date() - timedelta(days=t.sell_ts.weekday())].append(t)
+        self.weeks = sorted(wk.items())
+        # 기준에 처음 닿은 때와 그 뒤 실전 손익 (기록 그대로)
+        self.trig = {}
+        for n in (3, 5):
+            run = 0
+            for i, t in enumerate(R):
+                run = run + 1 if t.pnl <= 0 else 0
+                if run >= n:
+                    after = R[i + 1:]
+                    self.trig[f"{n}연패"] = (t.sell_ts, len(after), sum(x.pnl for x in after))
+                    break
+        for lim in (0.03, 0.05):
+            hit = None
+            for mon, ts in self.weeks:
+                cum = 0.0
+                for i, t in enumerate(ts):
+                    cum += t.pnl
+                    if cum <= -lim * REAL_SEED:
+                        hit = (t.sell_ts, ts[i + 1:])
+                        break
+                if hit:
+                    break
+            if hit:
+                self.trig[f"주간 −{lim:.0%}"] = (hit[0], len(hit[1]), sum(x.pnl for x in hit[1]))
+
+    def sec_b(self) -> str:
+        W, L = self.wins, self.losses
+        sw, sl = kst(W), kst(L)
+        aw = sum(t.pnl for t in W) / len(W) if W else None
+        al = sum(t.pnl for t in L) / len(L) if L else None
+        rw = sum(t.ret for t in W) / len(W) if W else None
+        rl = sum(t.ret for t in L) / len(L) if L else None
+        t0 = table(["구분", "건수", "합계", "건당 평균 (원)", "건당 평균 (손익률)"],
+                   [["이긴 매매", f"{len(W)}", won(sum(t.pnl for t in W)), won(aw), pct(rw, 2)],
+                    ["진 매매", f"{len(L)}", won(sum(t.pnl for t in L)), won(al), pct(rl, 2)]],
+                   num_cols=(1, 2, 3, 4), cls_cols={2: [sw["sum"], sl["sum"]]})
+        rc = by_key(L, lambda t: sell_cat(t.reason))
+        rc.sort(key=lambda kv: kv[1]["sum"])
+        t1 = table(["진 매매의 매도 사유", "건수", "손실 합계", "건당 평균"], [[k, f"{v['n']}", won(v["sum"]), won(v["avg"])] for k, v in rc],
+                   num_cols=(1, 2, 3), cls_cols={2: [v["sum"] for _, v in rc]})
+        hold = []
+        for h in HOLD_ORDER:
+            w = [t for t in W if hold_cat(t) == h]
+            l = [t for t in L if hold_cat(t) == h]
+            if w or l:
+                hold.append([h, f"{len(w)}", f"{len(l)}", won(sum(t.pnl for t in w + l))])
+        t2 = table(["보유 시간", "이긴 건수", "진 건수", "합계"], hold, num_cols=(1, 2, 3))
+        direct = [t for t in self.Rs if sell_cat(t.reason) == "직접 매도 (사용자)"]
+        auto = [t for t in self.Rs if sell_cat(t.reason) != "직접 매도 (사용자)"]
+        sd, sa = kst(direct), kst(auto)
+        t3 = table(["누가 팔았나", "건수", "이김 / 짐", "합계", "건당 손익률"],
+                   [["사용자가 직접 판 것", f"{sd['n']}", f"{sd['w']} / {sd['l']}", won(sd["sum"]), pct(sd["ret"], 2)],
+                    ["규칙대로 자동으로 판 것", f"{sa['n']}", f"{sa['w']} / {sa['l']}", won(sa["sum"]), pct(sa["ret"], 2)]],
+                   num_cols=(1, 2, 3, 4), cls_cols={3: [sd["sum"], sa["sum"]]})
+        wrows = [[f"{m:%m-%d} 주", f"{len(ts)}", f"{sum(1 for t in ts if t.pnl > 0)}", won(sum(t.pnl for t in ts)), pct(sum(t.pnl for t in ts) / REAL_SEED)]
+                 for m, ts in self.weeks]
+        t4 = table(["주 (월요일)", "건수", "이긴 건수", "합계", f"시드 {REAL_SEED / 1e4:,.0f}만 원 대비"], wrows, num_cols=(1, 2, 3, 4),
+                   cls_cols={3: [sum(t.pnl for t in ts) for _, ts in self.weeks]})
+        top_loss = rc[0] if rc else None
+        auto_loss = [t for t in L if sell_cat(t.reason) != "직접 매도 (사용자)"]
+        prob = (f"실전 {len(self.Rs)}건 중 {len(W)}건만 이김. 이긴 건 평균 {won(aw)} 인데 진 건 평균 {won(al)} 이라 손익비 {num((aw / -al) if (aw and al) else None)} 임. "
+                + (f"진 매매 중 가장 큰 손실 사유는 '{top_loss[0]}' {top_loss[1]['n']}건 {won(top_loss[1]['sum'])}. " if top_loss else "")
+                + f"가장 길게 이어진 연속 손실은 {self.max_streak}건, 지금도 {self.cur_streak}연패 중 ({self.cur_streak_from:%m-%d} 부터 {won(self.cur_streak_sum)}). "
+                + f"사용자가 직접 판 {sd['n']}건은 합계 {won(sd['sum'])}, 자동으로 판 {sa['n']}건은 {won(sa['sum'])}.")
+        return f"""
+<h3>B. 실전 손익 구조</h3>
+<p class="muted">손익은 비용을 뺀 값. 판 시각 순서로 셈.</p>
+{t0}
+<h3>진 매매는 어떻게 팔렸나</h3>{t1}
+<h3>보유 시간별 이김·짐</h3>{t2}
+<h3>사용자가 직접 판 것 vs 자동으로 판 것</h3>{t3}
+<h3>주별 실전 손익</h3>{t4}
+{card("B. 실전은 지는 횟수도 많고, 한 번 질 때 잃는 돈도 큼", prob,
+      "실전에서 손실이 이어질 때 자동으로 새 매수를 멈추는 장치가 필요함. 사용자가 직접 판 매매가 자동 매도보다 결과가 나았던 까닭(언제·왜 팔았는지)을 매매일지에 남겨 규칙으로 옮길 수 있는지 봄.",
+      "아래 '앞으로 할 일 2' 의 연속 손실 멈춤 숫자를 사용자가 고르면 바로 넣음. 직접 판 매매는 매번 일지 복기 칸에 '규칙대로였으면 얼마' 를 적음 (이미 있는 기능). 손실 사유는 '앞으로 할 일 7' 로 매일 한 줄씩 쌓음.")}"""
+
+    # C. 모의 계좌 자금·자리 부족 -----------------------------------------
+    def _c(self) -> None:
+        held = defaultdict(list)    # code → [(kind, buy_ts, sell_ts)] 모의 계좌가 실제로 산 것
+        for kind, status, note, virt, ovf, code, sts, bts, xts, d in self.d.signal_rows:
+            if bts is not None and not virt and not ovf:
+                held[code].append((kind, bts, xts))
+        agg = defaultdict(lambda: defaultdict(int))
+        cash_days = set()
+        for kind, status, note, virt, ovf, code, sts, bts, xts, d in self.d.signal_rows:
+            k = base_kind(J.label(kind))
+            a = agg[k]
+            a["signals"] += 1
+            if ovf:
+                a["overflow"] += 1
+                if "주문 가능 금액 부족" in note:
+                    a["ovf_cash"] += 1
+                    cash_days.add(d)
+                continue
+            if bts is not None:
+                a["bought" if not virt else "nxt"] += 1
+                continue
+            if status != "skipped":
+                continue
+            if note.startswith("주문 가능 금액 부족"):
+                a["cash"] += 1
+                cash_days.add(d)
+            elif re.search(r"최대 \d+종목 보유 중|동시 \d+종목 보유 중", note):
+                a["slots"] += 1
+            elif note.startswith("이미 보유 중"):
+                other = any(h[0] != kind and h[1] <= (sts or h[1]) and (h[2] is None or h[2] > (sts or h[1])) for h in held.get(code, []))
+                a["other" if other else "same"] += 1
+            else:
+                a["rule"] += 1
+        self.cagg = agg
+        self.cash_days = cash_days
+        self.c_tot = {x: sum(a[x] for a in agg.values()) for x in ("cash", "slots", "overflow", "other", "bought", "signals", "ovf_cash")}
+
+    def sec_c(self) -> str:
+        rows, rv = [], []
+        for k, a in self.cagg.items():
+            blocked = a["cash"] + a["slots"] + a["overflow"] + a["other"]
+            if not blocked:
+                continue
+            base = a["bought"] + a["nxt"] + blocked
+            rows.append((blocked / base if base else 0, [k + (" (이미 멈춤)" if k in PAPER_STOPPED else ""), f"{a['signals']}", f"{a['bought']}", f"{a['nxt']}",
+                                                          f"{a['overflow']}", f"{a['cash']}", f"{a['slots']}", f"{a['other']}", f"{blocked / base:.0%}" if base else "—"]))
+        rows.sort(key=lambda x: -x[0])
+        t = table(["매매", "신호 전체", "모의 계좌로 삼", "NXT 가상 체결", "잔고 밖 가상", "주문 가능 금액 부족", "보유 한도 (최대 N종목)", "다른 매매가 같은 종목 보유",
+                   "못 산 비율"], [r for _, r in rows], num_cols=(1, 2, 3, 4, 5, 6, 7, 8), tcls="wide ctab")
+        self.c_worst = [r[1][0] for r in rows if r[0] >= 0.5 and not r[1][0].endswith("(이미 멈춤)")]
+        ct = self.c_tot
+        k6 = "6️⃣ 주도주 신고가"
+        a6 = self.cagg.get(k6, {})
+        p6 = (f"{k6}는 실전에서 산 매매인데 모의 신호 {a6.get('signals', 0)}건 중 {a6.get('other', 0)}건이 다른 매매가 같은 종목을 먼저 사서 막혔고, 모의 기록이 0건임. "
+              if a6 and not a6.get("bought") else "")
+        prob = (f"모의 계좌 하나({PAPER_START / 1e4:,.0f}만 원)를 여러 매매가 같이 써서, 돈이나 자리가 없어 못 산 신호가 "
+                f"주문 가능 금액 부족 {ct['cash']}건 · 보유 한도 {ct['slots']}건 · 다른 매매가 같은 종목을 먼저 산 것 {ct['other']}건 · 잔고 밖 가상으로 돌린 것 {ct['overflow']}건임 "
+                f"(같은 기간 모의 계좌가 실제로 산 것은 {ct['bought']}건). 주문 가능 금액이 모자란 날은 {len(self.cash_days)}일. {p6}"
+                f"아직 켜진 매매 중 절반 넘게 못 산 매매: {names(self.c_worst)}.")
+        return f"""
+<h3>C. 모의 계좌 하나를 나눠 써서 생긴 왜곡</h3>
+<p class="muted">paper_trades 의 신호 기록(건너뜀 포함)에서 셈. '다른 매매가 같은 종목 보유' 는 '이미 보유 중' 으로 건너뛴 신호 중 그 시각 모의 계좌가 다른 매매로 같은 종목을 들고 있던 것. 잔고 밖 가상은 못 산 신호를 계좌 밖에서 가상으로 적은 것(10-29 부터). 비율 = (못 산 신호) ÷ (모의 계좌로 산 것 + NXT 가상 체결 + 못 산 신호). 시장 분위기·엄격 선정처럼 규칙으로 안 산 신호는 셈에서 뺌.</p>
+{t}
+{card("C. 어떤 매매는 모의로 제대로 재지 못함", prob,
+      "매매마다 따로 가상 계좌를 두어 돈·자리 다툼 없이 모든 신호를 같은 크기로 기록해야 매매끼리 공정하게 견줄 수 있음.",
+      "'앞으로 할 일 3' 대로 매매별 가상 계좌(예: 각 100만 원)를 만들고, 모의 계좌는 지금처럼 실주문 체결 확인용으로 둠. 넣은 뒤 첫 금요일 보고서부터 이 표의 '못 산 비율' 이 0% 가 되는지 확인함.")}"""
+
+    # D. 매매별 판정 ------------------------------------------------------
+    def _d(self) -> None:
+        kinds = []
+        for g in (self.kR, self.kP, self.kV):
+            for k in g:
+                if k not in kinds:
+                    kinds.append(k)
+        out = []
+        for k in kinds:
+            sr = kst(self.kR[k]) if k in self.kR else None
+            sp = kst(self.kP[k]) if k in self.kP else None
+            sv = kst(self.kV[k]) if k in self.kV else None
+            n = (sp["n"] if sp else 0) + (sv["n"] if sv else 0)
+            have = [s for s in (sp, sv) if s and s["n"]]
+            if k in PAPER_STOPPED:
+                v = "이미 멈춤"
+            elif n < MIN_N:
+                v = "지켜봄"
+            elif all((s["ret"] or 0) > 0 and (s["pf"] is None or s["pf"] > 1) for s in have):
+                v = "유지"
+            elif all((s["ret"] or 0) < 0 for s in have):
+                v = "멈춤 검토"
+            else:
+                v = "지켜봄"
+            why = ("" if v != "지켜봄" else (f"모의+가상 {n}건 (<{MIN_N})" if n < MIN_N else "모의·가상 결과가 엇갈림"))
+            if v == "이미 멈춤":
+                why = PAPER_STOPPED[k]
+            state = ("실전 켜짐" if k in REAL_ON_LABELS else "실전 뺌 · 모의만" if k in REAL_OFF_LABELS else "모의·가상만") if k not in PAPER_STOPPED else "모의 매수 꺼짐"
+            out.append((k, state, sr, sp, sv, n, v, why))
+        order = {"유지": 0, "지켜봄": 1, "멈춤 검토": 2, "이미 멈춤": 3}
+        out.sort(key=lambda x: (order[x[6]], -x[5]))
+        self.dres = out
+        self.groups = {g: [x[0] for x in out if x[6] == g] for g in order}
+
+    def sec_d(self) -> str:
+        def cell(s):
+            if not s or not s["n"]:
+                return ("raw", '<span class="muted">—</span>')
+            return ("raw", f"{s['n']}건 · 건당 <span class='{cls(s['ret'] * 1e4 if s['ret'] is not None else None)}'>{esc(pct(s['ret'], 2))}</span><br>"
+                           f"<span class='{cls(s['sum'])}'>{esc(won(s['sum']))}</span> · PF {esc(num(s['pf']))}")
+        rows = [[k, st, cell(sr), cell(sp), cell(sv), ("raw", f"<b>{esc(v)}</b>" + (f"<br><span class='muted'>{esc(why)}</span>" if why else ""))]
+                for k, st, sr, sp, sv, n, v, why in self.dres]
+        t = table(["매매", "지금 상태", "🔴 실전", "🟢 모의", "🟣 가상", "판정"], rows, tcls="verdict")
+        G = self.groups
+        prob = (f"모의·가상 기록 기준으로 유지 {len(G['유지'])}개 · 지켜봄 {len(G['지켜봄'])}개 · 멈춤 검토 {len(G['멈춤 검토'])}개 · 이미 멈춤 {len(G['이미 멈춤'])}개. "
+                f"지금 실전에 켜진 매매({names(REAL_ON_LABELS)}) 가운데 '유지' 에 든 것: {names([k for k in REAL_ON_LABELS if k in G['유지']])}.")
+        return f"""
+<h3>D. 매매별 판정표</h3>
+<p class="muted">판정 기준 (모의·가상 기록만 봄, 실전은 건수가 적어 참고): 유지 = 모의·가상 중 기록 있는 쪽이 모두 건당 + 이고 PF 1 넘음, 끝난 건수 {MIN_N}건 이상 ·
+지켜봄 = {MIN_N}건 미만이거나 모의·가상 결과가 엇갈림 · 멈춤 검토 = 기록 있는 쪽이 모두 건당 − 이고 {MIN_N}건 이상 · 이미 멈춤 = 코드에서 모의 매수가 이미 꺼진 매매(다시 제안 안 함).
+같은 매매의 장부는 하나로 묶음 (☕ 가상 장부, 📕 수급 확인·수급 없이). 이상 체결 기록은 뺌.</p>
+{t}
+<div class="note"><b>묶음별 목록</b>
+<div>유지: {esc(names(G['유지']))}</div>
+<div>지켜봄: {esc(names(G['지켜봄']))}</div>
+<div>멈춤 검토: {esc(names(G['멈춤 검토']))}</div>
+<div>이미 멈춤: {esc(names(G['이미 멈춤']))}</div></div>
+{card("D. 실전에 켜진 매매 대부분이 모의·가상에서 아직 + 로 확인되지 않음", prob,
+      "실전 돈은 모의·가상에서 + 가 충분히 쌓인 매매에만 쓰고, 나머지는 모의·가상에서 기록을 더 쌓는 쪽이 기록과 맞음.",
+      f"이 판정표를 매주 금요일 다시 만들고, 묶음이 바뀐 매매만 사용자에게 알림. 멈춤 검토 매매({names(G['멈춤 검토'])}) 는 사용자가 정하면 모의 매수를 끔.")}"""
+
+    # E. 조건 있음 / 없음 --------------------------------------------------
+    def sec_e(self) -> str:
+        rows, vals = [], []
+
+        def add(group: str, label: str, ts: list[Trade]):
+            s = kst(ts)
+            rows.append([group, label, f"{s['n']}", rate(s["win"]), pct(s["ret"], 2), won(s["sum"]), num(s["pf"])])
+            vals.append(s["sum"] if s["n"] else None)
+
+        V = self.r.virt
+        hk = [t for t in V if t.kind == J.BOOK_LABEL["수급 확인"]]
+        hn = [t for t in V if t.kind == J.BOOK_LABEL["수급 없이"]]
+        hr = self.kR.get("📕 홍인기 상한가 풀림", [])
+        add("📕 홍인기 상한가 풀림", "수급 확인 (기관 가집계·프로그램 둘 다 순매수일 때만) · 가상 장부", hk)
+        add("📕 홍인기 상한가 풀림", "수급 없이 (실전이 따라 사는 장부) · 가상 장부", hn)
+        add("📕 홍인기 상한가 풀림", "실전 (수급 없이 장부와 같은 신호)", hr)
+        up = self.kP.get("1️⃣ 상승장 장 초", [])
+        add("1️⃣ 상승장 장 초", f"모의 · 산 값 {UP_REAL_PRICE:,}원 이하 (실전 계좌가 살 수 있는 값)", [t for t in up if t.buy_price <= UP_REAL_PRICE])
+        add("1️⃣ 상승장 장 초", f"모의 · 산 값 {UP_REAL_PRICE:,}원 넘음", [t for t in up if t.buy_price > UP_REAL_PRICE])
+        add("1️⃣ 상승장 장 초", "실전", self.kR.get("1️⃣ 상승장 장 초", []))
+        vw = [(a, b) for a, b in self.same_pairs if sell_cat(a.reason) == "VWAP 이탈"]
+        for a, b in vw:
+            rows.append(["VWAP 이탈 매도", f"{a.buy_date:%m-%d} {a.name} {a.kind}: 실전 VWAP 이탈 매도 vs 모의 원래 규칙 ({sell_cat(b.reason)})", "1",
+                         "—", f"{pct(gross(a.buy_price, a.sell_price), 2)} / {pct(gross(b.buy_price, b.sell_price), 2)}", "—", "—"])
+            vals.append(None)
+        # 같은 매매가 시장 분위기에 따라 갈리는 것 (분위기마다 3건 이상)
+        self.reg_rows = []
+        for k, ts in sorted(self.kP.items(), key=lambda kv: -len(kv[1])):
+            if k in PAPER_STOPPED:
+                continue
+            byr = defaultdict(list)
+            for t in ts:
+                if not t.regime.startswith("기록 없음"):
+                    byr[t.regime].append(t)
+            ok = {r: x for r, x in byr.items() if len(x) >= 3}
+            if len(ok) >= 2:
+                for r, x in sorted(ok.items(), key=lambda kv: -len(kv[1])):
+                    add(k + " (시장 분위기)", f"모의 · 산 날 {r}", x)
+                    self.reg_rows.append(f"{k} {r} {len(x)}건 {pct(kst(x)['ret'], 2)}")
+        t = table(["매매", "조건", "건수", "승률", "건당 손익률", "합계", "PF"], rows, num_cols=(2, 3, 4, 5, 6), cls_cols={5: vals})
+        shk, shn = kst(hk), kst(hn)
+        sup_l = kst([t for t in up if t.buy_price <= UP_REAL_PRICE])
+        sup_h = kst([t for t in up if t.buy_price > UP_REAL_PRICE])
+        prob = (f"📕 홍인기 상한가 풀림은 실전이 따라 사는 '수급 없이' 장부가 {shn['n']}건 건당 {pct(shn['ret'], 2)} · 합계 {won(shn['sum'])} 이고, '수급 확인' 장부는 {shk['n']}건 {pct(shk['ret'], 2)} 뿐이라 아직 비교가 안 됨. "
+                f"1️⃣ 상승장 장 초의 모의 + 는 산 값 {UP_REAL_PRICE / 1e4:,.1f}만 원 넘는 종목({sup_h['n']}건 {pct(sup_h['ret'], 2)}) 에서 나왔고, 실전 계좌가 살 수 있는 값의 종목은 {sup_l['n']}건 {pct(sup_l['ret'], 2)} 임. "
+                + (f"같은 매매가 시장 분위기에 따라 갈린 것 (분위기마다 3건 이상, 판정 기록 있는 날만): {' · '.join(self.reg_rows)}. " if self.reg_rows else "")
+                + "조건 때문에 건너뛴 신호(예: 🎯 주도주 모양 '전날 외인·기관 둘 다 순매수 아님', 1️⃣ '전날 외인·기관 둘 다 순매도')는 결과 기록이 없어 조건 효과를 셀 수 없음.")
+        return f"""
+<h3>E. 같은 매매의 조건 있음 / 없음</h3>
+<p class="muted">기록에 두 갈래가 함께 남아 있는 것만 견줌. 손익률은 건당 평균, 짝 비교 줄은 '실전 / 모의' 비용 빼기 전 손익률.</p>
+{t}
+{card("E. 조건 효과는 아직 건수가 모자라거나, 실전 금액 크기와 엮여 있음", prob,
+      f"📕 는 실전이 '수급 확인' 장부를 따르게 바꿀지 판단하려면 수급 확인 장부 건수가 더 필요함. 1️⃣ 는 실전 시드로 살 수 있는 값의 종목만 따로 계속 셈. 시장 분위기로 갈리는 매매는 지금 매수하는 분위기가 맞는지 기록으로 계속 확인함.",
+      "📕 수급 확인 장부가 20건 쌓이는 금요일에 이 표로 다시 견줌. 1️⃣ 는 시드를 늘릴 때(앞으로 할 일 6) '살 수 있는 값' 이 바뀌므로 그때 이 줄을 기준으로 다시 봄.")}"""
+
+    # 앞으로 할 일 --------------------------------------------------------
+    def sec_todo(self) -> str:
+        G = self.groups
+        keep = G["유지"]
+        move = [k for k in REAL_ON_LABELS if k not in keep]
+        tr = self.trig
+
+        def trig_txt(key):
+            if key not in tr:
+                return f"{key}: 기록에서 한 번도 닿지 않음"
+            ts, n, s = tr[key]
+            if key.startswith("주간"):
+                return f"{key}: {ts:%m-%d %H:%M} 에 처음 닿았고 그 주에 그 뒤로 난 실전 {n}건 합계 {won(s)}"
+            return f"{key}: {ts:%m-%d %H:%M} 에 처음 닿았고 그 뒤 지금까지 실전 {n}건 합계 {won(s)}"
+        losses_by = by_key(self.losses, lambda t: sell_cat(t.reason))
+        lose_txt = " · ".join(f"{k} {v['n']}건" for k, v in sorted(losses_by, key=lambda kv: -kv[1]["n"]))
+        ct = self.c_tot
+        # 시드 증액 조건: 최근 4주(월~금) 매주 PF 1.2 이상 & 4주 합계 30건 이상인 매매 (모의 또는 가상)
+        last_mon = self.r.last - timedelta(days=self.r.last.weekday())
+        mons = [last_mon - timedelta(weeks=i) for i in range(3, -1, -1)]
+        ok_seed = []
+        for k in set(self.kP) | set(self.kV):
+            for g in (self.kP, self.kV):
+                ts = g.get(k, [])
+                wk = [[t for t in ts if t.sell_ts.date() - timedelta(days=t.sell_ts.weekday()) == m] for m in mons]
+                if sum(len(w) for w in wk) >= 30 and all(w and (stats([t.pnl for t in w])["pf"] or 0) >= 1.2 for w in wk):
+                    ok_seed.append(k)
+        items = [
+            ("실전 범위 정리", f"D 판정표 기준 '유지' 묶음: {names(keep)}. 지금 실전에 켜진 매매 {len(REAL_ON_LABELS)}개 중 '유지' 가 아닌 것: {names(move)}.",
+             "지금 있는 기능: 매매별 실전 켜고 끄기(real.REAL_OFF). 새로 필요: 없음 (목록만 고치면 됨).",
+             f"선택지 — 가) 실전은 '유지' 매매만 남기고 {names(move)} 는 모의로만 · 나) 지금 그대로 두고 매주 판정만 봄 · 다) 일부만 뺌. "
+             + ("참고: '유지' 의 1️⃣ 상승장 장 초는 모의 + 가 실전 시드로는 못 사는 값의 종목에서 나왔음(E). " if "1️⃣ 상승장 장 초" in keep else "")
+             + "결정은 사용자 몫임."),
+            ("실전 연속 손실 자동 멈춤", f"최대 {self.max_streak}연패, 지금 {self.cur_streak}연패 ({won(self.cur_streak_sum)}). " + " · ".join(trig_txt(k) for k in ("3연패", "5연패", "주간 −3%", "주간 −5%")) + ".",
+             "지금 있는 기능: 텔레그램 '실전 쉼'(그날 새 매수만 멈춤)·'멈춰'(스캐너 끔) — 사람이 보내야 함. 새로 필요: 기준에 닿으면 자동으로 실전 새 매수를 멈추고 텔레그램으로 알리는 장치 (손절·다음 날 매도는 그대로).",
+             f"선택지 — 가) 5연패 · 나) 주간 −3% (시드 {REAL_SEED:,.0f}원이면 −{REAL_SEED * 0.03:,.0f}원) · 다) 둘 중 먼저 닿는 것 · 라) 3연패. 다시 켜는 방법도 함께 고름 (다음 주 월요일 자동 / 사용자 '실전 재개')."),
+            ("모의 측정을 매매별 가상 계좌로", f"주문 가능 금액 부족 {ct['cash']}건 · 보유 한도 {ct['slots']}건 · 다른 매매가 같은 종목 보유 {ct['other']}건 · 잔고 밖 가상 {ct['overflow']}건 (C). 절반 넘게 못 산 매매: {names(self.c_worst)}.",
+             "지금 있는 기능: 잔고 밖 가상(overflow)으로 일부 신호를 계좌 밖에 적음, 🔁·📍·🪜 전용 몫. 새로 필요: 매매마다 따로 시작 금액을 둔 가상 계좌(돈·자리 다툼 없음)와 매매별 계좌 곡선.",
+             "선택지 — 가) 매매별 각 100만 원 · 나) 각 1천만 원(모의 계좌와 같은 크기) · 다) 실전과 같은 종목당 3만 원 크기도 함께 적음."),
+            ("실전·모의 체결 차이 기록", f"같은 날 같은 종목 같은 매매 짝 {len(self.same_pairs)}건, 산 값 차이 평균 {pct(self.buy_gap, 2)}, 매도 사유가 달랐던 짝 {len(self.diff_exit)}건 (A).",
+             "지금 있는 기능: real_trades 에 산 값·판 값·사유만 남음. 새로 필요: 실전 주문마다 신호가·주문가·체결가·주문 때 매수/매도 1호가를 남기고, 매주 금요일 신호가 대비 체결 차이를 표로 봄.",
+             "선택지 — 가) 실전만 기록 · 나) 실전·모의 둘 다 기록."),
+            ("종목 선정 강화 (하승훈 카페 '핫이슈 테마 체크' 종목 안에서만 삼)", f"실전 {len(self.Rs)}건 중 {len(self.wins)}건만 이김 (승률 {rate(len(self.wins) / len(self.Rs) if self.Rs else None)}).",
+             "지금 있는 기능: 카페 목록 글 제목은 로그인 없이 읽힘. 새로 필요: 본문 읽기(네이버 로그인 쿠키 필요)·종목 뽑기·모든 실전·모의 매수에 '카페 목록 안' 조건 붙이기 — 사용자가 쿠키를 넣으면 바로 적용하도록 대기 중.",
+             "선택지 — 범위 가) 전날 특징테마 글만 · 나) 특징테마 + 일자별 테마주 정리 둘 다 · 다) 최근 N일 글."),
+            ("평가 주기와 시드 증액 기준", f"지금 '최근 4주 매주 PF 1.2 이상 · 4주 합계 30건 이상' 을 채운 매매(모의 또는 가상): {names(sorted(set(ok_seed)))}.",
+             "지금 있는 기능: 이 보고서를 손으로 만드는 명령(full_report), 금요일 📓 주간 매매일지. 새로 필요: 매주 금요일 20:30 이 보고서 자동 생성·텔레그램 전송, 시드 증액 조건 자동 점검.",
+             "선택지 — 시드 100만 원으로 늘리는 조건 가) 모의 또는 가상 4주 연속 매주 PF 1.2 이상 & 30건 이상 · 나) 같은 조건 + 실전도 2주 연속 + · 다) 6주 연속 PF 1.1 이상 & 50건 이상."),
+            ("매매일지에 실전 손실 원인 한 줄", f"실전 진 매매 {len(self.losses)}건의 매도 사유: {lose_txt}.",
+             "지금 있는 기능: 📓 매일 매매일지와 복기 칸(손절·직접 매도·손절선 1% 안 접근·놓친 +5%·연속 손실 표시). 새로 필요: 그날 실전 손실 건마다 원인 한 줄(신호가 약했나·늦게 샀나·체결 차이·시장 분위기·매도 규칙) 자동 기록과 주간 묶음 집계.",
+             "선택지 — 가) 자동 분류만 · 나) 자동 분류 + 사용자가 텔레그램으로 한 줄 덧붙이기."),
+        ]
+        lis = "".join(f'<div class="todo"><b>{i}. {esc(t)}</b><div><span class="tag t1">기록 근거</span>{esc(a)}</div><div><span class="tag t2">있는 것 · 새로 필요</span>{esc(b)}</div>'
+                      f'<div><span class="tag t3">고를 것</span>{esc(c)}</div></div>' for i, (t, a, b, c) in enumerate(items, 1))
+        return f"""
+<h3>앞으로 할 일 (번호로 골라 주면 그대로 진행함)</h3>
+<p class="muted">각 항목은 위 A~E 의 기록 숫자를 근거로 함. 바꿀지·어떤 숫자로 할지는 사용자가 정함.</p>
+{lis}"""
+
+    def html(self) -> str:
+        G = self.groups
+        ct = self.c_tot
+        k5 = "5️⃣ 약세장 인버스"
+        p5 = kst(self.kP.get(k5, [])) if k5 in self.kP else None
+        top = [f"🔴 실전은 {len(self.Rs)}건 중 {len(self.wins)}건 이김, 합계 {won(sum(t.pnl for t in self.Rs))} (시드 대비 {sum(t.pnl for t in self.Rs) / REAL_SEED:+.1%}), 지금 {self.cur_streak}연패 중.",
+               f"실전과 모의가 같은 매매로 같은 종목을 산 {len(self.same_pairs)}건에서 산 값 차이는 평균 {pct(self.buy_gap, 2)} 로 작음. 결과 차이는 언제 팔았나에서 생김."
+               + (f" {k5}의 모의 + 는 이상 체결 1건 때문이었고 빼면 {pct(p5['ret'], 2)}." if (p5 and self.odd) else ""),
+               f"모의 계좌를 여러 매매가 나눠 써서 돈·자리 때문에 못 산 신호가 {ct['cash'] + ct['slots'] + ct['other'] + ct['overflow']}건임 (모의 계좌로 산 것 {ct['bought']}건).",
+               f"판정: 유지 {names(G['유지'])} / 멈춤 검토 {names(G['멈춤 검토'])} / 지켜봄 {len(G['지켜봄'])}개 / 이미 멈춤 {len(G['이미 멈춤'])}개."]
+        head = ('<p>사용자가 가장 먼저 볼 절임. 모든 숫자는 실제 매매 기록(실전·모의·가상)에서 셈. 각 항목은 <b>기록에서 드러난 문제 → 개선 방향 → 앞으로 할 일</b> 순서로 적음. '
+                '무엇을 바꿀지는 사용자가 정하고, 맨 아래 \'앞으로 할 일\' 번호로 고르면 됨.</p>'
+                '<div class="note"><b>한눈에 보기</b>' + "".join(f"<div>· {esc(x)}</div>" for x in top) + "</div>")
+        return head + self.sec_a() + self.sec_b() + self.sec_c() + self.sec_d() + self.sec_e() + self.sec_todo()
 
 
 def _js(s: str) -> str:
@@ -770,6 +1272,12 @@ ul.obs{padding-left:20px} ul.obs li{margin:4px 0}
 .abbr{margin-top:18px;padding-top:8px;border-top:1px dashed var(--line);color:var(--muted);font-size:12px}
 .abbr b{display:block;margin-bottom:2px}
 code{font-size:12px;background:var(--head);padding:1px 4px;border-radius:4px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin:10px 0 14px;font-size:13.5px}
+.card>b{display:block;margin-bottom:4px} .card>div,.todo>div{margin:3px 0}
+.tag{display:inline-block;font-size:11px;font-weight:600;border-radius:4px;padding:0 6px;margin-right:6px;white-space:nowrap}
+.tag.t1{background:#fee2e2;color:#991b1b} .tag.t2{background:#dbeafe;color:#1e40af} .tag.t3{background:#dcfce7;color:#166534}
+table.pairs th,table.verdict th,table.ctab th{white-space:normal} table.ctab td:first-child{white-space:nowrap} table.pairs td.r{white-space:nowrap}
+.todo{background:var(--card);border:1px solid var(--line);border-left:4px solid #16a34a;border-radius:8px;padding:8px 12px;margin:8px 0;font-size:13.5px} .todo>b{display:block;margin-bottom:3px}
 """
 
 CSS_SCREEN = CSS_BASE + """
@@ -779,7 +1287,7 @@ section{background:transparent;border-top:1px solid var(--line);margin-top:8px}
 #tg{border:1px solid var(--line);background:var(--card);color:var(--fg);border-radius:8px;font-size:18px;padding:4px 10px;cursor:pointer}
 nav{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px} nav a{font-size:12.5px;color:var(--accent);text-decoration:none;border:1px solid var(--line);border-radius:999px;padding:2px 10px;background:var(--card)}
 .scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--line);border-radius:8px}
-.scroll table{border:0} td{white-space:nowrap} table.journal td:last-child{white-space:normal;min-width:220px}
+.scroll table{border:0} td{white-space:nowrap} table.journal td:last-child{white-space:normal;min-width:220px} table.verdict td:last-child{white-space:normal;min-width:200px}
 figure{margin:12px 0} svg{width:100%;height:auto;background:var(--card);border:1px solid var(--line);border-radius:10px}
 .curve{fill:none;stroke-width:2} .curve.pos{stroke:var(--pos)} .curve.neg{stroke:var(--neg)}
 .area{stroke:none;opacity:.12} .area.pos{fill:var(--pos)} .area.neg{fill:var(--neg)}
@@ -806,6 +1314,8 @@ table.wide{font-size:7pt} table.journal{font-size:7pt} table.journal td:last-chi
 caption{caption-side:top;text-align:left;font-size:7.5pt;color:#57534e}
 img.chart{width:100%;height:auto;margin:2mm 0}
 p{margin:1.5mm 0} ul.obs li{margin:1.2mm 0}
+.card{font-size:8.4pt;padding:2mm 3mm;margin:2mm 0 3mm} .tag{font-size:7pt} .todo{font-size:8.4pt;padding:2mm 3mm;margin:2mm 0}
+table.verdict{font-size:7.4pt}
 """
 
 PAGINATE_JS = r"""
