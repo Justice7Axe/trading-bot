@@ -55,7 +55,7 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
 
 
 def _exempt_kinds() -> tuple[set, set]:
-    """카페 제한에서 빼는 매매(지수 상품) — 인버스 갭·약세장 인버스, 그리고 인버스 ETF 종목코드."""
+    """카페 제한에서 빼는 매매 — 지수 상품(인버스 갭·약세장 인버스, 인버스 ETF 종목코드)과 📕 상한가 풀림."""
     kinds, codes = set(), set()
     try:
         from kiwoom_trading.strategies.inverse.live import CODE, KIND, WEAK_KIND
@@ -63,6 +63,13 @@ def _exempt_kinds() -> tuple[set, set]:
         codes.add(CODE)
     except Exception:
         kinds |= {"인버스 갭", "약세장 인버스"}
+    # 📕 상한가 풀림도 뺌 (2026-11-15 사용자 '응, 빼줘') — 날짜별 그때 카페 목록으로 1년 시뮬: 카페 안 389건 +0.81%/건,
+    # 카페 밖 468건 +2.97%/건 (앞·뒤 기간 모두 같은 모양) → 카페에 이미 오른 종목의 상한가 풀림은 덜 반등함. data/cafe_history/report.txt
+    try:
+        from kiwoom_trading.strategies.hong_limitup.live import HONG_KIND
+        kinds.add(HONG_KIND)
+    except Exception:
+        kinds.add("📕 상한가 풀림")
     return kinds, codes
 
 
