@@ -1,4 +1,4 @@
-"""🏄 쿨라매기 돌파 가짜 데이터 시험 — 쉬는 구간 찾기·대상 판정·수량·가상 매수(손절폭 ≤ ADR20)·손절·3거래일째 절반과 본전 손절·10일선 이탈 매도.
+"""🏄 쿨라매기 돌파 가짜 데이터 시험 — 쉬는 구간 찾기·대상 판정·수량·가상 매수(손절폭 ≤ ADR20)·손절·5거래일째 절반과 본전 손절·10일선 이탈 매도.
 주문·시세·DB 모두 가짜 (메모리·임시 duckdb). 백테스트 아님.
 
     set PYTHONPATH=. && .venv\\Scripts\\python.exe tests/test_qullamaggie.py          # pytest 없이 함수 직접 실행
@@ -142,10 +142,10 @@ def _insert(book, buy_day: date, qty=20, buy=10_000.0, stop=9_700.0):
     book.ledger.today = DAY
 
 
-def test_day3_half_breakeven_then_stop():
+def test_day5_half_breakeven_then_stop():
     notes = []
     book, m = make_book(dict(INFO), notes)
-    _insert(book, date(2026, 11, 12))                           # 12·13·16 → 오늘 3거래일째
+    _insert(book, date(2026, 11, 10))                           # 10·11·12·13·16 → 오늘 5거래일째
     m.q[CODE] = Quote(CODE, "", 10_500, 10_600, 10_400, 10_550, 10_300, 0)
     book.tick(datetime(2026, 11, 16, 9, 0, 5), [])
     t = book.open_trades()[0]
@@ -159,7 +159,7 @@ def test_day3_half_breakeven_then_stop():
 def test_close_below_ma10_sells_all_next_open():
     notes = []
     book, m = make_book(dict(INFO, close=9_700.0, ma10=9_800.0), notes)
-    _insert(book, date(2026, 11, 12))                           # 3거래일째여도 10일선 이탈이 먼저 → 전부
+    _insert(book, date(2026, 11, 12))                           # 절반 매도 전이어도 10일선 이탈이면 → 전부
     m.q[CODE] = Quote(CODE, "", 9_650, 9_700, 9_600, 9_680, 9_700, 0)
     book.tick(datetime(2026, 11, 16, 9, 0, 5), [])
     assert not book.open_trades()
@@ -167,10 +167,10 @@ def test_close_below_ma10_sells_all_next_open():
     assert r[0] == 9_650 and not r[1] and "10일선" in r[2]
 
 
-def test_day2_keeps_holding():
+def test_day4_keeps_holding():
     notes = []
     book, m = make_book(dict(INFO), notes)
-    _insert(book, date(2026, 11, 13))                           # 2거래일째 → 아무것도 안 함
+    _insert(book, date(2026, 11, 11))                           # 11·12·13·16 → 4거래일째, 아무것도 안 함
     m.q[CODE] = Quote(CODE, "", 10_200, 10_300, 10_100, 10_250, 10_000, 0)
     book.tick(datetime(2026, 11, 16, 9, 0, 5), [])
     t = book.open_trades()[0]
