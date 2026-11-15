@@ -71,6 +71,29 @@ def test_trader_source_and_merge():
         assert u.active and set(u.codes) == {"437730", "128540"} and "하승훈" in u.reason
 
 
+def test_save_env_keeps_other_lines():
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, ".env.local")
+        with open(p, "wb") as f:
+            f.write(b"A=1\r\n# NAVER_NID_SES=old comment\r\nNAVER_NID_SES=old\r\nB=2 # memo\r\n")
+        C.save_env({"NAVER_NID_SES": "new", "NAVER_NID_AUT": "aut"}, p)
+        assert open(p, "rb").read() == b"A=1\r\n# NAVER_NID_SES=old comment\r\nNAVER_NID_SES=new\r\nB=2 # memo\r\nNAVER_NID_AUT=aut\r\n"
+
+
+def test_expired_status():
+    import tempfile
+    from datetime import datetime
+
+    def body(aid, ck):
+        raise C.CookieExpired("로그인 안 됨(0004)")
+    arts = [{"id": 1, "subject": "11월 13일 특징테마", "writer": "", "ts": ""}]
+    with tempfile.TemporaryDirectory() as tmp:
+        u = C.refresh(datetime(2026, 11, 16, 7, 50), os.path.join(tmp, "c.json"), names=NAMES, fetch_list_fn=lambda: arts,
+                      fetch_body_fn=body, cookie={"NID_AUT": "a", "NID_SES": "b"}, extra_fn=lambda n, ck, nm: ({}, []))
+        assert u.status == "expired" and not u.active and "쿠키 만료" in u.card_line()
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):
