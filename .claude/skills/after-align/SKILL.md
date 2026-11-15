@@ -66,4 +66,8 @@ description: Ellie trading 🪜 애프터 정배열 — 전날 애프터장(15:3
 - 상장일(05-15)부터 같은 규칙 다시 계산: 64건 합계 +98.5% / 복리 +150% / 최대 낙폭 −9.8% (같은 기간 그냥 보유 −66%). 60·120 말고 40·80·80·160 은 크게 약해짐 → 값이 우연히 맞았을 수 있음.
 - 코드: `strategies/crypto_align/core.py`(시세 캐시·`replay` 판정, 과거·실시간 같은 계산), `live.py`(한 번 실행 = 그동안 끝난 봉 전부 판정, 텔레그램 매수·매도 알림, 매도 때 리포트 파일), `report.py`(타점 HTML `data/reports/crypto_align_<심볼>.html`). 장부 `data/crypto_paper/<심볼>/state.json·trades.csv·klines_15m.csv`. 첫 실행 때 그 시각 이후 봉부터 모의 시작(11-15 22:45 봉 다음).
 - 일정: 작업 스케줄러 `EllieTrading_CryptoAlign` 매일 15분마다 :00:40 (`scripts/register_crypto_align_task.ps1`), PC 를 깨우지 않음 → 꺼져 있던 동안 봉은 켜진 뒤 몰아서 판정(알림에 '늦음'). 로그 `data/logs/crypto_align_YYYYMM.log`.
-- 실제 주문 없음 (가상 장부 1,000 USDT). 시험 `python -m tests.test_crypto_align` (조각 판정 = 한 번에 판정 같음 확인).
+- 실제 주문 없음 (가상 장부). 거래소 계정·API 키 필요 없음 — 바이낸스 공개 시세(klines·fundingRate)만 읽음. 시험 `python -m tests.test_crypto_align` (조각 판정 = 한 번에 판정 같음 확인).
+- **1배·2배 두 잔고 (11-15 사용자 '선물이니까 2배수로도')**: 같은 매매를 1,000 USDT 씩 1배·2배로 적음 (`state.cash`·`cash2`, trades.csv `net`·`net2`). 2배 = 손익·수수료·펀딩 2배, −3% 손절이면 잔고 약 −6.2%. 펀딩비(8시간마다, 진입 < 펀딩 시각 < 청산) 포함 (`core.load_funding`·`funding.csv`).
+  상장일부터 다시 계산(펀딩 포함): 1배 +149% / 낙폭 −9.8%, 2배 +449% / 낙폭 −18.9%, 최악 한 건 2배 −6.2%, 최장 연속 손실 4건.
+- **24시간 상시 (11-15 사용자 '24시간 맞춰 항상 돌려줘')**: 작업에 WakeToRun — 절전 중이어도 15분마다 PC 를 깨움(전원 설정 '절전 해제 타이머 허용' 켜져 있어야 함, 11-15 확인 켜짐).
+- **📓 매매일지 매일 (11-15 사용자 '리포트와 매매일지 항상 빠짐 없이')**: `crypto_align/journal.py`. 하루 = 한국 09:00~다음 날 09:00, 09:00 매도가 확정되는 09:15:40 실행에서 그 전날 일지 작성(빠진 날은 차례로). `docs/journal/crypto/<심볼>-YYYY-MM-DD.md` + 15분봉 차트 `data/journal/crypto/<심볼>-YYYYMMDD.png`, 텔레그램 요약·차트 사진·리포트 HTML(1배·2배). 시장·매매 한 건씩(신호 60/120선·최고·최저·펀딩·1배/2배 손익·늦은 판정)·누적 성적·최근 7일·📝 복기 칸(손절·손절선 1% 접근·+5%↑·3연속 손실). 다시 만들기 `python -m kiwoom_trading.strategies.crypto_align.journal YYYY-MM-DD [--send]`.
