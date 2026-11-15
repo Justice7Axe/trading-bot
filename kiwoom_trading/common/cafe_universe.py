@@ -206,12 +206,34 @@ def fetch_image(url: str, cookie: Optional[dict[str, str]] = None) -> bytes:
     return r.content
 
 
-def ocr_lines(data: bytes) -> list[str]:
-    """그림 바이트 → 윈도우 OCR(한국어) 줄 목록. 윈도우가 아니거나 실패하면 RuntimeError."""
+OCR_VARIANTS = ("orig", "x2", "gray_x2", "x3")   # 같은 그림을 여러 크기로 읽어 합침 — 크기마다 틀리는 글자가 달라 서로 메꿈
+
+
+def _variants(data: bytes) -> list[tuple[str, bytes]]:
+    """그림 바이트 → [(이름, png 바이트)]: 원본·2배·흑백 2배·3배 (Pillow 없으면 원본만)."""
+    out = [("orig", data)]
+    try:
+        import io
+        from PIL import Image, ImageOps
+        im = Image.open(io.BytesIO(data)).convert("RGB")
+        for name in OCR_VARIANTS[1:]:
+            sc = 3 if name.endswith("x3") else 2
+            v = ImageOps.grayscale(im) if name.startswith("gray") else im
+            if max(im.width, im.height) * sc > 9_000:      # 윈도우 OCR 최대 10,000 픽셀
+                continue
+            buf = io.BytesIO()
+            v.resize((im.width * sc, im.height * sc), Image.LANCZOS).save(buf, "PNG")
+            out.append((name, buf.getvalue()))
+    except Exception as exc:
+        logging.info("카페 그림 키우기 못 함 (%s) — 원본만 OCR", str(exc)[:100])
+    return out
+
+
+def _ocr_once(data: bytes) -> list[str]:
     import subprocess
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:
-        img = os.path.join(tmp, "img.png")
+        img = os.path.join(tmp, "img.png")       # 윈도우 경로(역슬래시)여야 StorageFile 이 염
         ps1 = os.path.join(tmp, "ocr.ps1")
         with open(img, "wb") as f:
             f.write(data)
@@ -220,9 +242,24 @@ def ocr_lines(data: bytes) -> list[str]:
         p = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps1, img],
                            capture_output=True, timeout=OCR_TIMEOUT)
     out = p.stdout.decode("utf-8", "replace")
-    if p.returncode != 0 or not out.strip():
+    if p.returncode != 0 or not out.strip() or "Exception" in out[:300]:
         raise RuntimeError(f"OCR 실패 (코드 {p.returncode}) {p.stderr.decode('cp949', 'replace')[:200]}")
     return [s.strip() for s in out.splitlines() if s.strip()]
+
+
+def ocr_lines(data: bytes) -> list[str]:
+    """그림 바이트 → 윈도우 OCR(한국어) 줄 목록 (여러 크기로 읽은 줄을 모두 이어 붙임). 하나도 못 읽으면 RuntimeError."""
+    lines: list[str] = []
+    err = None
+    for name, v in _variants(data):
+        try:
+            lines += _ocr_once(v)
+        except Exception as exc:
+            err = exc
+            logging.info("카페 그림 OCR(%s) 실패: %s", name, str(exc)[:120])
+    if not lines:
+        raise err or RuntimeError("OCR 결과 없음")
+    return lines
 
 
 _OCR_ROW = re.compile(r"^(.+?)\s*\(\s*[\d\-]")      # '종목명 (29.87%)' — 괄호 뒤 숫자 (OCR 이 % 는 자주 틀림)
@@ -232,13 +269,36 @@ def _norm(s: str) -> str:
     return re.sub(r"[\s·•.,'`]", "", s).upper()
 
 
+# 카페 글이 줄여 쓰는 이름 → stocks 이름 (OCR 과 상관없이 이름 자체가 다름)
+ALIASES = {"LIGD&A": "LIG디펜스앤에어로스페이스"}
+
+_CHO = "ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ"
+_JUNG = "ㅏㅐㅑㅒㅓㅔㅕㅖㅗㅘㅙㅚㅛㅜㅝㅞㅟㅠㅡㅢㅣ"
+_JONG = " ㄱㄲㄳㄴㄵㄶㄷㄹㄺㄻㄼㄽㄾㄿㅀㅁㅂㅄㅅㅆㅇㅈㅊㅋㅌㅍㅎ"
+
+
+def jamo(s: str) -> str:
+    """한글을 자모로 풀어 씀 ('캡' → 'ㅋㅐㅂ'). OCR 이 '캡→컙', '랩→램', '컨→건' 처럼 자모 하나만 틀리는 일이 많아
+    글자 단위보다 자모 단위로 비교해야 비슷한 정도가 제대로 나옴."""
+    out = []
+    for ch in s:
+        o = ord(ch) - 0xAC00
+        if 0 <= o < 11172:
+            out += [_CHO[o // 588], _JUNG[o % 588 // 28]] + ([_JONG[o % 28]] if o % 28 else [])
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def names_from_ocr(lines: list[str], names: dict[str, str]) -> tuple[dict[str, str], list[str]]:
-    """OCR 줄 → ({코드: 이름}, 못 맞춘 OCR 이름). '이름 (숫자' 꼴 줄만 봄 (테마 제목·설명 줄은 괄호 숫자가 없음)."""
+    """OCR 줄 → ({코드: 이름}, 못 맞춘 OCR 이름). '이름 (숫자' 꼴 줄만 봄 (테마 제목·설명 줄은 괄호 숫자가 없음).
+    맞추기: 똑같은 이름 → 줄임 이름(ALIASES) → 자모 단위 비슷한 정도 ≥ OCR_CUTOFF 중 가장 높은 이름 (동점이면 버림)."""
     import difflib
     norm = {}
     for n, c in names.items():
         norm.setdefault(_norm(n), (n, c))
-    keys = list(norm)
+    by_jamo = {jamo(k): k for k in norm}
+    jkeys = list(by_jamo)
     found: dict[str, str] = {}
     miss: list[str] = []
     for line in lines:
@@ -248,28 +308,33 @@ def names_from_ocr(lines: list[str], names: dict[str, str]) -> tuple[dict[str, s
         cand = _norm(m.group(1))
         if len(cand) < 2:
             continue
-        hit = norm.get(cand)
+        hit = norm.get(cand) or norm.get(_norm(ALIASES.get(cand, "")))
         if hit is None:
-            close = difflib.get_close_matches(cand, keys, n=3, cutoff=OCR_CUTOFF)
-            score = [difflib.SequenceMatcher(None, cand, k).ratio() for k in close]
-            # 가장 비슷한 이름이 둘 이상 같은 점수면(예: '한국를마' → 한국콜마·한국파마 둘 다 0.75) 못 정하므로 버림
-            hit = norm[close[0]] if close and (len(score) < 2 or score[0] > score[1]) else None
+            cj = jamo(cand)
+            close = difflib.get_close_matches(cj, jkeys, n=3, cutoff=OCR_CUTOFF)
+            score = [difflib.SequenceMatcher(None, cj, k).ratio() for k in close]
+            # 가장 비슷한 이름이 둘 이상 같은 점수면 못 정하므로 버림
+            hit = norm[by_jamo[close[0]]] if close and (len(score) < 2 or score[0] > score[1]) else None
         if hit is None:
             miss.append(m.group(1).strip())
         else:
             found[hit[1]] = hit[0]
-    return found, miss
+    return found, list(dict.fromkeys(miss))
 
 
 def read_images(images: list[str], names: dict[str, str], cookie: Optional[dict[str, str]] = None,
                 fetch_fn=fetch_image, ocr_fn=ocr_lines) -> tuple[dict[str, str], list[str]]:
     """그림 주소들 → OCR → ({코드: 이름}, 못 맞춘 이름)."""
+    import difflib
     found: dict[str, str] = {}
     miss: list[str] = []
     for url in images:
         got, bad = names_from_ocr(ocr_fn(fetch_fn(url, cookie)), names)
         found.update(got)
         miss += bad
+    # 다른 크기로 읽어 이미 맞춘 종목이 깨져 읽힌 것은 '못 맞춤' 로그에서 뺌 (자모 비슷한 정도 0.6 이상이 이미 찾은 이름)
+    got_j = [jamo(_norm(n)) for n in found.values()]
+    miss = [x for x in dict.fromkeys(miss) if not difflib.get_close_matches(jamo(_norm(x)), got_j, n=1, cutoff=0.6)]
     return found, miss
 
 
