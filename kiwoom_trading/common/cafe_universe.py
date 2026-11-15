@@ -8,8 +8,11 @@
 범위 = 가장 최근 게시글 2개. 보통 하루에 '11월 13일 특징테마'(사무장)와 '11월 13일 일자별 테마주 정리'(오연구원)가 16시쯤 올라오고,
 낮에 '오전장 특징테마' 가 하나 더 올라옴. 그래서 가장 최근 '특징테마'(오전장 아님) 하나 + 가장 최근 '일자별 테마주 정리' 하나를 고르고,
 제목이 바뀌어 못 찾으면 그냥 최근 2개를 씀.
-본문에서 6자리 종목코드와 종목 이름(data/daily_ohlcv.duckdb stocks 표)을 찾아 종목 목록을 만듦. 본문이 그림이면 OCR 은 안 하고
-그림 주소만 남기고 '이미지라 못 읽음' 로그를 남김.
+본문에서 6자리 종목코드와 종목 이름(data/daily_ohlcv.duckdb stocks 표)을 찾아 종목 목록을 만듦.
+본문이 그림뿐이면 (2026-11-15 사용자 '넣어줘, 일주일 전부') 그림을 받아 윈도우 내장 OCR(Windows.Media.Ocr, 한국어)로 읽고,
+'종목명 (등락률%)' 꼴 줄의 이름을 stocks 이름과 맞춤 — 똑같으면 바로, 아니면 가장 비슷한 이름(difflib 비율 ≥ OCR_CUTOFF).
+OCR 이 '반도체→반도제', '가온칩스→가온집스' 처럼 글자를 틀리게 읽어서임. 못 맞춘 이름은 로그에 남김.
+'일자별 테마주 정리' 그림은 최근 약 7거래일 표라 그 안 종목 전부(약 150개)를 씀 (사용자: 일주일 전부).
 
 가져오는 때: 07:50 스캐너 시작 때 한 번 + 08:40 한 번 → data/cafe_universe.json.
 적용: 오늘 파일에 종목이 1개 이상 있으면 모든 실전·모의 매수(매매별 가상 계좌 포함)를 그 종목만 허용 (인버스 ETF 같은 지수 상품은 뺌 = 허용).
@@ -173,6 +176,103 @@ def extract(body: str, names: dict[str, str]) -> tuple[dict[str, str], list[str]
     return found, images, len(text.strip())
 
 
+# ------------------------------------------------------------------ 그림 OCR (윈도우 내장)
+OCR_CUTOFF = 0.75                  # OCR 이름 ↔ stocks 이름 비슷한 정도 하한 (difflib 비율)
+OCR_TIMEOUT = 90
+_OCR_PS1 = r"""
+param($p)
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+$await = [WindowsRuntimeSystemExtensions].GetMethods() | ? { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' } | select -First 1
+function Await($op, $t) { $task = $await.MakeGenericMethod($t).Invoke($null, @($op)); $task.Wait(); $task.Result }
+[Windows.Storage.StorageFile,Windows.Storage,ContentType=WindowsRuntime] | Out-Null
+[Windows.Media.Ocr.OcrEngine,Windows.Foundation,ContentType=WindowsRuntime] | Out-Null
+[Windows.Graphics.Imaging.BitmapDecoder,Windows.Graphics,ContentType=WindowsRuntime] | Out-Null
+[Windows.Globalization.Language,Windows.Globalization,ContentType=WindowsRuntime] | Out-Null
+$f = Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync($p)) ([Windows.Storage.StorageFile])
+$s = Await ($f.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
+$d = Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($s)) ([Windows.Graphics.Imaging.BitmapDecoder])
+$b = Await ($d.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
+$e = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage([Windows.Globalization.Language]::new('ko'))
+$r = Await ($e.RecognizeAsync($b)) ([Windows.Media.Ocr.OcrResult])
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+$r.Lines | % { $_.Text }
+"""
+
+
+def fetch_image(url: str, cookie: Optional[dict[str, str]] = None) -> bytes:
+    import requests
+    r = requests.get(url, headers={**HEADERS, "Referer": "https://cafe.naver.com/"}, cookies=cookie or {}, timeout=20)
+    r.raise_for_status()
+    return r.content
+
+
+def ocr_lines(data: bytes) -> list[str]:
+    """그림 바이트 → 윈도우 OCR(한국어) 줄 목록. 윈도우가 아니거나 실패하면 RuntimeError."""
+    import subprocess
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        img = os.path.join(tmp, "img.png")
+        ps1 = os.path.join(tmp, "ocr.ps1")
+        with open(img, "wb") as f:
+            f.write(data)
+        with open(ps1, "w", encoding="utf-8-sig") as f:
+            f.write(_OCR_PS1)
+        p = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps1, img],
+                           capture_output=True, timeout=OCR_TIMEOUT)
+    out = p.stdout.decode("utf-8", "replace")
+    if p.returncode != 0 or not out.strip():
+        raise RuntimeError(f"OCR 실패 (코드 {p.returncode}) {p.stderr.decode('cp949', 'replace')[:200]}")
+    return [s.strip() for s in out.splitlines() if s.strip()]
+
+
+_OCR_ROW = re.compile(r"^(.+?)\s*\(\s*[\d\-]")      # '종목명 (29.87%)' — 괄호 뒤 숫자 (OCR 이 % 는 자주 틀림)
+
+
+def _norm(s: str) -> str:
+    return re.sub(r"[\s·•.,'`]", "", s).upper()
+
+
+def names_from_ocr(lines: list[str], names: dict[str, str]) -> tuple[dict[str, str], list[str]]:
+    """OCR 줄 → ({코드: 이름}, 못 맞춘 OCR 이름). '이름 (숫자' 꼴 줄만 봄 (테마 제목·설명 줄은 괄호 숫자가 없음)."""
+    import difflib
+    norm = {}
+    for n, c in names.items():
+        norm.setdefault(_norm(n), (n, c))
+    keys = list(norm)
+    found: dict[str, str] = {}
+    miss: list[str] = []
+    for line in lines:
+        m = _OCR_ROW.match(line)
+        if not m:
+            continue
+        cand = _norm(m.group(1))
+        if len(cand) < 2:
+            continue
+        hit = norm.get(cand)
+        if hit is None:
+            close = difflib.get_close_matches(cand, keys, n=3, cutoff=OCR_CUTOFF)
+            score = [difflib.SequenceMatcher(None, cand, k).ratio() for k in close]
+            # 가장 비슷한 이름이 둘 이상 같은 점수면(예: '한국를마' → 한국콜마·한국파마 둘 다 0.75) 못 정하므로 버림
+            hit = norm[close[0]] if close and (len(score) < 2 or score[0] > score[1]) else None
+        if hit is None:
+            miss.append(m.group(1).strip())
+        else:
+            found[hit[1]] = hit[0]
+    return found, miss
+
+
+def read_images(images: list[str], names: dict[str, str], cookie: Optional[dict[str, str]] = None,
+                fetch_fn=fetch_image, ocr_fn=ocr_lines) -> tuple[dict[str, str], list[str]]:
+    """그림 주소들 → OCR → ({코드: 이름}, 못 맞춘 이름)."""
+    found: dict[str, str] = {}
+    miss: list[str] = []
+    for url in images:
+        got, bad = names_from_ocr(ocr_fn(fetch_fn(url, cookie)), names)
+        found.update(got)
+        miss += bad
+    return found, miss
+
+
 # ------------------------------------------------------------------ 저장·읽기
 @dataclass
 class Universe:
@@ -206,7 +306,7 @@ class Universe:
 
 
 def refresh(now: datetime, path: Optional[str] = None, names: Optional[dict[str, str]] = None,
-            fetch_list_fn=fetch_list, fetch_body_fn=fetch_body, cookie: Optional[dict] = None) -> Universe:
+            fetch_list_fn=fetch_list, fetch_body_fn=fetch_body, cookie: Optional[dict] = None, read_images_fn=None) -> Universe:
     """카페 최근 글 2개 본문에서 종목을 뽑아 path 에 저장. 같은 날 앞서 성공한 결과가 있는데 이번에 실패하면 앞 결과를 그대로 둠."""
     path = path or OUT_PATH
     day = now.date()
@@ -229,7 +329,14 @@ def refresh(now: datetime, path: Optional[str] = None, names: Optional[dict[str,
                 images += imgs
                 a["n_codes"], a["n_images"] = len(got), len(imgs)
                 if not got and imgs:
-                    logging.info("카페 글 %s '%s': 이미지라 못 읽음 (그림 %s장, 글자 %s자) — OCR 안 함", a["id"], a["subject"], len(imgs), n_text)
+                    try:
+                        got, miss = (read_images_fn or read_images)(imgs, names, cookie)
+                        codes.update(got)
+                        a["n_codes"], a["ocr"] = len(got), True
+                        logging.info("카페 글 %s '%s': 그림 %s장 OCR → 종목 %s개%s", a["id"], a["subject"], len(imgs), len(got),
+                                     f" · 못 맞춘 이름 {len(miss)}개: {', '.join(miss[:20])}" if miss else "")
+                    except Exception as exc:
+                        logging.warning("카페 글 %s '%s': 그림 OCR 실패 (%s)", a["id"], a["subject"], str(exc)[:200])
                 else:
                     logging.info("카페 글 %s '%s': 종목 %s개 · 그림 %s장", a["id"], a["subject"], len(got), len(imgs))
             u = Universe(day, "ok" if codes else "empty", "" if codes else "본문에서 종목을 못 찾음 (이미지뿐이거나 형식이 바뀜)",
