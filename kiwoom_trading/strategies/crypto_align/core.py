@@ -6,7 +6,9 @@
 - 손절 매수가 −3% (봉 저가가 닿으면 그 가격, 시가가 이미 아래면 시가). 매수한 봉 안에서도 손절은 봄.
 - 익절 없음. 손절이 안 걸리면 다음 날 00:00 UTC(한국 09:00) 첫 봉 시가에 매도.
 - 매도한 봉에서는 새 신호를 보지 않음 (다음 봉부터).
-- 비용 시장가 수수료 0.05% × 2. 펀딩비는 넣지 않음.
+- 비용 시장가 수수료 0.05% × 2 + 펀딩비(8시간마다, 보유 중 지난 펀딩 시각의 비율 × 진입가 기준 물량).
+- 같은 매매를 1배·2배 두 가상 잔고로 함께 적음 (2026-11-15 사용자 '선물이니까 2배수로도 가능하지?').
+  2배 = 손익·수수료·펀딩 모두 2배. −3% 손절이면 잔고 −6% 남짓.
 
 `replay` 하나로 과거 타점(리포트)과 실시간 모의(live)를 같은 계산으로 돌린다.
 """
@@ -64,6 +66,46 @@ def fetch_klines(symbol: str, start_ms: int) -> list[list]:
             break
         time.sleep(0.3)
     return rows
+
+
+def load_funding(symbol: str) -> list[tuple[int, float]]:
+    """펀딩 기록 (시각 ms, 비율). 캐시 funding.csv 에 이어 받음. 받기 실패하면 캐시만."""
+    path = os.path.join(data_dir(symbol), "funding.csv")
+    rows: list[tuple[int, float]] = []
+    if os.path.exists(path):
+        with open(path, newline="") as f:
+            rows = [(int(r["t"]), float(r["rate"])) for r in csv.DictReader(f)]
+    start = rows[-1][0] + 1 if rows else 0
+    try:
+        new = []
+        while True:
+            q = f"{FAPI}/fundingRate?symbol={symbol}&limit=1000" + (f"&startTime={start}" if start else "")
+            d = _get(q)
+            new += [(int(x["fundingTime"]), float(x["fundingRate"])) for x in d if int(x["fundingTime"]) >= start]
+            if len(d) < 1000:
+                break
+            start = int(d[-1]["fundingTime"]) + 1
+        if new:
+            rows += new
+            with open(path, "w", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(["t", "rate"])
+                w.writerows(rows)
+    except Exception:
+        pass
+    return rows
+
+
+def funding_sum(rates: list[tuple[int, float]], entry_t: int, exit_t: int) -> float:
+    """entry_t < 펀딩 시각 < exit_t 인 펀딩 비율 합 (롱은 + 면 냄)."""
+    return sum(r for t, r in rates if entry_t < t < exit_t)
+
+
+def nets(entry: float, exit_px: float, fund: float) -> tuple[float, float]:
+    """(1배 잔고 수익률, 2배 잔고 수익률) — 수수료 진입·청산 물량 기준, 펀딩은 진입 물량 기준."""
+    g = exit_px / entry - 1
+    fee = FEE_SIDE * (1 + exit_px / entry)
+    return g - fee - fund, 2 * (g - fee - fund)
 
 
 @dataclass
@@ -125,24 +167,29 @@ class Position:
     signal_t: int
     fast: float
     slow: float
+    low: float = 0.0          # 보유 중 가장 낮았던 가격 (손절선 접근 복기용)
+    high: float = 0.0         # 보유 중 가장 높았던 가격
 
 
 @dataclass
 class State:
     last_t: int = 0                       # 판정을 끝낸 마지막 '끝난 봉' 시작 ms
-    cash: float = 1000.0                  # 가상 USDT
+    cash: float = 1000.0                  # 가상 USDT (1배)
     pos: Position | None = None
     pending: dict | None = None           # 신호는 났고 다음 봉 시가를 기다리는 중
+    cash2: float = 1000.0                 # 가상 USDT (2배)
+    journal_day: str = ""                 # 매매일지를 마지막으로 쓴 날 (YYYY-MM-DD, 한국 09시 기준 하루)
     events: list = field(default_factory=list)   # 이번 실행에서 새로 생긴 일 (알림용, 저장 안 함)
 
     def to_json(self) -> dict:
-        d = {"last_t": self.last_t, "cash": self.cash,
+        d = {"last_t": self.last_t, "cash": self.cash, "cash2": self.cash2, "journal_day": self.journal_day,
              "pos": asdict(self.pos) if self.pos else None, "pending": self.pending}
         return d
 
     @classmethod
     def from_json(cls, d: dict) -> "State":
-        s = cls(last_t=d["last_t"], cash=d["cash"], pending=d.get("pending"))
+        s = cls(last_t=d["last_t"], cash=d["cash"], pending=d.get("pending"),
+                cash2=d.get("cash2", d["cash"]), journal_day=d.get("journal_day", ""))
         if d.get("pos"):
             s.pos = Position(**d["pos"])
         return s
@@ -152,9 +199,11 @@ def _day(t: int) -> int:
     return t // DAY_MS
 
 
-def replay(bars: list[Bar], st: State, forming: Bar | None = None) -> list[dict]:
+def replay(bars: list[Bar], st: State, forming: Bar | None = None,
+           rates: list[tuple[int, float]] | None = None) -> list[dict]:
     """st.last_t 다음 끝난 봉부터 차례로 판정. 끝난 매매 목록을 돌려주고 st 를 고친다.
-    forming(지금 만들어지는 봉)의 시가는 매수가로만 쓴다."""
+    forming(지금 만들어지는 봉)의 시가는 매수가로만 쓴다. rates = 펀딩 기록(없으면 펀딩 0)."""
+    rates = rates or []
     closes = [b.c for b in bars]
     f, s = sma(closes, FAST), sma(closes, SLOW)
     trades: list[dict] = []
@@ -162,7 +211,7 @@ def replay(bars: list[Bar], st: State, forming: Bar | None = None) -> list[dict]
 
     def open_pos(i_bar_t: int, price: float, sig_i: int):
         st.pos = Position(entry_t=i_bar_t, entry=price, stop=price * (1 - STOP_PCT),
-                          signal_t=bars[sig_i].t, fast=f[sig_i], slow=s[sig_i])
+                          signal_t=bars[sig_i].t, fast=f[sig_i], slow=s[sig_i], low=price, high=price)
         st.pending = None
         st.events.append({"type": "buy", "t": i_bar_t, "price": price, "stop": st.pos.stop,
                           "signal_t": bars[sig_i].t, "fast": f[sig_i], "slow": s[sig_i]})
@@ -170,10 +219,14 @@ def replay(bars: list[Bar], st: State, forming: Bar | None = None) -> list[dict]
     def close_pos(t: int, price: float, reason: str):
         p = st.pos
         gross = price / p.entry - 1
-        net = (1 - FEE_SIDE) * (price / p.entry) * (1 - FEE_SIDE) - 1
+        fund = funding_sum(rates, p.entry_t, t)
+        net, net2 = nets(p.entry, price, fund)
         st.cash *= 1 + net
+        st.cash2 *= 1 + net2
         tr = {"signal_t": p.signal_t, "entry_t": p.entry_t, "entry": p.entry, "exit_t": t, "exit": price,
-              "reason": reason, "ret": gross, "net": net, "cash": st.cash}
+              "reason": reason, "ret": gross, "fund": fund, "net": net, "net2": net2, "cash": st.cash,
+              "cash2": st.cash2, "fast": p.fast, "slow": p.slow, "stop": p.stop,
+              "low": min(p.low, price), "high": max(p.high, price)}
         trades.append(tr)
         st.events.append({"type": "sell", **tr})
         st.pos = None
@@ -201,6 +254,8 @@ def replay(bars: list[Bar], st: State, forming: Bar | None = None) -> list[dict]
                     close_pos(b.t, b.o, "다음 날 09:00")
                     st.last_t = b.t
                     continue
+            p.low = min(p.low or b.l, b.l)       # 끝까지 들고 있던 봉의 저가·고가 (손절선 접근 복기용)
+            p.high = max(p.high, b.h)
             st.last_t = b.t
             continue
         # 보유 없음: 신호 판정

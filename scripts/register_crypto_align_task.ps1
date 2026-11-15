@@ -3,7 +3,8 @@
 #   해제:  Unregister-ScheduledTask -TaskName "EllieTrading_CryptoAlign" -Confirm:$false
 #   수동 실행: Start-ScheduledTask -TaskName "EllieTrading_CryptoAlign"
 # 15분봉이 끝나고 40초 뒤(:00:40, :15:40, :30:40, :45:40) 실행. 한 번 돌 때 그동안 끝난 봉을 모두 판정하므로
-# PC 가 꺼져 있던 동안의 봉은 켜진 뒤 첫 실행에서 몰아서 판정함 (알림에 '늦음' 표시). PC 를 깨우지는 않음.
+# 24시간 거래라 절전 중이어도 15분마다 PC 를 깨워 판정함 (WakeToRun, 2026-11-15 사용자 "24시간 맞춰 항상 돌려줘").
+# PC 가 완전히 꺼져 있던 동안의 봉은 켜진 뒤 첫 실행에서 몰아서 판정함 (알림에 "늦음" 표시).
 param(
     [string]$Symbol = "SOXLUSDT"
 )
@@ -27,6 +28,7 @@ $trigger = New-ScheduledTaskTrigger -Once -At $start `
     -RepetitionDuration (New-TimeSpan -Days 3650)
 
 $settings = New-ScheduledTaskSettingsSet `
+    -WakeToRun `
     -StartWhenAvailable `
     -DontStopIfGoingOnBatteries `
     -AllowStartIfOnBatteries `

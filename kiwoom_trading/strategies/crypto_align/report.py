@@ -25,10 +25,10 @@ def _kst(ms: int) -> str:
     return datetime.fromtimestamp(ms / 1000, KST).strftime("%Y-%m-%d %H:%M")
 
 
-def _stats(trades: list[dict]) -> dict:
+def _stats(trades: list[dict], key: str = "net") -> dict:
     if not trades:
         return {"n": 0}
-    r = [t["net"] for t in trades]
+    r = [t[key] for t in trades]
     eq, peak, mdd = 1.0, 1.0, 0.0
     for x in r:
         eq *= 1 + x
@@ -42,13 +42,9 @@ def _stats(trades: list[dict]) -> dict:
 
 
 def _paper(symbol: str) -> tuple[list[dict], dict | None, dict | None]:
+    from kiwoom_trading.strategies.crypto_align.live import load_trades
     d = core.data_dir(symbol)
-    trades: list[dict] = []
-    path = os.path.join(d, "trades.csv")
-    if os.path.exists(path):
-        with open(path, encoding="utf-8") as f:
-            for r in csv.DictReader(f):
-                trades.append(r)
+    trades = load_trades(symbol)
     st = None
     sp = os.path.join(d, "state.json")
     if os.path.exists(sp):
@@ -60,26 +56,31 @@ def _paper(symbol: str) -> tuple[list[dict], dict | None, dict | None]:
 def build(symbol: str, bars: list[core.Bar] | None = None, fragment_path: str | None = None) -> str:
     if bars is None:
         bars, _ = core.load_bars(symbol)
-    hist_state = core.State(last_t=0, cash=1000.0)
-    hist = core.replay(bars, hist_state)
+    rates = core.load_funding(symbol)
+    hist_state = core.State(last_t=0, cash=1000.0, cash2=1000.0)
+    hist = core.replay(bars, hist_state, rates=rates)
     paper_rows, paper_pos, paper_state = _paper(symbol)
 
     candles = [[b.t // 1000 + SHIFT, round(b.o, 3), round(b.h, 3), round(b.l, 3), round(b.c, 3)] for b in bars]
     hist_js = [{"s": t["signal_t"] // 1000 + SHIFT, "e": t["entry_t"] // 1000 + SHIFT, "x": t["exit_t"] // 1000 + SHIFT,
                 "ep": round(t["entry"], 3), "xp": round(t["exit"], 3), "r": round(t["net"] * 100, 2),
+                "r2": round(t["net2"] * 100, 2),
                 "why": t["reason"], "ek": _kst(t["entry_t"]), "xk": _kst(t["exit_t"])} for t in hist]
     paper_js = []
     for r in paper_rows:
-        paper_js.append({"ek": r["entry_kst"], "xk": r["exit_kst"], "ep": float(r["entry"]), "xp": float(r["exit"]),
-                         "r": float(r["net_pct"]), "why": r["reason"], "cash": float(r["cash"])})
+        paper_js.append({"ek": _kst(r["entry_t"]), "xk": _kst(r["exit_t"]), "ep": r["entry"], "xp": r["exit"],
+                         "r": round(r["net"] * 100, 2), "r2": round(r["net2"] * 100, 2), "why": r["reason"],
+                         "cash": r["cash"], "cash2": r["cash2"]})
     hs = _stats(hist)
+    hs2 = _stats(hist, "net2")
     start_kst = _kst(paper_state["last_t"]) if paper_state else None
     payload = {
         "symbol": symbol, "kind": core.KIND, "candles": candles, "hist": hist_js, "paper": paper_js,
         "paperPos": ({"ek": _kst(paper_pos["entry_t"]), "ep": paper_pos["entry"], "stop": paper_pos["stop"],
                       "e": paper_pos["entry_t"] // 1000 + SHIFT} if paper_pos else None),
-        "paperCash": paper_state["cash"] if paper_state else None, "paperStart": start_kst,
-        "stats": hs, "first": _kst(bars[0].t), "last": _kst(bars[-1].t + core.BAR_MS),
+        "paperCash": paper_state["cash"] if paper_state else None,
+        "paperCash2": paper_state.get("cash2", paper_state["cash"]) if paper_state else None, "paperStart": start_kst,
+        "stats": hs, "stats2": hs2, "first": _kst(bars[0].t), "last": _kst(bars[-1].t + core.BAR_MS),
         "lastPrice": bars[-1].c, "firstPrice": bars[0].o,
         "built": datetime.now(KST).strftime("%Y-%m-%d %H:%M"),
     }
@@ -161,7 +162,7 @@ footer p{margin:2px 0}
 <div class="wrap">
 <header>
   <h1>🪜 이평선 재정배열 · <span class="sym" id="sym"></span> 매매 타점</h1>
-  <p class="rule">15분봉 60선이 120선을 아래에서 위로 넘고 종가가 60선 위면 다음 봉 시가에 롱 매수함. 매수가 −3% 손절, 익절 없음, 손절이 안 걸리면 다음 날 09:00(한국 시각) 첫 봉 시가에 매도함. 레버리지 1배, 수수료 0.05%×2 포함, 펀딩비는 뺐음.</p>
+  <p class="rule">15분봉 60선이 120선을 아래에서 위로 넘고 종가가 60선 위면 다음 봉 시가에 롱 매수함. 매수가 −3% 손절, 익절 없음, 손절이 안 걸리면 다음 날 09:00(한국 시각) 첫 봉 시가에 매도함. 같은 매매를 1배·2배 두 가상 잔고로 적음. 수수료 0.05%×2와 펀딩비(8시간마다) 포함. 실제 주문은 내지 않음.</p>
 </header>
 
 <div class="band" id="band"></div>
@@ -180,7 +181,7 @@ footer p{margin:2px 0}
 
 <section class="sec">
   <h2>가상 잔고 곡선</h2>
-  <p class="sub">1,000 USDT 로 시작해 매매마다 전부 굴렸을 때의 잔고임 (복리).</p>
+  <p class="sub">1,000 USDT 로 시작해 매매마다 전부 굴렸을 때의 잔고임 (복리). 진한 선 = 1배, 연한 선 = 2배.</p>
   <div id="eq"></div>
 </section>
 
@@ -192,7 +193,7 @@ footer p{margin:2px 0}
   </div>
   <div class="tbl"><table><thead><tr>
     <th class="l">#</th><th class="l">매수 (한국 시각)</th><th>매수가</th><th class="l">매도</th><th>매도가</th>
-    <th class="l">매도 이유</th><th>수익률</th></tr></thead><tbody id="rows"></tbody></table></div>
+    <th class="l">매도 이유</th><th>1배</th><th>2배</th></tr></thead><tbody id="rows"></tbody></table></div>
 </section>
 
 <footer>
@@ -216,15 +217,16 @@ $('built').textContent = `리포트 만든 때 ${D.built} · 시세: 바이낸�
 
 // 숫자 띠
 const S = D.stats, hold = D.lastPrice / D.firstPrice * 100 - 100;
-const paperN = D.paper.length, paperCash = D.paperCash;
+const paperN = D.paper.length, paperCash = D.paperCash, paperCash2 = D.paperCash2, S2 = D.stats2;
 const items = [
   ['모의 매매 상태', D.paperPos ? `보유 중` : (D.paperStart ? '기다리는 중' : '시작 전'), ''],
-  ['모의 잔고 (USDT)', paperCash!=null ? fmt(paperCash,1) : '—', paperCash!=null ? cls(paperCash-1000) : ''],
+  ['모의 잔고 1배 (USDT)', paperCash!=null ? fmt(paperCash,1) : '—', paperCash!=null ? cls(paperCash-1000) : ''],
+  ['모의 잔고 2배 (USDT)', paperCash2!=null ? fmt(paperCash2,1) : '—', paperCash2!=null ? cls(paperCash2-1000) : ''],
   ['모의 매매 건수', String(paperN), ''],
   ['지난 차트 타점', `${S.n}건`, ''],
-  ['지난 타점 복리', pct(S.comp), cls(S.comp)],
-  ['건당 평균', pct(S.avg), cls(S.avg)],
-  ['최대 낙폭', pct(S.mdd), 'neg'],
+  ['지난 타점 복리 1배', pct(S.comp), cls(S.comp)],
+  ['지난 타점 복리 2배', pct(S2.comp), cls(S2.comp)],
+  ['최대 낙폭 1배 · 2배', `${pct(S.mdd)} · ${pct(S2.mdd)}`, 'neg'],
   ['그냥 들고 있었다면', pct(hold), cls(hold)],
 ];
 $('band').innerHTML = items.map(([k,v,c]) => `<div><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`).join('');
@@ -234,7 +236,7 @@ if (D.paperPos) {
 }
 
 // 차트
-let chart, candle, ma60, ma120, eqChart, eqLine;
+let chart, candle, ma60, ma120, eqChart, eqLine, eqLine2;
 function sma(n){ const out=[]; let s=0; D.candles.forEach((c,i)=>{ s+=c[4]; if(i>=n) s-=D.candles[i-n][4];
   if(i>=n-1) out.push({time:c[0], value:+(s/n).toFixed(3)}); }); return out; }
 function markers(){
@@ -268,15 +270,17 @@ function build(){
 
   eqChart = LightweightCharts.createChart($('eq'), {...themeOpts(), autoSize:true, handleScroll:false, handleScale:false});
   eqLine = eqChart.addAreaSeries({lineColor:css('--accent'), topColor:css('--accent')+'44', bottomColor:css('--accent')+'05', lineWidth:2});
-  let eq=1000; const pts=[{time:D.candles[0][0], value:1000}];
-  D.hist.forEach(t=>{ eq*=1+t.r/100; pts.push({time:t.x, value:+eq.toFixed(2)}); });
-  eqLine.setData(dedupe(pts)); eqChart.timeScale().fitContent();
+  eqLine2 = eqChart.addLineSeries({color:css('--accent')+'77', lineWidth:1.5, priceLineVisible:false, lastValueVisible:true});
+  let eq=1000, eq2=1000; const pts=[{time:D.candles[0][0], value:1000}], pts2=[{time:D.candles[0][0], value:1000}];
+  D.hist.forEach(t=>{ eq*=1+t.r/100; eq2*=1+t.r2/100; pts.push({time:t.x, value:+eq.toFixed(2)}); pts2.push({time:t.x, value:+eq2.toFixed(2)}); });
+  eqLine.setData(dedupe(pts)); eqLine2.setData(dedupe(pts2)); eqChart.timeScale().fitContent();
 }
 function dedupe(p){ const o=[]; p.forEach(x=>{ if(o.length && o[o.length-1].time>=x.time) o[o.length-1]=x; else o.push(x); }); return o; }
 function retheme(){ if(!chart) return; chart.applyOptions(themeOpts()); eqChart.applyOptions(themeOpts());
   candle.applyOptions({upColor:css('--up'), downColor:css('--down'), wickUpColor:css('--up'), wickDownColor:css('--down')});
   ma60.applyOptions({color:css('--accent')}); ma120.applyOptions({color:css('--pending')});
   eqLine.applyOptions({lineColor:css('--accent'), topColor:css('--accent')+'44', bottomColor:css('--accent')+'05'});
+  eqLine2.applyOptions({color:css('--accent')+'77'});
   candle.setMarkers(markers()); }
 function focusTrade(t){ if(!chart) return; const span=(t.x-t.e); chart.timeScale().setVisibleRange({from:t.e-Math.max(span,6*3600)*1.2-8*3600, to:t.x+Math.max(span,6*3600)*0.6});
   $('chart').scrollIntoView({behavior: matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth', block:'center'}); }
@@ -289,11 +293,11 @@ function rows(){
     if (!D.paper.length){
       const msg = D.paperPos ? `지금 보유 중: ${D.paperPos.ek} 매수 ${fmt(D.paperPos.ep)}, 손절 ${fmt(D.paperPos.stop)}.`
         : `아직 끝난 모의 매매가 없음. ${D.paperStart ? D.paperStart + ' 봉 다음부터 15분마다 판정 중.' : ''}`;
-      tb.innerHTML = `<tr><td colspan="7" class="empty l">${msg}</td></tr>`; return; }
-    tb.innerHTML = D.paper.map((t,i)=>`<tr tabindex="0"><td class="l">${i+1}</td><td class="l">${t.ek}</td><td class="num">${fmt(t.ep)}</td><td class="l">${t.xk}</td><td class="num">${fmt(t.xp)}</td><td class="l">${t.why}</td><td class="num ${cls(t.r)}">${pct(t.r)}</td></tr>`).join('');
+      tb.innerHTML = `<tr><td colspan="8" class="empty l">${msg}</td></tr>`; return; }
+    tb.innerHTML = D.paper.map((t,i)=>`<tr tabindex="0"><td class="l">${i+1}</td><td class="l">${t.ek}</td><td class="num">${fmt(t.ep)}</td><td class="l">${t.xk}</td><td class="num">${fmt(t.xp)}</td><td class="l">${t.why}</td><td class="num ${cls(t.r)}">${pct(t.r)}</td><td class="num ${cls(t.r2)}">${pct(t.r2)}</td></tr>`).join('');
     return;
   }
-  tb.innerHTML = D.hist.map((t,i)=>`<tr tabindex="0" data-i="${i}"><td class="l">${i+1}</td><td class="l">${t.ek}</td><td class="num">${fmt(t.ep)}</td><td class="l">${t.xk}</td><td class="num">${fmt(t.xp)}</td><td class="l">${t.why}</td><td class="num ${cls(t.r)}">${pct(t.r)}</td></tr>`).reverse().join('');
+  tb.innerHTML = D.hist.map((t,i)=>`<tr tabindex="0" data-i="${i}"><td class="l">${i+1}</td><td class="l">${t.ek}</td><td class="num">${fmt(t.ep)}</td><td class="l">${t.xk}</td><td class="num">${fmt(t.xp)}</td><td class="l">${t.why}</td><td class="num ${cls(t.r)}">${pct(t.r)}</td><td class="num ${cls(t.r2)}">${pct(t.r2)}</td></tr>`).reverse().join('');
 }
 $('rows').addEventListener('click', e=>{ const tr=e.target.closest('tr[data-i]'); if(tr) focusTrade(D.hist[+tr.dataset.i]); });
 $('rows').addEventListener('keydown', e=>{ if(e.key==='Enter'){ const tr=e.target.closest('tr[data-i]'); if(tr) focusTrade(D.hist[+tr.dataset.i]); }});
