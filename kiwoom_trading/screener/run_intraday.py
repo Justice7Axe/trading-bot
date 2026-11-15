@@ -63,6 +63,7 @@ from kiwoom_trading.strategies.kell_squeeze.live import (KIND_D as KELL_D_KIND, 
                                                          KellMinuteWatcher, KellSelector)
 from kiwoom_trading.strategies.heikin_ashi.live import KIND_D as HA_D_KIND, KIND_M as HA_M_KIND, HaDailyContext, HaDailyWatcher, HaMinuteWatcher
 from kiwoom_trading.strategies.vol_breakout.live import KIND as VB_KIND, VbContext, VbWatcher
+from kiwoom_trading.strategies.turtle.live import KIND as TURTLE_KIND, TurtleContext, TurtleWatcher, trade_stats as turtle_stats
 from kiwoom_trading.strategies.trend_hold.live import KIND as TREND_KIND, TrendHoldWatcher, load_trend_picks, ma_breaks
 from kiwoom_trading.execution.small import SmallAccount
 from kiwoom_trading.execution import real as real_inverse
@@ -409,7 +410,7 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
              surges: Optional[SurgeGroups] = None, burger: Optional[HamburgerWatcher] = None,
              weak_inv: Optional[WeakInverseWatcher] = None, rebreak: Optional[ClosingRebreakWatcher] = None,
              danswer: Optional[DanswerCloseWatcher] = None, small: Optional[SmallAccount] = None, real: Optional["real_inverse.RealTrader"] = None,
-             reclaim=None, center=None, fractal=None, align=None, kell_d=None, kell_m=None, ha_d=None, ha_m=None, crash=None, vb=None, elog=None, dwatch: Optional[DanswerWatch] = None, strong: Optional[StrongListWatcher] = None,
+             reclaim=None, center=None, fractal=None, align=None, kell_d=None, kell_m=None, ha_d=None, ha_m=None, crash=None, vb=None, turtle=None, elog=None, dwatch: Optional[DanswerWatch] = None, strong: Optional[StrongListWatcher] = None,
              books: tuple = (), leader_fn=None, hold_check=None) -> int:
     now = datetime.now(KST)
     try:
@@ -551,7 +552,7 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
         trader.lead_now = lead_now
     own_msgs: list[str] = []  # 자기 알림 문구가 있는 판정(🧭·🌙)은 🎯 묶음과 따로 보낸다
     own_ids: set = set()
-    for label, w in (("인버스 갭", inverse), ("장 초 공통점", nine), ("대형주 수급", bigcap), ("주도주 모양", leader), ("눌림 돌파", pullback), ("햄버거", burger), ("역행 강세 종가", contra), ("저항 돌파", retest), ("상승장 장 초", up), ("막힌 고점 돌파", block), ("주도주 신고가", newhigh), ("주도주 추세", trend), ("약세장 인버스", weak_inv), ("[디앤서] 종가 재돌파", rebreak), ("[디앤서] 종가 체크리스트", danswer), ("시가 탈환", reclaim), ("중심선", center), ("애프터 정배열", align), ("프랙탈 바닥", fractal), ("켈 수축 일봉", kell_d), ("켈 수축 30분", kell_m), ("하이킨아시 일봉", ha_d), ("하이킨아시 30분", ha_m), ("급락 반등", crash), ("변동성 돌파", vb)):
+    for label, w in (("인버스 갭", inverse), ("장 초 공통점", nine), ("대형주 수급", bigcap), ("주도주 모양", leader), ("눌림 돌파", pullback), ("햄버거", burger), ("역행 강세 종가", contra), ("저항 돌파", retest), ("상승장 장 초", up), ("막힌 고점 돌파", block), ("주도주 신고가", newhigh), ("주도주 추세", trend), ("약세장 인버스", weak_inv), ("[디앤서] 종가 재돌파", rebreak), ("[디앤서] 종가 체크리스트", danswer), ("시가 탈환", reclaim), ("중심선", center), ("애프터 정배열", align), ("프랙탈 바닥", fractal), ("켈 수축 일봉", kell_d), ("켈 수축 30분", kell_m), ("하이킨아시 일봉", ha_d), ("하이킨아시 30분", ha_m), ("급락 반등", crash), ("변동성 돌파", vb), ("터틀 돌파", turtle)):
         if w is not None and hasattr(w, "cache"):
             w.cache = shared_bars
         if w is None:
@@ -572,7 +573,7 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
             except Exception:
                 logging.exception("%s 알림 문구 실패", label)
         signals += found
-    if watcher is not None or leader is not None or pullback is not None or nine is not None or bigcap is not None or inverse is not None or burger is not None or contra is not None or retest is not None or up is not None or block is not None or newhigh is not None or trend is not None or weak_inv is not None or rebreak is not None or danswer is not None or center is not None or align is not None or fractal is not None or kell_d is not None or kell_m is not None or ha_d is not None or ha_m is not None or crash is not None or vb is not None:
+    if watcher is not None or leader is not None or pullback is not None or nine is not None or bigcap is not None or inverse is not None or burger is not None or contra is not None or retest is not None or up is not None or block is not None or newhigh is not None or trend is not None or weak_inv is not None or rebreak is not None or danswer is not None or center is not None or align is not None or fractal is not None or kell_d is not None or kell_m is not None or ha_d is not None or ha_m is not None or crash is not None or vb is not None or turtle is not None:
         if signals:
             logging.info("매수 신호 %s건: %s", len(signals), ", ".join(f"{n} {s.kind} {s.ts:%H:%M}" for _, n, _, s in signals))
             flow = watcher.flow if watcher is not None else {}
@@ -829,6 +830,31 @@ def main() -> int:
             vb = VbWatcher(market, vsel, VbContext(now.date()), done={c for c, _, k in store.signal_keys(now.date()) if k == VB_KIND})
         except Exception:
             logging.exception("변동성 돌파 준비 실패")
+    turtle: Optional[TurtleWatcher] = None
+    if not args.once:
+        try:   # 🐢 터틀 돌파 (2026-11-15 사용자 '모두 추천값', 모의만): 📏 와 같은 선별 통과 종목이 20일(직전 신호가 이겼으면 건너뜀)·55일 최고가를 넘으면 매수,
+               # ½N 마다 최대 4단위 추가, 손절 마지막 산 값 − 2N, 10일(55일 진입은 20일) 최저가 이탈 매도, 여러 날 보유
+            tsel = ksel if ksel is not None else KellSelector(now.date())
+            tctx = TurtleContext(now.date())
+            theld = (lambda: {t.code for t in _all_active(trader) if t.kind == TURTLE_KIND}) if trader is not None else None
+            if theld is not None:
+                codes = sorted(theld())
+                if codes:   # 장 시작 전에 보유 종목 매도선(10·20일 최저가)을 전날 기준으로 다시 계산 — 빈 날 채우기 조회는 넉넉히
+                    tctx.prepare(codes, budget=200, client=client)
+                    logging.info("터틀 보유 %s종목 매도선: %s", len(codes), ", ".join(
+                        f"{c} 10일 {tctx.info[c]['lo10']:,.0f}·20일 {tctx.info[c]['lo20']:,.0f}" if c in tctx.info else f"{c} 못 구함({tctx.bad.get(c, '빈 날 남음')})"
+                        for c in codes))
+
+            def _tstats(day=now.date()) -> str:
+                a, s1 = turtle_stats(trader.trades, day)
+                b, s2 = turtle_stats(trader.accounts.trades, day) if getattr(trader, "accounts", None) is not None else (0, 0)
+                return f"추가 매수 {a} · 매도 {s1} (🧾 가상 계좌 추가 {b}·매도 {s2})"
+            turtle = TurtleWatcher(market, tsel, tctx, done={c for c, _, k in store.signal_keys(now.date()) if k == TURTLE_KIND},
+                                   held=theld, stats=_tstats if trader is not None else None)
+            if trader is not None:
+                trader.turtle_ctx = tctx
+        except Exception:
+            logging.exception("터틀 돌파 준비 실패")
     align: Optional[AfterAlignWatcher] = None
     try:   # 🪜 애프터 정배열 — 전날 애프터 +2%↑ 종목의 아침 1분봉 60·120선 골든크로스·정배열 우상향 (모의, 2026-11-04 사용자)
         aconn = duckdb.connect(DEFAULT_DB_PATH, read_only=True)
@@ -1016,7 +1042,7 @@ def main() -> int:
                         logging.info("오늘 데이터가 없음(휴장일로 판단, 기준일 %s) → 종료", probe[0].as_of)
                         break
                 run_once(screener, market, store, telegram=not args.no_telegram, watcher=watcher, early=early, investors=investors,
-                         themes=themes, board=board, trader=trader, leader=leader, pullback=pullback, nine=nine, bigcap=bigcap, regime=regime, inverse=inverse, contra=contra, retest=retest, up=up, block=block, newhigh=newhigh, trend=trend, surges=surges, burger=burger, weak_inv=weak_inv, rebreak=rebreak, danswer=danswer, small=small, real=real, reclaim=reclaim, center=center, align=align, fractal=fractal, kell_d=kell_d, kell_m=kell_m, ha_d=ha_d, ha_m=ha_m, crash=crash, vb=vb, elog=elog, dwatch=dwatch, strong=strong, books=books, leader_fn=cafe.leaders if cafe is not None else None, hold_check=hold_check)
+                         themes=themes, board=board, trader=trader, leader=leader, pullback=pullback, nine=nine, bigcap=bigcap, regime=regime, inverse=inverse, contra=contra, retest=retest, up=up, block=block, newhigh=newhigh, trend=trend, surges=surges, burger=burger, weak_inv=weak_inv, rebreak=rebreak, danswer=danswer, small=small, real=real, reclaim=reclaim, center=center, align=align, fractal=fractal, kell_d=kell_d, kell_m=kell_m, ha_d=ha_d, ha_m=ha_m, crash=crash, vb=vb, turtle=turtle, elog=elog, dwatch=dwatch, strong=strong, books=books, leader_fn=cafe.leaders if cafe is not None else None, hold_check=hold_check)
             except Exception:
                 logging.exception("스캔 실패 (다음 주기에 재시도)")
             if args.once:
