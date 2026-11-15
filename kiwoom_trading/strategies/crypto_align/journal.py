@@ -195,8 +195,7 @@ def build(symbol: str, day: date, bars: list[core.Bar], st: core.State, rates: l
 
     L += ["## 📝 복기 칸 (자동)", ""]
     L += [f"- {r}" for r in review] or ["- 따로 볼 것 없음 (손절·손절선 접근·연속 손실·+5% 큰 수익 없음)."]
-    L += ["", "---", "약어 풀이 — SOXL: 미국 반도체 지수를 하루 3배로 따라가는 ETF · USDT: 테더, 1달러에 맞춘 코인 · "
-          "ETF: Exchange Traded Fund, 거래소에서 사고파는 지수 펀드 · UTC: 세계 표준시 (한국 시각 −9시간)"]
+    L += ["", "---", core.abbr_footer(symbol)]
     md = "\n".join(L) + "\n"
 
     tg = [f"📓 {NAME} {symbol} 모의 일지 {day:%m-%d} 09시~다음 날 09시"]
