@@ -1,7 +1,7 @@
 """☕ 하승훈 카페 '핫이슈 테마 체크' 종목 안에서만 매수 (2026-11-13 사용자).
 
-+ 두 번째 카페 (2026-11-15 사용자): '나는주식트레이더다'(clubid 29798500) 메뉴 279 레드니케 '당일특징주'·'오전장특징주'
-  최근 7일 글. 종목은 글자로 있음 → '*종목명 29.87%' 줄 + 인포스탁 '특징 종목' 중 오른 종목(상한가·급등·상승·강세)만.
++ 두 번째 카페 (2026-11-15 사용자): '나는주식트레이더다'(clubid 29798500) 메뉴 279 레드니케 '당일특징주'
+  최근 7일 글 (같은 날 사용자 '당일특징주만 쓰게 좁혀줘' → '오전장특징주' 글은 안 씀). 종목은 글자로 있음 → '*종목명 29.87%' 줄 + 인포스탁 '특징 종목' 중 오른 종목(상한가·급등·상승·강세)만.
   두 카페 종목을 합쳐(11-13 기준 약 250종목) 같은 파일·같은 제한에 씀. 한 곳이 실패해도 다른 곳 종목으로 제한함.
 
 카페: 하승훈의 주식투자 (clubid 26347614), 메뉴 86 '핫이슈 테마 체크'.
@@ -347,14 +347,14 @@ def read_images(images: list[str], names: dict[str, str], cookie: Optional[dict[
 
 
 # ------------------------------------------------------------------ 두 번째 카페: 나는주식트레이더다 특징주 (2026-11-15 사용자)
-TRADER_CLUB = 29798500             # 카페 '나는주식트레이더다', 메뉴 279 (레드니케 '당일특징주'·'오전장특징주')
+TRADER_CLUB = 29798500             # 카페 '나는주식트레이더다', 메뉴 279 (레드니케 '당일특징주'만)
 TRADER_MENU = 279
 TRADER_DAYS = 7                    # 최근 7일 안 글 (첫 카페 '일자별 테마주 정리' 7거래일과 맞춤)
-TRADER_WORD = "특징주"
+TRADER_WORD = "당일특징주"         # 오전장특징주·인포스탁증시요약 글은 안 씀 (2026-11-15 사용자)
 
 
 def pick_trader(articles: list[dict], now: datetime, days: int = TRADER_DAYS) -> list[dict]:
-    """제목에 '특징주' 가 든 최근 days 일 안 글 ('인포스탁증시요약' 만 있는 글은 뺌)."""
+    """제목(띄어쓰기 무시)에 '당일특징주' 가 든 최근 days 일 안 글. '오전장특징주'·'인포스탁증시요약' 글은 뺌."""
     since = (now - timedelta(days=days)).strftime("%Y-%m-%d %H:%M")
     return [a for a in articles if TRADER_WORD in a["subject"].replace(" ", "") and a["ts"] >= since]
 
@@ -432,7 +432,7 @@ class Universe:
 
     def card_line(self) -> str:
         if self.active:
-            return f"☕ 카페 종목 {len(self.codes)}개 안에서만 매수 (하승훈 카페 핫이슈 테마 체크 + 나는주식트레이더다 특징주 7일, 인버스 ETF 는 예외)"
+            return f"☕ 카페 종목 {len(self.codes)}개 안에서만 매수 (하승훈 카페 핫이슈 테마 체크 + 나는주식트레이더다 당일특징주 7일, 인버스 ETF 는 예외)"
         why = {"no_cookie": "쿠키 없음", "empty": "종목 0개", "fail": "가져오기 실패"}.get(self.status, self.status)
         return f"☕ 카페 제한 꺼짐({why}) — 모든 종목 매수 가능"
 
@@ -440,7 +440,7 @@ class Universe:
 def refresh(now: datetime, path: Optional[str] = None, names: Optional[dict[str, str]] = None,
             fetch_list_fn=fetch_list, fetch_body_fn=fetch_body, cookie: Optional[dict] = None, read_images_fn=None,
             extra_fn=None) -> Universe:
-    """카페 두 곳(하승훈 최근 글 2개 + 나는주식트레이더다 특징주 7일) 종목을 합쳐 path 에 저장.
+    """카페 두 곳(하승훈 최근 글 2개 + 나는주식트레이더다 당일특징주 7일) 종목을 합쳐 path 에 저장.
     한 곳이 실패해도 다른 곳 종목은 씀. 같은 날 앞서 성공한 결과가 있는데 이번에 둘 다 실패하면 앞 결과를 그대로 둠.
     extra_fn: 두 번째 카페 (시험용으로 바꿔 끼움). fetch_list_fn 을 바꿔 끼운 시험에서는 기본으로 안 부름 (인터넷 안 씀)."""
     path = path or OUT_PATH
