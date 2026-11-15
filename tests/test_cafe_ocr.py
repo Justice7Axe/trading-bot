@@ -98,6 +98,14 @@ def test_expired_status():
         assert u.status == "expired" and not u.active and "쿠키 만료" in u.card_line()
 
 
+def test_hong_kind_exempt():
+    from datetime import date
+    from kiwoom_trading.strategies.hong_limitup.live import HONG_KIND
+    u = C.Universe(date(2026, 11, 16), "ok", codes={"000001": "카페종목"})
+    assert C.skip_reason("999999", HONG_KIND, universe=u) is None          # 📕 상한가 풀림은 카페 밖이어도 삼
+    assert C.skip_reason("999999", "주도주 신고가", universe=u)              # 다른 매매는 카페 밖이면 안 삼
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):
