@@ -994,7 +994,7 @@ def main() -> int:
     qulla: Optional[QullaBook] = None
     if not args.once:
         try:   # 🏄 쿨라매기 돌파 가상 장부 (2026-11-15 사용자, 주문 없음): 1·3·6달 상승률 상위 2% & 쉬는 구간 윗선·5분 고점 돌파, 그날 저가 손절,
-               # 3거래일째 09:00 절반·본전 손절, 정규장 종가 < 10일선 다음 날 09:00 (스킬 qullamaggie). 정규장 일봉 빈 날은 매 확인 때 조금씩 채움
+               # 5거래일째 09:00 절반·본전 손절, 정규장 종가 < 10일선 다음 날 09:00 (스킬 qullamaggie). 정규장 일봉 빈 날은 매 확인 때 조금씩 채움
             qranks, qn, qprev = qulla_rank(now.date())
             qulla = QullaBook(store, market, now.date(), QullaContext(now.date()), qranks, qn, client=client, regime=regime,
                               notify=None if args.no_telegram else send_telegram_message)
