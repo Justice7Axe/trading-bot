@@ -46,7 +46,9 @@ BODY_URL = "https://apis.naver.com/cafe-web/cafe-articleapi/v2.1/cafes/{club}/ar
 OUT_PATH = os.path.join(PROJECT_ROOT, "data", "cafe_universe.json")
 COOKIE_KEYS = ("NAVER_NID_AUT", "NAVER_NID_SES")
 SECOND_FETCH_AT = time(8, 40)      # 07:50 시작 때 한 번 + 이 시각에 한 번 더
-N_ARTICLES = 2
+N_ARTICLES = 2                     # 범위 안 글을 못 찾을 때(제목이 바뀜) 쓰는 최근 글 수
+LOOKBACK_DAYS = 60                 # 두 카페 모두 최근 60일(달력) 안 글 종목 (2026-11-15 사용자 '2개월 전 것까지')
+MAX_PAGES = 40                     # 목록 쪽수 상한 (한 쪽 50글)
 TAG = "카페 종목 아님"               # 건너뜀 이유 앞머리 — paper.RULE_SKIPS 에 들어 있어 알림 없이 기록만
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36",
            "Referer": f"https://cafe.naver.com/ca-fe/cafes/{CLUB_ID}/menus/{MENU_ID}"}
@@ -142,31 +144,42 @@ def alert_expired(day: date, path: Optional[str] = None) -> None:
         logging.exception("쿠키 만료 알림 실패")
 
 
-def fetch_list(per_page: int = 15, club: int = CLUB_ID, menu: int = MENU_ID) -> list[dict]:
-    """카페 메뉴 최근 글 목록 → [{'id', 'subject', 'ts', 'writer'}] (최근 순서)."""
+def fetch_list(per_page: int = 50, club: int = CLUB_ID, menu: int = MENU_ID, days: int = LOOKBACK_DAYS,
+               now: Optional[datetime] = None) -> list[dict]:
+    """카페 메뉴 최근 days 일 안 글 목록 → [{'id', 'subject', 'ts', 'writer'}] (최근 순서). 쪽을 넘기며 days 일 전 글이 나올 때까지."""
+    import time as _time
     import requests
-    r = requests.get(LIST_URL, params={"search.clubid": club, "search.menuid": menu, "search.queryType": "lastArticle",
-                                       "search.page": 1, "search.perPage": per_page}, headers=_headers(club, menu), timeout=10)
-    r.raise_for_status()
-    rows = json.loads(r.content.decode("utf-8"))["message"]["result"]["articleList"]
-    return [{"id": int(a["articleId"]), "subject": str(a.get("subject") or ""), "writer": str(a.get("writerNickname") or ""),
-             "ts": datetime.fromtimestamp(a["writeDateTimestamp"] / 1000).strftime("%Y-%m-%d %H:%M") if a.get("writeDateTimestamp") else ""}
-            for a in rows]
-
-
-def pick_articles(articles: list[dict], n: int = N_ARTICLES) -> list[dict]:
-    """가장 최근 '특징테마'(오전장 아님) + 가장 최근 '일자별 테마주 정리'. 못 찾으면 최근 n개로 채움."""
-    picked = []
-    for test in (lambda s: "특징테마" in s and "오전장" not in s, lambda s: "테마주 정리" in s):
-        a = next((x for x in articles if test(x["subject"].replace(" ", "")) or test(x["subject"])), None)
-        if a is not None and a not in picked:
-            picked.append(a)
-    for a in articles:
-        if len(picked) >= n:
+    since = ((now or datetime.now()) - timedelta(days=days)).strftime("%Y-%m-%d %H:%M")
+    out: list[dict] = []
+    for page in range(1, MAX_PAGES + 1):
+        r = requests.get(LIST_URL, params={"search.clubid": club, "search.menuid": menu, "search.queryType": "lastArticle",
+                                           "search.page": page, "search.perPage": per_page}, headers=_headers(club, menu), timeout=10)
+        r.raise_for_status()
+        rows = json.loads(r.content.decode("utf-8"))["message"]["result"]["articleList"]
+        got = [{"id": int(a["articleId"]), "subject": str(a.get("subject") or ""), "writer": str(a.get("writerNickname") or ""),
+                "ts": datetime.fromtimestamp(a["writeDateTimestamp"] / 1000).strftime("%Y-%m-%d %H:%M") if a.get("writeDateTimestamp") else ""}
+               for a in rows]
+        out += got
+        if not got or (got[-1]["ts"] and got[-1]["ts"] < since):
             break
-        if a not in picked:
-            picked.append(a)
-    return picked[:n]
+        _time.sleep(0.3)
+    return out
+
+
+def _within(a: dict, since: str) -> bool:
+    return not a.get("ts") or a["ts"] >= since       # 시각 모르는 글(시험 자료)은 넣음
+
+
+def pick_articles(articles: list[dict], now: Optional[datetime] = None, days: int = LOOKBACK_DAYS,
+                  n: int = N_ARTICLES) -> list[dict]:
+    """최근 days 일 안 '특징테마'(오전장 아님)·'일자별 테마주 정리' 글 전부. 하나도 못 찾으면(제목이 바뀜) 최근 n개."""
+    since = ((now or datetime.now()) - timedelta(days=days)).strftime("%Y-%m-%d %H:%M")
+
+    def ok(subj: str) -> bool:
+        t = subj.replace(" ", "")
+        return ("특징테마" in t and "오전장" not in t) or "테마주정리" in t
+    picked = [a for a in articles if ok(a["subject"]) and _within(a, since)]
+    return picked or articles[:n]
 
 
 def fetch_body(aid: int, cookie: dict[str, str], club: int = CLUB_ID, menu: int = MENU_ID) -> str:
@@ -417,32 +430,76 @@ def read_images(images: list[str], names: dict[str, str], cookie: Optional[dict[
 # ------------------------------------------------------------------ 두 번째 카페: 나는주식트레이더다 특징주 (2026-11-15 사용자)
 TRADER_CLUB = 29798500             # 카페 '나는주식트레이더다', 메뉴 279 (레드니케 '당일특징주'만)
 TRADER_MENU = 279
-TRADER_DAYS = 7                    # 최근 7일 안 글 (첫 카페 '일자별 테마주 정리' 7거래일과 맞춤)
+TRADER_DAYS = LOOKBACK_DAYS        # 최근 60일 안 글 (2026-11-15 사용자 '2개월 전 것까지', 처음엔 7일)
 TRADER_WORD = "당일특징주"         # 오전장특징주·인포스탁증시요약 글은 안 씀 (2026-11-15 사용자)
 
 
 def pick_trader(articles: list[dict], now: datetime, days: int = TRADER_DAYS) -> list[dict]:
     """제목(띄어쓰기 무시)에 '당일특징주' 가 든 최근 days 일 안 글. '오전장특징주'·'인포스탁증시요약' 글은 뺌."""
     since = (now - timedelta(days=days)).strftime("%Y-%m-%d %H:%M")
-    return [a for a in articles if TRADER_WORD in a["subject"].replace(" ", "") and a["ts"] >= since]
+    return [a for a in articles if TRADER_WORD in a["subject"].replace(" ", "") and _within(a, since)]
 
 
 def trader_source(now: datetime, cookie: dict[str, str], names: dict[str, str],
-                  fetch_list_fn=None, fetch_body_fn=None) -> tuple[dict[str, str], list[dict]]:
+                  fetch_list_fn=None, fetch_body_fn=None, cache_path: Optional[str] = None) -> tuple[dict[str, str], list[dict]]:
     """나는주식트레이더다 메뉴 279 최근 7일 '특징주' 글 본문(글자)에서 종목. 이 카페 글은 종목이 글자로 있고
     그림은 '당일 거래대금 상위' 표라 OCR 은 안 함."""
-    lst = fetch_list_fn or (lambda: fetch_list(40, TRADER_CLUB, TRADER_MENU))
+    lst = fetch_list_fn or (lambda: fetch_list(50, TRADER_CLUB, TRADER_MENU, TRADER_DAYS, now))
     body = fetch_body_fn or (lambda aid, ck: fetch_body(aid, ck, TRADER_CLUB, TRADER_MENU))
     codes: dict[str, str] = {}
     arts = pick_trader(lst(), now)
+    cache = _Cache(cache_path)
     for a in arts:
-        h = body(a["id"], cookie)
-        got, miss = trader_picks(h, names)
+        key = f"{TRADER_CLUB}:{a['id']}"
+        hit = cache.get(key)
+        if hit is not None:
+            got, miss = hit, []
+        else:
+            got, miss = trader_picks(body(a["id"], cookie), names)
+            cache.put(key, got)
         codes.update(got)
         a["cafe"], a["n_codes"] = "나는주식트레이더다", len(got)
-        logging.info("카페(트레이더) 글 %s '%s': 종목 %s개%s", a["id"], a["subject"], len(got),
+        logging.info("카페(트레이더) 글 %s '%s': 종목 %s개%s%s", a["id"], a["subject"], len(got), " (저장본)" if hit is not None else "",
                      f" · 못 맞춘 이름 {', '.join(miss[:10])}" if miss else "")
+    cache.save()
     return codes, arts
+
+
+class _Cache:
+    """글 번호별로 뽑은 종목을 data/cafe_article_cache.json 에 저장 — 60일치 글을 매일 다시 받거나 OCR 하지 않게 (그림 OCR 은 한 장에 10초 넘게 걸림).
+    지난 글은 바뀌지 않는다고 봄. 90일 넘은 항목은 지움."""
+
+    def __init__(self, path: Optional[str] = None):
+        self.path = path or os.path.join(os.path.dirname(OUT_PATH), "cafe_article_cache.json")
+        try:
+            with open(self.path, encoding="utf-8") as f:
+                self.d = json.load(f)
+        except Exception:
+            self.d = {}
+        self.dirty = False
+
+    def get(self, key: str) -> Optional[dict]:
+        v = self.d.get(key)
+        return dict(v["codes"]) if v else None
+
+    def put(self, key: str, codes: dict) -> None:
+        self.d[key] = {"codes": codes, "at": datetime.now().strftime("%Y-%m-%d")}
+        self.dirty = True
+
+    def save(self) -> None:
+        if not self.dirty:
+            return
+        cut = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+        self.d = {k: v for k, v in self.d.items() if v.get("at", "") >= cut}
+        try:
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            tmp = self.path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self.d, f, ensure_ascii=False)
+            os.replace(tmp, self.path)
+            self.dirty = False
+        except Exception:
+            logging.exception("카페 글 저장본 쓰기 실패")
 
 
 _STAR = re.compile(r"^\s*\*\s*([^\n*]+?)\s*(?:[+\-]?\d+(?:\.\d+)?\s*%)?\s*$")
@@ -500,7 +557,7 @@ class Universe:
 
     def card_line(self) -> str:
         if self.active:
-            return f"☕ 카페 종목 {len(self.codes)}개 안에서만 매수 (하승훈 카페 핫이슈 테마 체크 + 나는주식트레이더다 당일특징주 7일, 인버스 ETF 는 예외)"
+            return f"☕ 카페 종목 {len(self.codes)}개 안에서만 매수 (하승훈 카페 핫이슈 테마 체크 + 나는주식트레이더다 당일특징주, 최근 60일, 인버스 ETF 는 예외)"
         why = {"no_cookie": "쿠키 없음", "empty": "종목 0개", "fail": "가져오기 실패",
                "expired": "네이버 쿠키 만료 — 다시 로그인해 .env.local 쿠키 넣기"}.get(self.status, self.status)
         return f"☕ 카페 제한 꺼짐({why}) — 모든 종목 매수 가능"
@@ -509,7 +566,7 @@ class Universe:
 def refresh(now: datetime, path: Optional[str] = None, names: Optional[dict[str, str]] = None,
             fetch_list_fn=fetch_list, fetch_body_fn=fetch_body, cookie: Optional[dict] = None, read_images_fn=None,
             extra_fn=None) -> Universe:
-    """카페 두 곳(하승훈 최근 글 2개 + 나는주식트레이더다 당일특징주 7일) 종목을 합쳐 path 에 저장.
+    """카페 두 곳(하승훈 특징테마·일자별 + 나는주식트레이더다 당일특징주, 둘 다 최근 60일 글) 종목을 합쳐 path 에 저장.
     한 곳이 실패해도 다른 곳 종목은 씀. 같은 날 앞서 성공한 결과가 있는데 이번에 둘 다 실패하면 앞 결과를 그대로 둠.
     extra_fn: 두 번째 카페 (시험용으로 바꿔 끼움). fetch_list_fn 을 바꿔 끼운 시험에서는 기본으로 안 부름 (인터넷 안 씀)."""
     path = path or OUT_PATH
@@ -537,17 +594,28 @@ def refresh(now: datetime, path: Optional[str] = None, names: Optional[dict[str,
                 logging.warning("네이버 쿠키 갱신 실패 (지금 쿠키로 계속): %s", str(exc)[:150])
         try:
             names = load_names() if names is None else names
-            arts = pick_articles(fetch_list_fn())
+            arts = pick_articles(fetch_list_fn(), now)
+            cache = _Cache(os.path.join(os.path.dirname(path), "cafe_article_cache.json"))
             for a in arts:
+                key = f"{CLUB_ID}:{a['id']}"
+                hit = cache.get(key)
+                if hit is not None:
+                    codes.update(hit)
+                    a["n_codes"], a["cached"] = len(hit), True
+                    continue
                 body = fetch_body_fn(a["id"], cookie)
                 got, imgs, n_text = extract(body, names)
                 codes.update(got)
                 images += imgs
                 a["n_codes"], a["n_images"] = len(got), len(imgs)
+                if got:
+                    cache.put(key, got)
                 if not got and imgs:
                     try:
                         got, miss = (read_images_fn or read_images)(imgs, names, cookie)
                         codes.update(got)
+                        if got:
+                            cache.put(key, got)
                         a["n_codes"], a["ocr"] = len(got), True
                         logging.info("카페 글 %s '%s': 그림 %s장 OCR → 종목 %s개%s", a["id"], a["subject"], len(imgs), len(got),
                                      f" · 못 맞춘 이름 {len(miss)}개: {', '.join(miss[:20])}" if miss else "")
@@ -555,12 +623,16 @@ def refresh(now: datetime, path: Optional[str] = None, names: Optional[dict[str,
                         logging.warning("카페 글 %s '%s': 그림 OCR 실패 (%s)", a["id"], a["subject"], str(exc)[:200])
                 else:
                     logging.info("카페 글 %s '%s': 종목 %s개 · 그림 %s장", a["id"], a["subject"], len(got), len(imgs))
+            cache.save()
+            n_cached = sum(1 for a in arts if a.get("cached"))
+            if n_cached:
+                logging.info("카페(하승훈) 글 %s개 중 %s개는 저장본 사용", len(arts), n_cached)
         except Exception as exc:
             expired = expired or isinstance(exc, CookieExpired)
             errs.append(f"하승훈 카페: {str(exc)[:150]}")
             logging.warning("카페 종목(하승훈): 가져오기 실패 (%s)", str(exc)[:200])
         if extra_fn is None and fetch_list_fn is fetch_list:
-            extra_fn = trader_source
+            extra_fn = lambda n, ck, nm: trader_source(n, ck, nm, cache_path=os.path.join(os.path.dirname(path), "cafe_article_cache.json"))  # noqa: E731
         if extra_fn is not None and names is not None:
             try:
                 c2, a2 = extra_fn(now, cookie, names)

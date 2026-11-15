@@ -53,10 +53,14 @@ def test_trader_source_and_merge():
             {"id": 8, "subject": "26.11.04 인포스탁증시요약 | 선거현황", "writer": "", "ts": "2026-11-12 12:14"},   # 특징주 아님
             {"id": 6, "subject": "26.11.13 오전장특징주 | 인포스탁증시요약", "writer": "", "ts": "2026-11-13 12:32"},  # 오전장 → 안 씀
             {"id": 5, "subject": "26.11.12 당일 특징주", "writer": "", "ts": "2026-11-12 20:56"},                 # 띄어쓰기 무시 → 씀
-            {"id": 7, "subject": "26.11.06 당일 특징주", "writer": "", "ts": "2026-11-07 13:12"}]                 # 7일 넘음
+            {"id": 7, "subject": "26.09.10 당일 특징주", "writer": "", "ts": "2026-09-10 20:12"}]                 # 60일 넘음
     assert [a["id"] for a in C.pick_trader(arts, now)] == [9, 5]
-    codes, picked = C.trader_source(now, {}, NAMES, fetch_list_fn=lambda: arts,
+    tmpd = tempfile.mkdtemp()
+    codes, picked = C.trader_source(now, {}, NAMES, fetch_list_fn=lambda: arts, cache_path=os.path.join(tmpd, "cache.json"),
                                     fetch_body_fn=lambda aid, ck: "<p>*삼현 29.92%</p><p>*에코캡 10%</p>")
+    again, _ = C.trader_source(now, {}, NAMES, fetch_list_fn=lambda: arts, cache_path=os.path.join(tmpd, "cache.json"),
+                               fetch_body_fn=lambda aid, ck: 1 / 0)          # 두 번째는 저장본만 씀 (본문 안 받음)
+    assert again == codes
     assert set(codes) == {"437730", "128540"} and picked[0]["cafe"] == "나는주식트레이더다" and len(picked) == 2
     info = ("<p>특징 종목</p><p>가온칩스</p><p>(399720)</p><p>3분기 실적 호조에 급등</p>"
             "<p>한국콜마</p><p>(161890)</p><p>3분기 실적 부진에 약세</p>")      # 인포스탁: 오른 종목만
