@@ -1,5 +1,9 @@
 """☕ 하승훈 카페 '핫이슈 테마 체크' 종목 안에서만 매수 (2026-11-13 사용자).
 
++ 두 번째 카페 (2026-11-15 사용자): '나는주식트레이더다'(clubid 29798500) 메뉴 279 레드니케 '당일특징주'·'오전장특징주'
+  최근 7일 글. 종목은 글자로 있음 → '*종목명 29.87%' 줄 + 인포스탁 '특징 종목' 중 오른 종목(상한가·급등·상승·강세)만.
+  두 카페 종목을 합쳐(11-13 기준 약 250종목) 같은 파일·같은 제한에 씀. 한 곳이 실패해도 다른 곳 종목으로 제한함.
+
 카페: 하승훈의 주식투자 (clubid 26347614), 메뉴 86 '핫이슈 테마 체크'.
   목록  apis.naver.com/cafe-web/cafe2/ArticleListV2dot1.json  — 로그인 없이 됨
   본문  apis.naver.com/cafe-web/cafe-articleapi/v2.1/cafes/26347614/articles/{id} — 로그인 필요 (없으면 401 · 오류코드 0004)
@@ -30,7 +34,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from typing import Optional
 
 from kiwoom_trading.common.daily_store import DEFAULT_DB_PATH, PROJECT_ROOT, load_env
@@ -68,11 +72,15 @@ def cookies() -> dict[str, str]:
     return {"NID_AUT": aut, "NID_SES": ses} if aut and ses else {}
 
 
-def fetch_list(per_page: int = 15) -> list[dict]:
-    """메뉴 86 최근 글 목록 → [{'id', 'subject', 'ts', 'writer'}] (최근 순서)."""
+def _headers(club: int, menu: int) -> dict:
+    return {**HEADERS, "Referer": f"https://cafe.naver.com/ca-fe/cafes/{club}/menus/{menu}"}
+
+
+def fetch_list(per_page: int = 15, club: int = CLUB_ID, menu: int = MENU_ID) -> list[dict]:
+    """카페 메뉴 최근 글 목록 → [{'id', 'subject', 'ts', 'writer'}] (최근 순서)."""
     import requests
-    r = requests.get(LIST_URL, params={"search.clubid": CLUB_ID, "search.menuid": MENU_ID, "search.queryType": "lastArticle",
-                                       "search.page": 1, "search.perPage": per_page}, headers=HEADERS, timeout=10)
+    r = requests.get(LIST_URL, params={"search.clubid": club, "search.menuid": menu, "search.queryType": "lastArticle",
+                                       "search.page": 1, "search.perPage": per_page}, headers=_headers(club, menu), timeout=10)
     r.raise_for_status()
     rows = json.loads(r.content.decode("utf-8"))["message"]["result"]["articleList"]
     return [{"id": int(a["articleId"]), "subject": str(a.get("subject") or ""), "writer": str(a.get("writerNickname") or ""),
@@ -95,11 +103,11 @@ def pick_articles(articles: list[dict], n: int = N_ARTICLES) -> list[dict]:
     return picked[:n]
 
 
-def fetch_body(aid: int, cookie: dict[str, str]) -> str:
+def fetch_body(aid: int, cookie: dict[str, str], club: int = CLUB_ID, menu: int = MENU_ID) -> str:
     """본문 HTML. 로그인 안 됨(0004)·그 밖 오류는 RuntimeError."""
     import requests
-    r = requests.get(BODY_URL.format(club=CLUB_ID, aid=aid), params={"useCafeId": "true", "requestFrom": "A"},
-                     headers=HEADERS, cookies=cookie, timeout=10)
+    r = requests.get(BODY_URL.format(club=club, aid=aid), params={"useCafeId": "true", "requestFrom": "A"},
+                     headers=_headers(club, menu), cookies=cookie, timeout=10)
     try:
         j = json.loads(r.content.decode("utf-8"))
     except Exception:
@@ -338,6 +346,65 @@ def read_images(images: list[str], names: dict[str, str], cookie: Optional[dict[
     return found, miss
 
 
+# ------------------------------------------------------------------ 두 번째 카페: 나는주식트레이더다 특징주 (2026-11-15 사용자)
+TRADER_CLUB = 29798500             # 카페 '나는주식트레이더다', 메뉴 279 (레드니케 '당일특징주'·'오전장특징주')
+TRADER_MENU = 279
+TRADER_DAYS = 7                    # 최근 7일 안 글 (첫 카페 '일자별 테마주 정리' 7거래일과 맞춤)
+TRADER_WORD = "특징주"
+
+
+def pick_trader(articles: list[dict], now: datetime, days: int = TRADER_DAYS) -> list[dict]:
+    """제목에 '특징주' 가 든 최근 days 일 안 글 ('인포스탁증시요약' 만 있는 글은 뺌)."""
+    since = (now - timedelta(days=days)).strftime("%Y-%m-%d %H:%M")
+    return [a for a in articles if TRADER_WORD in a["subject"].replace(" ", "") and a["ts"] >= since]
+
+
+def trader_source(now: datetime, cookie: dict[str, str], names: dict[str, str],
+                  fetch_list_fn=None, fetch_body_fn=None) -> tuple[dict[str, str], list[dict]]:
+    """나는주식트레이더다 메뉴 279 최근 7일 '특징주' 글 본문(글자)에서 종목. 이 카페 글은 종목이 글자로 있고
+    그림은 '당일 거래대금 상위' 표라 OCR 은 안 함."""
+    lst = fetch_list_fn or (lambda: fetch_list(40, TRADER_CLUB, TRADER_MENU))
+    body = fetch_body_fn or (lambda aid, ck: fetch_body(aid, ck, TRADER_CLUB, TRADER_MENU))
+    codes: dict[str, str] = {}
+    arts = pick_trader(lst(), now)
+    for a in arts:
+        h = body(a["id"], cookie)
+        got, miss = trader_picks(h, names)
+        codes.update(got)
+        a["cafe"], a["n_codes"] = "나는주식트레이더다", len(got)
+        logging.info("카페(트레이더) 글 %s '%s': 종목 %s개%s", a["id"], a["subject"], len(got),
+                     f" · 못 맞춘 이름 {', '.join(miss[:10])}" if miss else "")
+    return codes, arts
+
+
+_STAR = re.compile(r"^\s*\*\s*([^\n*]+?)\s*(?:[+\-]?\d+(?:\.\d+)?\s*%)?\s*$")
+
+
+def trader_picks(body: str, names: dict[str, str]) -> tuple[dict[str, str], list[str]]:
+    """'*종목명 29.87%' 꼴 줄만 종목으로 (당일·오전장 '10% 이상 상승' 정리 목록). 같은 글 뒤쪽 '인포스탁 증시요약'은
+    약세·급락 종목과 기사 속 대형주까지 섞여 있어 쓰지 않음. 이름 오타('테크놀러지')는 OCR 과 같은 자모 맞추기로."""
+    lines = [x.strip() for x in html_text(body).splitlines() if x.strip()]
+    cands = [m.group(1).strip() for line in lines if (m := _STAR.match(line))]
+    found, miss = names_from_ocr([f"{c} (0" for c in cands if not c.startswith("-")], names)
+    # 인포스탁 '특징 종목': '종목명' / '(종목코드)' / '이슈 한 줄' — 오른 종목(상한가·급등·상승·강세)만, 약세·급락·하락은 뺌
+    by_code = {c: n for n, c in names.items()}
+    for i in range(1, len(lines) - 1):
+        m = _INFO_CODE.match(lines[i])
+        if not m:
+            continue
+        why = lines[i + 1]
+        if _UP.search(why) and not _DOWN.search(why):
+            code = m.group(1)
+            if code in by_code:
+                found[code] = by_code[code]
+    return found, miss
+
+
+_INFO_CODE = re.compile(r"^\(\s*([0-9A-Z]{6})\s*\)$")
+_UP = re.compile(r"상한가|급등|상승|강세|신고가")
+_DOWN = re.compile(r"약세|급락|하락|하한가|부진")
+
+
 # ------------------------------------------------------------------ 저장·읽기
 @dataclass
 class Universe:
@@ -365,14 +432,17 @@ class Universe:
 
     def card_line(self) -> str:
         if self.active:
-            return f"☕ 카페 종목 {len(self.codes)}개 안에서만 매수 (하승훈 카페 핫이슈 테마 체크 최근 글 2개, 인버스 ETF 는 예외)"
+            return f"☕ 카페 종목 {len(self.codes)}개 안에서만 매수 (하승훈 카페 핫이슈 테마 체크 + 나는주식트레이더다 특징주 7일, 인버스 ETF 는 예외)"
         why = {"no_cookie": "쿠키 없음", "empty": "종목 0개", "fail": "가져오기 실패"}.get(self.status, self.status)
         return f"☕ 카페 제한 꺼짐({why}) — 모든 종목 매수 가능"
 
 
 def refresh(now: datetime, path: Optional[str] = None, names: Optional[dict[str, str]] = None,
-            fetch_list_fn=fetch_list, fetch_body_fn=fetch_body, cookie: Optional[dict] = None, read_images_fn=None) -> Universe:
-    """카페 최근 글 2개 본문에서 종목을 뽑아 path 에 저장. 같은 날 앞서 성공한 결과가 있는데 이번에 실패하면 앞 결과를 그대로 둠."""
+            fetch_list_fn=fetch_list, fetch_body_fn=fetch_body, cookie: Optional[dict] = None, read_images_fn=None,
+            extra_fn=None) -> Universe:
+    """카페 두 곳(하승훈 최근 글 2개 + 나는주식트레이더다 특징주 7일) 종목을 합쳐 path 에 저장.
+    한 곳이 실패해도 다른 곳 종목은 씀. 같은 날 앞서 성공한 결과가 있는데 이번에 둘 다 실패하면 앞 결과를 그대로 둠.
+    extra_fn: 두 번째 카페 (시험용으로 바꿔 끼움). fetch_list_fn 을 바꿔 끼운 시험에서는 기본으로 안 부름 (인터넷 안 씀)."""
     path = path or OUT_PATH
     day = now.date()
     stamp = now.strftime("%Y-%m-%d %H:%M")
@@ -382,11 +452,13 @@ def refresh(now: datetime, path: Optional[str] = None, names: Optional[dict[str,
         u = Universe(day, "no_cookie", f"{' · '.join(COOKIE_KEYS)} 가 .env.local 에 없음", fetched_at=stamp)
         logging.info("카페 종목: 쿠키 없음 → 제한 안 함")
     else:
+        codes: dict[str, str] = {}
+        arts: list[dict] = []
+        images: list[str] = []
+        errs: list[str] = []
         try:
-            arts = pick_articles(fetch_list_fn())
             names = load_names() if names is None else names
-            codes: dict[str, str] = {}
-            images: list[str] = []
+            arts = pick_articles(fetch_list_fn())
             for a in arts:
                 body = fetch_body_fn(a["id"], cookie)
                 got, imgs, n_text = extract(body, names)
@@ -404,15 +476,28 @@ def refresh(now: datetime, path: Optional[str] = None, names: Optional[dict[str,
                         logging.warning("카페 글 %s '%s': 그림 OCR 실패 (%s)", a["id"], a["subject"], str(exc)[:200])
                 else:
                     logging.info("카페 글 %s '%s': 종목 %s개 · 그림 %s장", a["id"], a["subject"], len(got), len(imgs))
-            u = Universe(day, "ok" if codes else "empty", "" if codes else "본문에서 종목을 못 찾음 (이미지뿐이거나 형식이 바뀜)",
-                         codes, arts, images, stamp)
-            if codes:
-                logging.info("카페 종목 %s개 (%s): %s", len(codes), ", ".join(a["subject"] for a in arts), ", ".join(list(codes.values())[:40]))
-            else:
-                logging.info("카페 종목: 0개 → 제한 안 함")
         except Exception as exc:
-            u = Universe(day, "fail", str(exc)[:200], fetched_at=stamp)
-            logging.warning("카페 종목: 가져오기 실패 → 제한 안 함 (%s)", str(exc)[:200])
+            errs.append(f"하승훈 카페: {str(exc)[:150]}")
+            logging.warning("카페 종목(하승훈): 가져오기 실패 (%s)", str(exc)[:200])
+        if extra_fn is None and fetch_list_fn is fetch_list:
+            extra_fn = trader_source
+        if extra_fn is not None and names is not None:
+            try:
+                c2, a2 = extra_fn(now, cookie, names)
+                codes.update(c2)
+                arts += a2
+            except Exception as exc:
+                errs.append(f"나는주식트레이더다: {str(exc)[:150]}")
+                logging.warning("카페 종목(트레이더): 가져오기 실패 (%s)", str(exc)[:200])
+        if codes:
+            u = Universe(day, "ok", " · ".join(errs), codes, arts, images, stamp)
+            logging.info("카페 종목 %s개 (%s): %s", len(codes), ", ".join(a["subject"] for a in arts), ", ".join(list(codes.values())[:40]))
+        elif errs:
+            u = Universe(day, "fail", " · ".join(errs)[:200], fetched_at=stamp)
+            logging.warning("카페 종목: 가져오기 실패 → 제한 안 함 (%s)", " · ".join(errs)[:200])
+        else:
+            u = Universe(day, "empty", "본문에서 종목을 못 찾음 (이미지뿐이거나 형식이 바뀜)", codes, arts, images, stamp)
+            logging.info("카페 종목: 0개 → 제한 안 함")
     if not u.active and prev is not None and prev.active:
         logging.info("카페 종목: 이번(%s)엔 못 가져와 %s 에 가져온 %s개를 그대로 씀", stamp, prev.fetched_at, len(prev.codes))
         prev.reason = f"{stamp} 다시 가져오기 실패({u.reason[:80]}) — 앞 결과 유지"
@@ -478,7 +563,7 @@ def skip_reason(code: str, kind: str = "", day: Optional[date] = None, universe:
     kinds, codes = _exempt_kinds()
     if kind in kinds or code in codes or code in u.codes:
         return None
-    return f"{TAG} — 하승훈 카페 핫이슈 테마 체크 최근 글 2개 종목({len(u.codes)}개)만 삼"
+    return f"{TAG} — 하승훈 카페 핫이슈 테마 체크·나는주식트레이더다 특징주 종목({len(u.codes)}개)만 삼"
 
 
 def main() -> None:
