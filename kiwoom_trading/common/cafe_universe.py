@@ -76,6 +76,72 @@ def _headers(club: int, menu: int) -> dict:
     return {**HEADERS, "Referer": f"https://cafe.naver.com/ca-fe/cafes/{club}/menus/{menu}"}
 
 
+# ------------------------------------------------------------------ 쿠키 자동 갱신 (2026-11-15 사용자 '만료되는 것을 알아서 재갱신')
+RENEW_URL = "https://nid.naver.com/user2/help/myInfo?lang=ko_KR"
+ENV_PATH = os.path.join(PROJECT_ROOT, ".env.local")
+
+
+class CookieExpired(RuntimeError):
+    """NID_AUT(로그인 유지 쿠키)까지 만료돼 다시 로그인해야 함."""
+
+
+def save_env(updates: dict[str, str], path: Optional[str] = None) -> None:
+    """.env.local 의 KEY=값 줄만 바꿈 (다른 줄·줄바꿈 방식·순서 그대로, 없는 키는 끝에 붙임). 값은 로그에 안 남김."""
+    path = path or ENV_PATH
+    raw = open(path, "rb").read() if os.path.exists(path) else b""
+    nl = "\r\n" if b"\r\n" in raw else "\n"
+    lines = raw.decode("utf-8").splitlines()
+    done = set()
+    for i, line in enumerate(lines):
+        key = line.split("=", 1)[0].strip()
+        if key in updates and "=" in line and not line.lstrip().startswith("#"):
+            lines[i] = f"{key}={updates[key]}"
+            done.add(key)
+    lines += [f"{k}={v}" for k, v in updates.items() if k not in done]
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write((nl.join(lines) + nl).encode("utf-8"))
+    os.replace(tmp, path)
+    for k, v in updates.items():
+        os.environ[k] = v
+
+
+def renew_cookies(cookie: dict[str, str], env_path: Optional[str] = None) -> dict[str, str]:
+    """네이버 내 정보 화면을 한 번 열어 새 세션 쿠키(NID_SES, 가끔 NID_AUT)를 받아 .env.local 에 저장.
+    NID_SES 는 짧게 바뀌는 세션 쿠키라 NID_AUT(로그인 상태 유지, 보통 몇 달)가 살아 있는 한 이렇게 계속 새로 받을 수 있음.
+    로그인 화면으로 넘어가면 NID_AUT 까지 만료된 것 → CookieExpired (비밀번호 로그인은 자동으로 안 함)."""
+    import requests
+    r = requests.get(RENEW_URL, cookies=cookie, headers=HEADERS, timeout=10, allow_redirects=False)
+    loc = r.headers.get("location", "")
+    if "login" in loc.lower():
+        raise CookieExpired("네이버 로그인 쿠키 만료 (로그인 화면으로 넘어감)")
+    new = {k: r.cookies.get(k) for k in ("NID_AUT", "NID_SES")}
+    updates = {env: new[k] for env, k in (("NAVER_NID_AUT", "NID_AUT"), ("NAVER_NID_SES", "NID_SES"))
+               if new[k] and new[k] != cookie.get(k)}
+    if updates:
+        save_env(updates, env_path)
+        logging.info("네이버 쿠키 갱신: %s 새로 받아 .env.local 에 저장", ", ".join(updates))
+        cookie = {**cookie, **{k: new[k] for k in ("NID_AUT", "NID_SES") if new[k]}}
+    else:
+        logging.info("네이버 쿠키 갱신: 새 쿠키 없음 (지금 쿠키 그대로)")
+    return cookie
+
+
+def alert_expired(day: date, path: Optional[str] = None) -> None:
+    """쿠키 만료를 하루 한 번 텔레그램(매매 알림 봇)으로 알림."""
+    flag = (path or OUT_PATH) + f".expired_{day:%Y%m%d}"
+    if os.path.exists(flag):
+        return
+    try:
+        from kiwoom_trading.common.telegram import send_telegram_message
+        send_telegram_message("☕ 네이버 로그인 쿠키가 만료돼 카페 종목을 못 읽음 → 오늘은 카페 제한 없이 매수함.\n"
+                              "PC 브라우저에서 네이버에 다시 로그인('로그인 상태 유지' 체크)한 뒤 개발자 도구(F12) → Application → Cookies → "
+                              "naver.com 의 NID_AUT·NID_SES 값을 .env.local 의 NAVER_NID_AUT·NAVER_NID_SES 에 넣어 주세요.")
+        open(flag, "w").close()
+    except Exception:
+        logging.exception("쿠키 만료 알림 실패")
+
+
 def fetch_list(per_page: int = 15, club: int = CLUB_ID, menu: int = MENU_ID) -> list[dict]:
     """카페 메뉴 최근 글 목록 → [{'id', 'subject', 'ts', 'writer'}] (최근 순서)."""
     import requests
@@ -114,6 +180,8 @@ def fetch_body(aid: int, cookie: dict[str, str], club: int = CLUB_ID, menu: int 
         raise RuntimeError(f"본문 응답을 못 읽음 (HTTP {r.status_code})")
     res = j.get("result") or {}
     if res.get("errorCode"):
+        if str(res.get("errorCode")) == "0004":
+            raise CookieExpired(f"본문 못 읽음 — 로그인 안 됨(0004), 네이버 쿠키 만료")
         raise RuntimeError(f"본문 못 읽음 — 오류코드 {res.get('errorCode')} {res.get('reason') or ''}".strip())
     found = _find_key(res, "contentHtml")
     if not found:
@@ -433,7 +501,8 @@ class Universe:
     def card_line(self) -> str:
         if self.active:
             return f"☕ 카페 종목 {len(self.codes)}개 안에서만 매수 (하승훈 카페 핫이슈 테마 체크 + 나는주식트레이더다 당일특징주 7일, 인버스 ETF 는 예외)"
-        why = {"no_cookie": "쿠키 없음", "empty": "종목 0개", "fail": "가져오기 실패"}.get(self.status, self.status)
+        why = {"no_cookie": "쿠키 없음", "empty": "종목 0개", "fail": "가져오기 실패",
+               "expired": "네이버 쿠키 만료 — 다시 로그인해 .env.local 쿠키 넣기"}.get(self.status, self.status)
         return f"☕ 카페 제한 꺼짐({why}) — 모든 종목 매수 가능"
 
 
@@ -456,6 +525,16 @@ def refresh(now: datetime, path: Optional[str] = None, names: Optional[dict[str,
         arts: list[dict] = []
         images: list[str] = []
         errs: list[str] = []
+        expired = False
+        if fetch_list_fn is fetch_list:   # 실제로 가져올 때만 (시험은 인터넷 안 씀)
+            try:
+                cookie = renew_cookies(cookie)
+            except CookieExpired as exc:
+                expired = True
+                errs.append(str(exc))
+                logging.warning("카페 종목: %s", exc)
+            except Exception as exc:
+                logging.warning("네이버 쿠키 갱신 실패 (지금 쿠키로 계속): %s", str(exc)[:150])
         try:
             names = load_names() if names is None else names
             arts = pick_articles(fetch_list_fn())
@@ -477,6 +556,7 @@ def refresh(now: datetime, path: Optional[str] = None, names: Optional[dict[str,
                 else:
                     logging.info("카페 글 %s '%s': 종목 %s개 · 그림 %s장", a["id"], a["subject"], len(got), len(imgs))
         except Exception as exc:
+            expired = expired or isinstance(exc, CookieExpired)
             errs.append(f"하승훈 카페: {str(exc)[:150]}")
             logging.warning("카페 종목(하승훈): 가져오기 실패 (%s)", str(exc)[:200])
         if extra_fn is None and fetch_list_fn is fetch_list:
@@ -487,14 +567,17 @@ def refresh(now: datetime, path: Optional[str] = None, names: Optional[dict[str,
                 codes.update(c2)
                 arts += a2
             except Exception as exc:
+                expired = expired or isinstance(exc, CookieExpired)
                 errs.append(f"나는주식트레이더다: {str(exc)[:150]}")
                 logging.warning("카페 종목(트레이더): 가져오기 실패 (%s)", str(exc)[:200])
         if codes:
             u = Universe(day, "ok", " · ".join(errs), codes, arts, images, stamp)
             logging.info("카페 종목 %s개 (%s): %s", len(codes), ", ".join(a["subject"] for a in arts), ", ".join(list(codes.values())[:40]))
         elif errs:
-            u = Universe(day, "fail", " · ".join(errs)[:200], fetched_at=stamp)
+            u = Universe(day, "expired" if expired else "fail", " · ".join(errs)[:200], fetched_at=stamp)
             logging.warning("카페 종목: 가져오기 실패 → 제한 안 함 (%s)", " · ".join(errs)[:200])
+            if expired and fetch_list_fn is fetch_list:
+                alert_expired(day, path)
         else:
             u = Universe(day, "empty", "본문에서 종목을 못 찾음 (이미지뿐이거나 형식이 바뀜)", codes, arts, images, stamp)
             logging.info("카페 종목: 0개 → 제한 안 함")
