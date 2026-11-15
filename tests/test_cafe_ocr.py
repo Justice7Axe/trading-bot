@@ -98,6 +98,23 @@ def test_expired_status():
         assert u.status == "expired" and not u.active and "쿠키 만료" in u.card_line()
 
 
+def test_expired_keeps_cached_articles():
+    import tempfile
+    from datetime import datetime
+    arts = [{"id": 1, "subject": "11월 16일 특징테마", "writer": "", "ts": ""},     # 새 글: 쿠키 만료로 못 읽음
+            {"id": 2, "subject": "11월 13일 특징테마", "writer": "", "ts": ""}]     # 저장본 있음
+
+    def body(aid, ck):
+        raise C.CookieExpired("로그인 안 됨(0004)")
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = C._Cache(os.path.join(tmp, "cafe_article_cache.json"))
+        cache.put(f"{C.CLUB_ID}:2", {"437730": "삼현"})
+        cache.save()
+        u = C.refresh(datetime(2026, 11, 16, 7, 50), os.path.join(tmp, "c.json"), names=NAMES, fetch_list_fn=lambda: arts,
+                      fetch_body_fn=body, cookie={"NID_AUT": "a", "NID_SES": "b"}, extra_fn=lambda n, ck, nm: ({}, []))
+        assert u.active and set(u.codes) == {"437730"} and "0004" in u.reason   # 첫 글 실패에도 저장본 글은 씀
+
+
 def test_hong_kind_exempt():
     from datetime import date
     from kiwoom_trading.strategies.hong_limitup.live import HONG_KIND

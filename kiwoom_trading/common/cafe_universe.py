@@ -136,14 +136,16 @@ def renew_cookies(cookie: dict[str, str], env_path: Optional[str] = None) -> dic
     return cookie
 
 
-def alert_expired(day: date, path: Optional[str] = None) -> None:
-    """쿠키 만료를 하루 한 번 텔레그램(매매 알림 봇)으로 알림."""
+def alert_expired(day: date, path: Optional[str] = None, n_codes: int = 0) -> None:
+    """쿠키 만료를 하루 한 번 텔레그램(매매 알림 봇)으로 알림. n_codes: 저장본으로 만든 종목 수 (0 이면 제한 꺼짐)."""
     flag = (path or OUT_PATH) + f".expired_{day:%Y%m%d}"
     if os.path.exists(flag):
         return
     try:
         from kiwoom_trading.common.telegram import send_telegram_message
-        send_telegram_message("☕ 네이버 로그인 쿠키가 만료돼 카페 종목을 못 읽음 → 오늘은 카페 제한 없이 매수함.\n"
+        head = (f"☕ 네이버 로그인 쿠키가 만료돼 새 카페 글을 못 읽음 → 오늘은 저장해 둔 글 종목 {n_codes}개로 제한함.\n" if n_codes
+                else "☕ 네이버 로그인 쿠키가 만료돼 카페 종목을 못 읽음 → 오늘은 카페 제한 없이 매수함.\n")
+        send_telegram_message(head +
                               "PC 브라우저에서 네이버에 다시 로그인('로그인 상태 유지' 체크)한 뒤 개발자 도구(F12) → Application → Cookies → "
                               "naver.com 의 NID_AUT·NID_SES 값을 .env.local 의 NAVER_NID_AUT·NAVER_NID_SES 에 넣어 주세요.")
         open(flag, "w").close()
@@ -610,7 +612,14 @@ def refresh(now: datetime, path: Optional[str] = None, names: Optional[dict[str,
                     codes.update(hit)
                     a["n_codes"], a["cached"] = len(hit), True
                     continue
-                body = fetch_body_fn(a["id"], cookie)
+                try:
+                    body = fetch_body_fn(a["id"], cookie)
+                except CookieExpired as exc:   # 쿠키 만료여도 남은 글의 저장본은 계속 씀 (2026-11-16 첫 실패 글에서 멈췄던 것 고침)
+                    expired = True
+                    if not any(str(exc) in e for e in errs):
+                        errs.append(f"하승훈 카페: {str(exc)[:150]}")
+                    a["n_codes"] = 0
+                    continue
                 got, imgs, n_text = extract(body, names)
                 codes.update(got)
                 images += imgs
@@ -651,6 +660,8 @@ def refresh(now: datetime, path: Optional[str] = None, names: Optional[dict[str,
                 logging.warning("카페 종목(트레이더): 가져오기 실패 (%s)", str(exc)[:200])
         if codes:
             u = Universe(day, "ok", " · ".join(errs), codes, arts, images, stamp)
+            if expired and fetch_list_fn is fetch_list:   # 저장본으로 종목은 만들었어도 쿠키가 끊겼으면 알림 (2026-11-16 알림 빠졌던 것)
+                alert_expired(day, path, len(codes))
             logging.info("카페 종목 %s개 (%s): %s", len(codes), ", ".join(a["subject"] for a in arts), ", ".join(list(codes.values())[:40]))
         elif errs:
             u = Universe(day, "expired" if expired else "fail", " · ".join(errs)[:200], fetched_at=stamp)
