@@ -75,6 +75,7 @@ from kiwoom_trading.execution.experiment_report import build as build_experiment
 from kiwoom_trading.strategies.cafe_leader.live import KIND as CAFE_KIND, STOP as CAFE_STOP, CafeLeaderWatcher, load_cafe_context
 from kiwoom_trading.strategies.hong_styles.live import HongStylesAccount, load_hs_context
 from kiwoom_trading.strategies.event_scenario.live import TRUST_KIND, EventScenarioBooks, load_event_context
+from kiwoom_trading.strategies.qullamaggie.live import QullaBook, QullaContext, rank_universe as qulla_rank
 from kiwoom_trading.screener.market_regime import MarketRegime
 from kiwoom_trading.screener.surge_groups import SurgeGroups
 from kiwoom_trading.strategies.leader_shape.live import KIND as LEADER_KIND, LeaderShapeWatcher
@@ -990,9 +991,20 @@ def main() -> int:
             logging.info("일정 가상 장부: 전 거래일 %s, 보유 %s건", events.prev, sum(len(b.open_trades()) for b in events.books.values()))
         except Exception:
             logging.exception("일정 가상 장부 준비 실패")
+    qulla: Optional[QullaBook] = None
+    if not args.once:
+        try:   # 🏄 쿨라매기 돌파 가상 장부 (2026-11-15 사용자, 주문 없음): 1·3·6달 상승률 상위 2% & 쉬는 구간 윗선·5분 고점 돌파, 그날 저가 손절,
+               # 3거래일째 09:00 절반·본전 손절, 정규장 종가 < 10일선 다음 날 09:00 (스킬 qullamaggie). 정규장 일봉 빈 날은 매 확인 때 조금씩 채움
+            qranks, qn, qprev = qulla_rank(now.date())
+            qulla = QullaBook(store, market, now.date(), QullaContext(now.date()), qranks, qn, client=client, regime=regime,
+                              notify=None if args.no_telegram else send_telegram_message)
+            logging.info("쿨라매기 돌파: %s 기준 상승률 상위 %s종목 (전체 %s종목), 보유 %s건, 잔고 %s원", qprev, len(qranks), qn,
+                         len(qulla.open_trades()), f"{qulla.cash():,.0f}")
+        except Exception:
+            logging.exception("쿨라매기 돌파 준비 실패")
     books = tuple((label, b) for label, b in (("📘 전황 계좌", jh), ("📕 홍인기 계좌", hong), ("☕ 카페 테마 대장", cafe),
-                                              ("📕 홍인기 상따 밖 장부", hstyles), ("📅 일정 시나리오", events)) if b is not None)
-    for b in (jh, hong, cafe, events):      # 15:40 마감 요약은 따로 보내지 않고 LEDGER_SINK 에 모아 15:42 한 통으로 (📕 상따 밖은 19:58 이라 따로)
+                                              ("📕 홍인기 상따 밖 장부", hstyles), ("📅 일정 시나리오", events), ("🏄 쿨라매기 돌파", qulla)) if b is not None)
+    for b in (jh, hong, cafe, events, qulla):      # 15:40 마감 요약은 따로 보내지 않고 LEDGER_SINK 에 모아 15:42 한 통으로 (📕 상따 밖은 19:58 이라 따로)
         if b is not None:
             b.summary_sink = LEDGER_SINK
     strong: Optional[StrongListWatcher] = None
