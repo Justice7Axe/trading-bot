@@ -45,6 +45,30 @@ def test_refresh_uses_ocr_when_body_is_image():
         assert u.articles[0]["ocr"] is True
 
 
+def test_trader_source_and_merge():
+    from datetime import datetime
+    import tempfile
+    now = datetime(2026, 11, 16, 7, 50)
+    arts = [{"id": 9, "subject": "26.11.13 당일특징주", "writer": "", "ts": "2026-11-14 12:04"},
+            {"id": 8, "subject": "26.11.04 인포스탁증시요약 | 선거현황", "writer": "", "ts": "2026-11-12 12:14"},   # 특징주 아님
+            {"id": 7, "subject": "26.11.06 당일 특징주", "writer": "", "ts": "2026-11-07 13:12"}]                 # 7일 넘음
+    assert [a["id"] for a in C.pick_trader(arts, now)] == [9]
+    codes, picked = C.trader_source(now, {}, NAMES, fetch_list_fn=lambda: arts,
+                                    fetch_body_fn=lambda aid, ck: "<p>*삼현 29.92%</p><p>*에코캡 10%</p>")
+    assert set(codes) == {"437730", "128540"} and picked[0]["cafe"] == "나는주식트레이더다"
+    info = ("<p>특징 종목</p><p>가온칩스</p><p>(399720)</p><p>3분기 실적 호조에 급등</p>"
+            "<p>한국콜마</p><p>(161890)</p><p>3분기 실적 부진에 약세</p>")      # 인포스탁: 오른 종목만
+    got, _ = C.trader_picks(info, NAMES)
+    assert got == {"399720": "가온칩스"}
+    body = '<div><img src="https://x/a.png"></div>'
+    with tempfile.TemporaryDirectory() as tmp:   # 첫 카페가 실패해도 두 번째 카페 종목은 씀
+        def boom():
+            raise RuntimeError("목록 실패")
+        u = C.refresh(now, os.path.join(tmp, "c.json"), names=NAMES, fetch_list_fn=boom, fetch_body_fn=lambda a, c: body,
+                      cookie={"NID_AUT": "a", "NID_SES": "b"}, extra_fn=lambda n, ck, nm: (dict(codes), []))
+        assert u.active and set(u.codes) == {"437730", "128540"} and "하승훈" in u.reason
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):
