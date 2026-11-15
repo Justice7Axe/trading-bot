@@ -4,7 +4,8 @@
       일봉 DB 의 minute_ohlcv(그날 통합 1분봉, 시세 조회 흉내) — 둘 다 임시 복사본으로 읽는다(운영 DB 를 건드리지 않음).
 출력: 장부별 매매(종목·수량·매수가·매도가·손익)와 알림 첫 줄. 코드를 바꾸기 전·후 출력을 파일로 저장해 비교한다.
 
-실행: python -m kiwoom_trading.backtest.replay 2026-10-21 2026-10-22 [--books hong,cafe,styles,jh] [--box-width 9]
+실행: python -m kiwoom_trading.backtest.replay 2026-10-21 2026-10-22 [--books hong,cafe,styles,jh,qulla] [--box-width 9]
+  (qulla = 🏄 쿨라매기 돌파, 기본 목록에는 없음 — 넣으면 정규장 시세에 오늘 시가·고가·저가를 채움)
 """
 from __future__ import annotations
 
@@ -50,6 +51,7 @@ class Replay:
         self.now = None
         self._bars = {}
         self._base = {}
+        self.full_quote = False       # True 면 정규장 시세에 오늘 시가·고가·저가도 채움 (🏄 쿨라매기 — 다른 장부 재현 결과는 그대로 두려고 따로)
 
     def bars(self, code: str):
         if code not in self._bars:
@@ -66,6 +68,12 @@ class Replay:
         if code not in self._base:
             r = self.d.execute("SELECT close FROM daily_ohlcv WHERE code=? AND date<? ORDER BY date DESC LIMIT 1", [code, self.day]).fetchone()
             self._base[code] = int(r[0]) if r else 0
+        if self.full_quote and not integrated:
+            today = [x for x in b if x[0].date() == self.now.date()]
+            if not today:
+                return None
+            return Quote(code, "", int(today[0][1]), int(max(x[2] for x in today)), int(min(x[3] for x in today)), int(today[-1][4]),
+                         self._base[code], int(sum(x[5] or 0 for x in today)))
         return Quote(code, "", 0, 0, 0, int(b[-1][4]), self._base[code], 0)
 
     def minute_bars(self, client, code, day, exchange="AL"):
@@ -85,7 +93,8 @@ def run(days, books=("hong", "cafe", "styles", "jh"), box_width=None, out=sys.st
     import kiwoom_trading.strategies.hong_styles.live as HS
     from kiwoom_trading.strategies.hong_limitup.live import HongAccount, load_prev_limitups
     from kiwoom_trading.strategies.jeonhwang.live import JeonhwangAccount, load_jh_context
-    daily = duckdb.connect(_copy("daily_ohlcv.duckdb"), read_only=True)
+    daily_path = _copy("daily_ohlcv.duckdb")
+    daily = duckdb.connect(daily_path, read_only=True)
     scr = duckdb.connect(_copy("screener.duckdb"), read_only=True)
     if box_width is not None:
         CL.BOX_WIDTH = box_width
@@ -105,6 +114,12 @@ def run(days, books=("hong", "cafe", "styles", "jh"), box_width=None, out=sys.st
             objs.append(HS.HongStylesAccount(store, R, day, HS.load_hs_context(daily, day), notify=msgs.append, leaders=cafe.leaders))
         if "jh" in books:
             objs.append(JeonhwangAccount(store, R, day, load_jh_context(daily, day), notify=msgs.append))
+        if "qulla" in books:    # 🏄 쿨라매기 돌파 — 정규장 빈 날은 지역 자료·파일 캐시로만 채움 (키움 조회 없음)
+            import kiwoom_trading.strategies.qullamaggie.live as QL
+            QL.fetch_minute_bars = R.minute_bars
+            R.full_quote = True
+            qranks, qn, _ = QL.rank_universe(day, daily_path)
+            objs.append(QL.QullaBook(store, R, day, QL.QullaContext(day, db_path=daily_path), qranks, qn, notify=msgs.append, db_path=daily_path))
         for m in R.clock():
             R.now = m
             if m.date() != day:
