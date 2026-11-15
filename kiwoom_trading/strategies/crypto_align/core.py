@@ -24,6 +24,19 @@ from dataclasses import dataclass, field, asdict
 from kiwoom_trading.common.daily_store import PROJECT_ROOT
 
 KIND = "🪜 이평선 재정배열"
+# 모의 매매하는 심볼 (2026-11-15 SOXLUSDT, 11-16 사용자 'MU 도 SOXL 처럼' → MUUSDT)
+SYMBOLS = ["SOXLUSDT", "MUUSDT"]
+NOTES = {
+    "SOXLUSDT": "SOXL: Direxion Daily Semiconductor Bull 3X, 미국 반도체 지수를 하루 3배로 따라가는 ETF",
+    "MUUSDT": "MU: 마이크론 테크놀로지, 미국 메모리 반도체 회사 주식",
+}
+
+
+def abbr_footer(symbol: str) -> str:
+    """문서 끝 약어 풀이 (처음 나온 순서: 심볼 → USDT → ETF → UTC)."""
+    head = NOTES.get(symbol, f"{symbol.replace('USDT', '')}: 미국 주식·ETF 토큰")
+    return (f"약어 풀이 — {head} · USDT: 테더, 1달러에 맞춘 코인 · "
+            "ETF: Exchange Traded Fund, 거래소에서 사고파는 지수 펀드 · UTC: 세계 표준시 (한국 시각 −9시간)")
 FAST, SLOW = 60, 120
 STOP_PCT = 0.03
 FEE_SIDE = 0.0005

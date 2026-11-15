@@ -1,7 +1,8 @@
 """🪜 이평선 재정배열 코인 선물 모의 매매 — 한 번 실행하면 그동안 끝난 15분봉을 모두 판정한다.
 
 작업 스케줄러가 15분마다 부른다 (scripts/register_crypto_align_task.ps1).
-    python -m kiwoom_trading.strategies.crypto_align.live              # 판정 + 알림 + 리포트 (+ 09시 뒤 첫 실행이면 매매일지)
+    python -m kiwoom_trading.strategies.crypto_align.live              # core.SYMBOLS 전부 판정 + 알림 + 리포트 (+ 09시 뒤 첫 실행이면 매매일지)
+    python -m kiwoom_trading.strategies.crypto_align.live --symbol MUUSDT   # 한 심볼만
     python -m kiwoom_trading.strategies.crypto_align.live --no-telegram
     python -m kiwoom_trading.strategies.crypto_align.live --send-report  # 리포트 HTML 을 텔레그램 파일로
 
@@ -140,7 +141,7 @@ def run(symbol: str, telegram: bool = True, send_report: bool = False) -> core.S
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--symbol", default="SOXLUSDT")
+    ap.add_argument("--symbol", action="append", help="여러 번 줄 수 있음. 없으면 core.SYMBOLS 전부")
     ap.add_argument("--no-telegram", action="store_true")
     ap.add_argument("--send-report", action="store_true")
     a = ap.parse_args()
@@ -151,11 +152,15 @@ def main() -> None:
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
         handlers=[logging.FileHandler(os.path.join(log_dir, f"crypto_align_{datetime.now():%Y%m}.log"), encoding="utf-8"),
                   logging.StreamHandler()])
-    try:
-        run(a.symbol, telegram=not a.no_telegram, send_report=a.send_report)
-    except Exception:
-        logging.exception("crypto_align 실행 실패")
-        raise
+    failed = []
+    for sym in a.symbol or core.SYMBOLS:   # 한 심볼이 실패해도 다음 심볼은 돔
+        try:
+            run(sym, telegram=not a.no_telegram, send_report=a.send_report)
+        except Exception:
+            logging.exception("crypto_align %s 실행 실패", sym)
+            failed.append(sym)
+    if failed:
+        raise SystemExit(f"실패: {failed}")
 
 
 if __name__ == "__main__":

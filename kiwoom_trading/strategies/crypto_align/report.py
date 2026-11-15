@@ -84,7 +84,8 @@ def build(symbol: str, bars: list[core.Bar] | None = None, fragment_path: str | 
         "lastPrice": bars[-1].c, "firstPrice": bars[0].o,
         "built": datetime.now(KST).strftime("%Y-%m-%d %H:%M"),
     }
-    body = TEMPLATE.replace("__DATA__", json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+    body = (TEMPLATE.replace("__SYMBOL__", symbol).replace("__ABBR__", core.abbr_footer(symbol).replace("약어 풀이 — ", ""))
+            .replace("__DATA__", json.dumps(payload, ensure_ascii=False, separators=(",", ":"))))
     out_dir = os.path.join(PROJECT_ROOT, "data", "reports")
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, f"crypto_align_{symbol}.html")
@@ -98,7 +99,7 @@ def build(symbol: str, bars: list[core.Bar] | None = None, fragment_path: str | 
     return path
 
 
-TEMPLATE = r"""<title>SOXLUSDT 재정배열 타점</title>
+TEMPLATE = r"""<title>__SYMBOL__ 재정배열 타점</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap">
@@ -198,7 +199,7 @@ footer p{margin:2px 0}
 
 <footer>
   <p id="built"></p>
-  <p>SOXL: Direxion Daily Semiconductor Bull 3X, 미국 반도체 지수를 하루 3배로 따라가는 ETF · USDT: 테더, 1달러에 맞춘 코인 · ETF: Exchange Traded Fund, 거래소에서 사고파는 지수 펀드 · UTC: 세계 표준시 (한국 시각 −9시간)</p>
+  <p>__ABBR__</p>
 </footer>
 </div>
 
