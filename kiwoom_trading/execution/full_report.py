@@ -117,6 +117,8 @@ def sell_cat(reason: str) -> str:
         return "VWAP 이탈"
     if "손절" in r:
         return "손절"
+    if "최저가 이탈" in r:
+        return "최저가 이탈 매도 (🐢 터틀 돌파)"
     if "5거래일" in r:
         return "보유일 채운 뒤 09:00 매도"
     if "다음 날" in r:

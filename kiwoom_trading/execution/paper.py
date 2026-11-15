@@ -68,6 +68,8 @@ from kiwoom_trading.strategies.crash_rebound.live import (ADD_TAG as CRASH_ADD, 
                                                           HALF_TAG as CRASH_HALF, KIND as CRASH_KIND, SECOND_LEGS as CRASH_SECOND, TP_FRAC as CRASH_TP_FRAC,
                                                           TP_TAG as CRASH_TP_TAG, leg_of as crash_leg, tp_of as crash_tp)
 from kiwoom_trading.strategies.vol_breakout.live import KIND as VB_KIND, LABEL as VB_LABEL, plan_text as vb_plan
+from kiwoom_trading.strategies.turtle import live as turtle
+from kiwoom_trading.strategies.turtle.live import KIND as TURTLE_KIND, LABEL as TURTLE_LABEL
 from kiwoom_trading.strategies.after_align.live import BUDGET as ALIGN_BUDGET, KIND as ALIGN_KIND, POOL as ALIGN_POOL, STOP as ALIGN_STOP
 from kiwoom_trading.strategies.trend_hold.live import BUDGET as TREND_BUDGET, BUY_END as TREND_BUY_END, KIND as TREND_KIND, MAX_HOLD as TREND_MAX, TREND_POOL
 from kiwoom_trading.screener.market_regime import BIGCAP_MAX_WHEN_DOWN, CHECKS, CONSERVATIVE_LOSS_LIMIT, UP_ONLY_KINDS, WINDOW_MIN
@@ -83,14 +85,14 @@ LEAD_MULT, NONLEAD_MULT = 2.0, 0.5   # 🏆 주도주 신고가 금액: 테마 �
 MAX_POSITIONS = 10            # 키움 제한이 아니라 우리 규칙. 모의 계좌 약 1천만 원 ÷ 종목당 100만 원 (2026-10-20, 10-19 복기: 5종목 한도로 신호 85건 건너뜀)
 # 규칙상 이 신호는 매매 대상이 아님(알림만·시장 상황상 쉼·수급 조건 등) → 알림 없이 기록만. 그 밖의 건너뜀(잔고·보유 한도·추격·시세)은 알림.
 RULE_SKIPS = (cafe_universe.TAG, "매수 시간 아님", "시장 분위기 판정", "강한 하락장", "하락 흐름 보통 날", "눌림 돌파는", "[디앤서]", "강한 상승장 아님",
-              "전날 외인", "이미 보유 중", "전일 대비", "모의 안 삼", "엄격 선정")
+              "전날 외인", "이미 보유 중", "전일 대비", "모의 안 삼", "엄격 선정", "🐢 같은 업종")
 MOCK_OFF = (BLOCK_KIND,)   # 2026-10-29 사용자 '권장대로': 3️⃣ 는 건당 수익이 작은데 아침 현금을 먼저 차지해 6️⃣·1️⃣ 를 못 삼 → 모의에서 뺌 (1년 1천만 7,837만 → 2.2억, 앞·뒤 반기 모두 개선, research/account_alloc)
 RECLAIM_POOL = 1_000_000   # 2026-10-29 사용자 '🔁 만 쓰는 몫': 🔁 는 이 몫(종목당 100만 → 동시 1종목) 안에서만 모의로 사고, 넘는 신호는 잔고 밖 가상. 보유 한도 칸은 안 씀.
                            # 1년 시험(research/account_alloc/reclaim_pool): 몫 100만 2억 367만(뺐을 때 2억 2,192만의 −8%, 뒤 반기는 +240→+264%) — 몫이 클수록 더 나빠짐
 NEXT_DAY_KINDS = (RETEST_KIND, UP_KIND, BLOCK_KIND, NEWHIGH_KIND, CONTRA_KIND, WEAK_KIND, REBREAK_KIND, DANSWER_KIND, RECLAIM_KIND, CAFE_KIND, LEADER_KIND, CENTER_KIND, ALIGN_KIND, VB_KIND)   # '다음날' 매도: 익절가 / 손절가 / 다음 날 09:00 (2026-10-25 시장 상황별 매매표)
 NEXT_DAY_TP = {CENTER_KIND: CENTER_TP, ALIGN_KIND: None, LEADER_KIND: None, CAFE_KIND: None, RECLAIM_KIND: None, UP_KIND: None, NEWHIGH_KIND: None, WEAK_KIND: WEAK_TP, REBREAK_KIND: None, DANSWER_KIND: None, VB_KIND: None}   # '다음날' 익절가 — 기본 +7%. 📈 상승장 장 초·🏆 주도주 신고가·🌙 종가 재돌파·🧭 디앤서 종가는 익절 없음, 약세장 인버스 +5% (2026-10-25)
 OVERNIGHT_VIRTUAL = (REBREAK_KIND,)   # NXT 애프터장에 가상으로 사서 밤을 넘기는 신호 (모의 서버는 애프터장 주문 불가)
-KIND_BUDGET = {UP_KIND: UP_BUDGET, TREND_KIND: TREND_BUDGET, CENTER_KIND: CENTER_BUDGET, ALIGN_KIND: ALIGN_BUDGET}   # 📈 상승장 장 초: 종목당 25만 원, 보유 한도(10종목) 예외로 40종목까지 (2026-10-25 사용자)
+KIND_BUDGET = {UP_KIND: UP_BUDGET, TREND_KIND: TREND_BUDGET, CENTER_KIND: CENTER_BUDGET, ALIGN_KIND: ALIGN_BUDGET, TURTLE_KIND: turtle.UNIT_WON}   # 📈 상승장 장 초: 종목당 25만 원, 보유 한도(10종목) 예외로 40종목까지 (2026-10-25 사용자)
 # 2026-10-28 사용자 "가상 매매는 잔고와 무관하게 포착된 종목 모두": 정규장에 이 이유로 모의를 못 사면 같은 규칙으로 가상 매매 (overflow)
 OVERFLOW_SKIPS = ("주문 가능 금액 부족", "최대 ", "7️⃣ 몫", "🔁 몫", "📍 몫", "🪜 몫", "하루 손실 한도")
 KIND_LIMIT = {PULLBACK_KIND: 2}  # 눌림 돌파는 장 초부터 자주 나와 자리를 차지 → 동시 2종목까지 (1년 −0.34%, 10-19 유일한 마이너스 −0.08%)
@@ -265,6 +267,14 @@ def _vb_tag(s, price) -> str:
             + (f" · 산 값 약 {price:,.0f}({price / s.level - 1:+.2%})" if price else ""))
 
 
+def _turtle_open(t, s, price) -> str:
+    """🐢 첫 매수: 손절선 = 산 값 − 2N (모의 주문은 체결 뒤 _reconcile 이 체결가로 다시 맞춤), note 에 진입 종류·N·돌파선."""
+    n = (s.level - s.stop) / turtle.STOP_N
+    if price:
+        t.stop = turtle.stop_line(price, n)
+    return turtle.entry_tag(turtle.entry_of(t.source), n, s.level) + (f" · 산 값 약 {price:,.0f}({price / s.level - 1:+.2%})" if price else "")
+
+
 def _prev_gain(q) -> float:
     """전일 종가 대비 지금 등락 (기준가 없으면 0)."""
     base = getattr(q, "base_price", None) if q else None
@@ -381,6 +391,7 @@ class PaperTrader:
         self.regime = None                      # MarketRegime (run_intraday 가 넣어 줌) — 강한 하락장이면 보수적 매매
         self.prev_flow = load_prev_flow(today)  # 전날 외인·기관 순매수 (주도주 모양 매수 조건)
         self.strict = strict_select.load_context(today)   # 당일 매매 엄격 선정 A안 (2026-10-30 사용자)
+        self.turtle_ctx = None                   # 🐢 터틀 돌파 TurtleContext — 선(10·20일 최저가)·업종 (run_intraday 가 넣어 줌)
         self.trend_picks: int = 0                  # 오늘 ⑦ 매수 대상 수 (run_intraday 가 넣어 줌) — 0 이면 ⑦ 몫을 남겨 두지 않음
         self.kell_d_exit: dict[str, str] = {}    # 📈 켈 수축 일봉: 거래 id → 오늘 09:00 매도 사유 (run_intraday 가 스캐너 시작 때 넣어 줌)
         self.kell_m = None                       # 📈 켈 수축 30분 KellMinuteWatcher — exits[거래 id] 로 매도 (run_intraday 가 넣어 줌)
@@ -438,7 +449,7 @@ class PaperTrader:
                    flow: dict[tuple[str, datetime], tuple[float, Optional[float]]]) -> None:
         for code, name, source, s in items:
             mult = (flow.get((code, s.ts)) or (None, None))[1]
-            mode = "CRASH" if s.kind == CRASH_KIND else "HA_D" if s.kind == HA_D_KIND else "HA_M" if s.kind == HA_M_KIND else "VWMA" if s.kind == FRACTAL_KIND else "KELL_D" if s.kind == KELL_D_KIND else "KELL_M" if s.kind == KELL_M_KIND else "보유일" if s.kind == TRUST_KIND else "추세" if s.kind == TREND_KIND else "다음날" if s.kind in NEXT_DAY_KINDS else "보유" if s.kind == INVERSE_KIND else "목표" if s.kind in (BIGCAP_KIND, BURGER_KIND) else "차트" if s.kind in (LEADER_KIND, NINE_KIND) else "눌림" if s.kind == PULLBACK_KIND else "추적" if mult is not None and mult >= STRONG_FLOW else "기본"
+            mode = "TURTLE" if s.kind == TURTLE_KIND else "CRASH" if s.kind == CRASH_KIND else "HA_D" if s.kind == HA_D_KIND else "HA_M" if s.kind == HA_M_KIND else "VWMA" if s.kind == FRACTAL_KIND else "KELL_D" if s.kind == KELL_D_KIND else "KELL_M" if s.kind == KELL_M_KIND else "보유일" if s.kind == TRUST_KIND else "추세" if s.kind == TREND_KIND else "다음날" if s.kind in NEXT_DAY_KINDS else "보유" if s.kind == INVERSE_KIND else "목표" if s.kind in (BIGCAP_KIND, BURGER_KIND) else "차트" if s.kind in (LEADER_KIND, NINE_KIND) else "눌림" if s.kind == PULLBACK_KIND else "추적" if mult is not None and mult >= STRONG_FLOW else "기본"
             if s.kind == CRASH_KIND and not self._crash_route(now, code, name, source, s):
                 continue                                   # 🪃 나머지 1/2 추가 매수 또는 하루 한 번이라 안 삼
             t = Trade(f"{self.ID_PREFIX}{s.ts:%Y%m%d}-{code}-{s.ts:%H%M}-{s.kind}", self.today, code, name, s.kind, source, s.ts, s.price,
@@ -479,16 +490,16 @@ class PaperTrader:
             return f"모의 안 삼 — {t.kind}는 아침 현금을 먼저 차지해 건당 수익 큰 매매를 막음 (2026-10-29 계좌 시험)"
         if self.halted:
             return f"하루 손실 한도 -{self._loss_limit():.1%} 도달"
-        if not t.virtual and t.kind not in (BIGCAP_KIND, INVERSE_KIND, WEAK_KIND, TREND_KIND, TRUST_KIND, FRACTAL_KIND, KELL_D_KIND, KELL_M_KIND, HA_D_KIND, HA_M_KIND, CRASH_KIND, RECLAIM_KIND, CAFE_KIND, CENTER_KIND, ALIGN_KIND, VB_KIND) and self._before_regime(tm):   # 📍 는 09:10 전 체결도 삼(백테스트 그대로), 09:10 강한 하락장 뒤엔 아래에서 막힘
+        if not t.virtual and t.kind not in (BIGCAP_KIND, INVERSE_KIND, WEAK_KIND, TREND_KIND, TRUST_KIND, FRACTAL_KIND, KELL_D_KIND, KELL_M_KIND, HA_D_KIND, HA_M_KIND, CRASH_KIND, RECLAIM_KIND, CAFE_KIND, CENTER_KIND, ALIGN_KIND, VB_KIND, TURTLE_KIND) and self._before_regime(tm):   # 📍 는 09:10 전 체결도 삼(백테스트 그대로), 09:10 강한 하락장 뒤엔 아래에서 막힘
             return f"시장 분위기 판정({REGIME_FIRST:%H:%M}) 전 — 차트 신호는 사지 않음"
-        if self.regime is not None and self.regime.strong_down and not t.virtual and t.kind not in (RETEST_KIND, CONTRA_KIND, DANSWER_KIND, TREND_KIND, TRUST_KIND, FRACTAL_KIND, KELL_D_KIND, KELL_M_KIND, HA_D_KIND, HA_M_KIND, CRASH_KIND, RECLAIM_KIND, CAFE_KIND, ALIGN_KIND, VB_KIND):   # 📏 변동성 돌파는 모든 날 (2026-11-13 사용자 4A) · 🪜 애프터 정배열도 1년 모든 날 검증 · 🔁 시가 탈환은 1년 모든 날 검증 · 저항 돌파·디앤서 종가·주도주 추세는 모든 날, 역행 강세 종가는 강한 하락장 날 산다
+        if self.regime is not None and self.regime.strong_down and not t.virtual and t.kind not in (RETEST_KIND, CONTRA_KIND, DANSWER_KIND, TREND_KIND, TRUST_KIND, FRACTAL_KIND, KELL_D_KIND, KELL_M_KIND, HA_D_KIND, HA_M_KIND, CRASH_KIND, RECLAIM_KIND, CAFE_KIND, ALIGN_KIND, VB_KIND, TURTLE_KIND):   # 🐢 터틀 돌파도 시장을 거르지 않음(문서 ⑬ A) · 📏 변동성 돌파는 모든 날 (2026-11-13 사용자 4A) · 🪜 애프터 정배열도 1년 모든 날 검증 · 🔁 시가 탈환은 1년 모든 날 검증 · 저항 돌파·디앤서 종가·주도주 추세는 모든 날, 역행 강세 종가는 강한 하락장 날 산다
             if t.kind not in (BIGCAP_KIND, INVERSE_KIND):
                 return "강한 하락장 — 차트 신호는 새로 사지 않음 (보수적 매매)"
             bought = sum(1 for x in self.trades if x.date == self.today and x.kind == BIGCAP_KIND and x.buy_ts)
             if bought >= BIGCAP_MAX_WHEN_DOWN:
                 return f"강한 하락장 — 대형주 수급은 {BIGCAP_MAX_WHEN_DOWN}종목까지 (보수적 매매)"
         r = self.regime
-        if (r is not None and r.trend_weak and not r.strong_up and not t.virtual and t.kind not in (INVERSE_KIND, RETEST_KIND, CONTRA_KIND, WEAK_KIND, DANSWER_KIND, TREND_KIND, TRUST_KIND, FRACTAL_KIND, KELL_D_KIND, KELL_M_KIND, HA_D_KIND, HA_M_KIND, CRASH_KIND, CAFE_KIND, CENTER_KIND, ALIGN_KIND, VB_KIND)
+        if (r is not None and r.trend_weak and not r.strong_up and not t.virtual and t.kind not in (INVERSE_KIND, RETEST_KIND, CONTRA_KIND, WEAK_KIND, DANSWER_KIND, TREND_KIND, TRUST_KIND, FRACTAL_KIND, KELL_D_KIND, KELL_M_KIND, HA_D_KIND, HA_M_KIND, CRASH_KIND, CAFE_KIND, CENTER_KIND, ALIGN_KIND, VB_KIND, TURTLE_KIND)
                 and not self._before_regime(tm)):   # 🔁 시가 탈환도 이제 쉼 (2026-11-06 사용자 '응 그렇게 해줘', 약세장 하락 흐름 보통 날 1년 −0.77%/건, docs/analysis/2026-11-06_reclaim_review.md)
             return f"하락 흐름 보통 날 ({r.trend_text()}) — 이 신호는 쉼 (저항 돌파·약세장 인버스만 삼)"
         if t.kind == PULLBACK_KIND:
@@ -527,6 +538,8 @@ class PaperTrader:
         cap = KIND_LIMIT.get(t.kind)
         if cap is not None and sum(1 for x in self._held() if x.kind == t.kind) >= cap:
             return f"{t.kind} 동시 {cap}종목 보유 중"
+        if t.kind == TURTLE_KIND:
+            return self._turtle_sector_skip(t.code)
         return None
 
     def _before_regime(self, tm: time) -> bool:
@@ -560,6 +573,11 @@ class PaperTrader:
             t.stop = float(price) * (1 - ALIGN_STOP)   # 🪜 손절도 매수가 −3% (체결되면 _reconcile 에서 실제 체결가로 다시 맞춤)
         if reason is None:
             factor, why = self._nada_factor(t) if t.kind not in (TREND_KIND, CENTER_KIND, ALIGN_KIND) else (1.0, "")   # ⑦ 은 정한 금액 그대로 (사용자 2026-10-25)
+            if t.kind == TURTLE_KIND:   # 🐢 1단위 5만 원 × 계좌 −10% 마다 −20% (이 매매 🧾 가상 계좌 기준, 2026-11-15 사용자)
+                f2, why2 = self._turtle_shrink()
+                if why2:
+                    factor *= f2
+                    why = ((why + " · ") if why else "") + why2
             if t.kind == NEWHIGH_KIND:   # 🏆 주도주 신고가: 테마 대장이면 2배, 아니면 절반 (2026-10-27, 1년 계좌 5,048만 → 5,423만, 스킬 hong 8장)
                 lead = self.lead_now.get(t.code)
                 factor *= LEAD_MULT if lead else NONLEAD_MULT
@@ -571,6 +589,8 @@ class PaperTrader:
             except Exception:
                 logging.exception("R7 금액 제한 확인 실패 %s", t.name)
             t.qty = order_qty(price, int(KIND_BUDGET.get(t.kind, BUDGET_PER_STOCK) * factor * _crash_budget(t)))
+            if t.kind == TURTLE_KIND:   # 🐢 계좌 1% ÷ N 수량이 더 작으면 그쪽 (문서 ⑦ C)
+                t.qty = turtle.unit_qty(price, KIND_BUDGET[t.kind] * factor, (s.level - s.stop) / turtle.STOP_N, self._turtle_balance())
             if why:
                 t.note = f"금액 {factor:g}배: {why}"
                 logging.info("모의 매수 금액 축소 %s: %s", t.name, t.note)
@@ -607,6 +627,8 @@ class PaperTrader:
             t.note = ((t.note + " · ") if t.note else "") + f"{CRASH_TP_TAG}{s.level:,.0f}"   # 🕯 익절선 (재시작해도 note 에서 다시 읽음)
         if t.kind == VB_KIND:
             t.note = ((t.note + " · ") if t.note else "") + _vb_tag(s, price)
+        if t.kind == TURTLE_KIND:
+            t.note = ((t.note + " · ") if t.note else "") + _turtle_open(t, s, price)
         plan = self._plan(t, s, price)   # R1: 사기 전에 대응 계획 (손절·익절·보유·추가)을 note 에 남김, 못 만들면 안 삼
         if not plan:
             t.note = "대응 계획 없음 (R1)"
@@ -653,7 +675,8 @@ class PaperTrader:
             if not price or chase or (t.kind == RECLAIM_KIND and (not s.stop or price <= s.stop)):
                 return False
         if not t.qty:
-            t.qty = order_qty(price, int(KIND_BUDGET.get(t.kind, BUDGET_PER_STOCK) * _crash_budget(t)))
+            t.qty = (turtle.unit_qty(price, self._turtle_unit_budget(), (s.level - s.stop) / turtle.STOP_N, self._turtle_balance()) if t.kind == TURTLE_KIND
+                     else order_qty(price, int(KIND_BUDGET.get(t.kind, BUDGET_PER_STOCK) * _crash_budget(t))))
         if not t.qty:
             return False
         t.virtual = t.overflow = True
@@ -666,6 +689,8 @@ class PaperTrader:
             t.note += f" · {CRASH_TP_TAG}{s.level:,.0f}"   # 🕯 익절선
         if t.kind == VB_KIND:
             t.note += " · " + _vb_tag(s, price)
+        if t.kind == TURTLE_KIND:
+            t.note += " · " + _turtle_open(t, s, price)
         t.status, t.buy_ts, t.buy_price, t.peak = "open", now.replace(tzinfo=None), float(price), float(price)
         if t.mode == "추적":
             t.stop = t.buy_price * (1 - STRONG_STOP)
@@ -687,7 +712,7 @@ class PaperTrader:
     def _how(self, t: Trade, s: Signal, price: float) -> str:
         """매도 규칙 설명 (매수 알림·R1 계획에 같이 씀)."""
         return (f"손절 -{STRONG_STOP:.0%}, +{TRAIL_START:.0%} 뒤 고점 -{TRAIL_GAP:.0%}" + (f" (평소 {t.flow_mult:.1f}배)" if t.flow_mult else "")
-                if t.mode == "추적" else vb_plan(s.level, s.stop, 2 * (s.level - s.stop)) if t.kind == VB_KIND else _crash_how(t) if t.mode == "CRASH" else "손절·익절 없음, 종가가 VWMA100 아래로 마감한 다음 날 09:00 매도" if t.mode == "VWMA" else _kell_how(t) if t.mode in ("KELL_D", "KELL_M") else _ha_how(t) if t.mode in ("HA_D", "HA_M") else f"손절·익절 없음, {TRUST_HOLD}거래일 뒤 09:00 매도" if t.mode == "보유일" else "손절·익절 없음, 종가가 20일선 아래면 다음 날 09:00 매도" if t.mode == "추세" else _next_day_how(NEXT_DAY_TP.get(t.kind, RETEST_TP), t.stop, t.kind) if t.mode == "다음날" else "손절 없음, 15:19 정리" if not s.stop else f"손절 {s.stop:,.0f}원 ({s.stop / price - 1:+.1%})")
+                if t.mode == "추적" else vb_plan(s.level, s.stop, 2 * (s.level - s.stop)) if t.kind == VB_KIND else self._turtle_how(t, s) if t.mode == "TURTLE" else _crash_how(t) if t.mode == "CRASH" else "손절·익절 없음, 종가가 VWMA100 아래로 마감한 다음 날 09:00 매도" if t.mode == "VWMA" else _kell_how(t) if t.mode in ("KELL_D", "KELL_M") else _ha_how(t) if t.mode in ("HA_D", "HA_M") else f"손절·익절 없음, {TRUST_HOLD}거래일 뒤 09:00 매도" if t.mode == "보유일" else "손절·익절 없음, 종가가 20일선 아래면 다음 날 09:00 매도" if t.mode == "추세" else _next_day_how(NEXT_DAY_TP.get(t.kind, RETEST_TP), t.stop, t.kind) if t.mode == "다음날" else "손절 없음, 15:19 정리" if not s.stop else f"손절 {s.stop:,.0f}원 ({s.stop / price - 1:+.1%})")
 
     def _plan(self, t: Trade, s: Signal, price: Optional[float]) -> Optional[str]:
         """R1 대응 계획 한 줄 (손절가·익절·보유 규칙·추가 매수). 만들다 실패하면 None → 안 삼."""
@@ -703,7 +728,10 @@ class PaperTrader:
             tp_r, extra = hold_manage.hold_plan_extra(t.mode, t.kind == TREND_KIND, paper=True)
             if extra != "없음":
                 hold = f"{hold} · {extra}"
-            add = "🪃 나머지 1/2 (C·D2 신호)" if t.kind == CRASH_KIND else ("−20% 에 한 번 같은 수량(R6)" if t.mode in HOLD_MODES else "없음")
+            if t.mode == "TURTLE":     # 🐢 R1 계획: 진입 종류·N·손절선·매도선은 hold(_turtle_how)에, 추가 매수는 ½N 간격
+                add = f"마지막 산 값 + ½N({turtle.ADD_N * (s.level - s.stop) / turtle.STOP_N:,.0f}원)마다 1단위, 최대 {turtle.MAX_UNITS}단위"
+            else:
+                add = "🪃 나머지 1/2 (C·D2 신호)" if t.kind == CRASH_KIND else ("−20% 에 한 번 같은 수량(R6)" if t.mode in HOLD_MODES else "없음")
             return hold_manage.plan_text(t.stop if t.mode != "추적" else float(price) * (1 - STRONG_STOP), ", ".join(x for x in (tp, tp_r) if x), hold, add)
         except Exception:
             logging.exception("R1 대응 계획 만들기 실패 %s", t.name)
@@ -737,6 +765,8 @@ class PaperTrader:
 
     def _watch(self, now: datetime, t: Trade, sess: str) -> None:
         tm = now.time()
+        if t.mode == "TURTLE":                                # 🐢 터틀 돌파: 손절선(마지막 산 값 − 2N) → 10일(55일 진입은 20일) 최저가 이탈 → ½N 추가 매수, 익절·15:19 정리 없음
+            return self._turtle_watch(now, t)
         if t.mode == "CRASH":                                 # 🪃 급락 반등: 손절 → 30% 익절 → (익절 뒤) VWAP 5봉 이탈 → 15:15 전부 정리
             return self._crash_watch(now, t)
         if t.mode == "VWMA":                                  # 🌀 프랙탈 바닥: 손절·익절·15:19 정리 없음 — 전날 종가가 VWMA100 아래면 09:00 매도
@@ -1044,25 +1074,116 @@ class PaperTrader:
         elif not (SESSION_OPEN <= now.time() < LIQUIDATE_AT):
             why = "정규장 밖"
         add = order_qty(price, int(t.qty * t.buy_price)) if price else 0
-        if why is None and not t.virtual:
-            cash = self.mock.cash()
-            if cash < add * price:
-                why = f"주문 가능 금액 부족 ({cash:,}원 < {add * price:,}원)"
+        if why is None:
+            why = self._merge_add(now, t, float(price), add, f"{CRASH_ADD} {leg} {s.ts:%H:%M} {add}주 × {price:,}", "나머지 1/2",
+                                  lambda: f"[🪃 급락 반등 {leg} {s.ts:%H:%M}] {_crash_how(t)}\n  포착: {(s.reason or '')[:300]}")
         if why:
             logging.info("🪃 추가 매수 건너뜀 %s [%s]: %s", t.name, leg, why)
             t.note = (t.note or "") + f" · 🪃 {leg} 추가 못 함({why[:40]})"
             self._save(t)
-            return
+
+    def _merge_add(self, now: datetime, t: Trade, price: float, add: int, tag: str, head: str, tail: Callable[[], str]) -> Optional[str]:
+        """같은 거래 한 줄에 add 주를 더 삼 (🪃 나머지 1/2 · 🐢 추가 단위 공용). 산 뒤 None, 못 사면 이유.
+        가상은 기록만 합치고, 모의는 시장가 주문 뒤 수량·평균가를 추정으로 합침 (실제 체결 수량·평균가는 매도 때 _sell 이 계좌 보유로 다시 맞춤)."""
+        if add < 1:
+            return "수량 없음"
         if not t.virtual:
+            cash = self.mock.cash()
+            if cash < add * price:
+                return f"주문 가능 금액 부족 ({cash:,}원 < {add * price:,.0f}원)"
             no = self.mock.market_order("buy", t.code, add)
-            logging.info("🪃 모의 추가 매수 주문 %s %s주 (주문 %s)", t.name, add, no)
-        t.buy_price = (t.buy_price * t.qty + float(price) * add) / (t.qty + add)
+            logging.info("모의 추가 매수 주문 [%s] %s %s주 (주문 %s)", t.kind, t.name, add, no)
+        t.buy_price = (t.buy_price * t.qty + price * add) / (t.qty + add)
         t.qty += add
-        t.note = (t.note or "") + f" · {CRASH_ADD} {leg} {s.ts:%H:%M} {add}주 × {price:,}"
+        t.note = (t.note or "") + f" · {tag}"
         self.last_price[t.code] = price
         self._save(t)
-        self.notify(f"🟢 {'가상' if t.virtual else '모의'} 추가 매수 {t.name}({t.code}) {add}주 × 약 {price:,}원 = {add * price / 1e4:,.0f}만 원 "
-                    f"(나머지 1/2, 이제 {t.qty}주 · 평균 {t.buy_price:,.0f}원)\n  [🪃 급락 반등 {leg} {s.ts:%H:%M}] {_crash_how(t)}\n  포착: {(s.reason or '')[:300]}")
+        self.notify(f"🟢 {'가상' if t.virtual else '모의'} 추가 매수 {t.name}({t.code}) {add}주 × 약 {price:,.0f}원 = {add * price / 1e4:,.0f}만 원 "
+                    f"({head}, 이제 {t.qty}주 · 평균 {t.buy_price:,.0f}원)\n  {tail()}")
+        return None
+
+    # ------------------------------------------------------------ 🐢 터틀 돌파 (모의만)
+    def _turtle_balance(self) -> float:
+        """🐢 매매별 가상 계좌 잔고 (끝난 매매 손익 기준) — 키움 모의도 이 계좌로 단위 금액을 줄임."""
+        return self.accounts.balance(TURTLE_KIND) if self.accounts is not None else ACCOUNT_START
+
+    def _turtle_shrink(self) -> tuple[float, str]:
+        bal = self._turtle_balance()
+        f, steps = turtle.shrink(bal, ACCOUNT_START)
+        return f, (f"🐢 계좌 {bal / 1e4:,.0f}만(−10% {steps}번) → 단위 {f:.2f}배" if steps else "")
+
+    def _turtle_unit_budget(self) -> float:
+        """🐢 추가 1단위 금액 = 5만 원 × 계좌 축소 × Nada 축소(키움 모의 기존 금액 규칙: 그날 −2%·주간 −3% 면 절반)."""
+        nada = 1.0
+        if self.asset_start:
+            day = self._day_pnl()
+            if day <= -self.asset_start * NADA_DAY_DD or self.week_prior + day <= -self.asset_start * NADA_WEEK_DD:
+                nada = 0.5
+        return turtle.UNIT_WON * self._turtle_shrink()[0] * nada
+
+    def _turtle_sector_skip(self, code: str, skip: Optional[str] = None, more: int = 1) -> Optional[str]:
+        """같은 네이버 업종 합계 6단위 한도 (이 계좌 안의 🐢 보유 기준, skip = 지금 추가하려는 거래 — more 에 그 거래 단위를 넣어 셈)."""
+        tx = self.turtle_ctx
+        sec = tx.sector if tx is not None else (lambda c: f"종목 {c}")
+        sector = sec(code)
+        have = sum(turtle.parse(x.note, x.buy_price)["units"] for x in self.active()
+                   if x.kind == TURTLE_KIND and x.id != skip and sec(x.code) == sector)
+        if have + more > turtle.SECTOR_UNITS:
+            return f"🐢 같은 업종 '{sector}' 합계 {turtle.SECTOR_UNITS}단위 한도 (지금 {have + more - 1}단위)"
+        return None
+
+    def _turtle_how(self, t: Trade, s: Signal) -> str:
+        n = (s.level - s.stop) / turtle.STOP_N
+        entry = turtle.entry_of(t.source)
+        tx = self.turtle_ctx
+        return turtle.plan_text(entry, s.level, n, tx.exit_line(t.code, entry) if tx is not None else None)
+
+    def _turtle_watch(self, now: datetime, t: Trade) -> None:
+        """🐢 09:00~15:19: 지금가 ≤ 손절선 → 전부 매도, < 10일(55일 진입은 20일) 최저가 → 전부 매도, ≥ 마지막 산 값 + ½N → 1단위 추가 (최대 4)."""
+        if not (SESSION_OPEN <= now.time() < LIQUIDATE_AT):
+            return                                            # 15:19 정리 없이 들고 감, 동시호가·NXT 시간엔 판정 안 함
+        q = self.market.quote(t.code, integrated=False)
+        if not q or not q.price:
+            return
+        price = float(q.price)
+        self.last_price[t.code] = q.price
+        if price > (t.peak or 0):
+            t.peak = price
+            self._save(t)
+        st = turtle.parse(t.note, t.buy_price)
+        if t.stop and price <= t.stop:
+            return self._sell(now, t, f"{TURTLE_LABEL} 손절 — 지금가 {price:,.0f}원 ≤ 손절선 {t.stop:,.0f}원(마지막 산 값 {st['last'] or 0:,.0f} − 2N, {st['units']}단위)")
+        tx = self.turtle_ctx
+        ex = tx.exit_line(t.code, st["entry"]) if tx is not None else None
+        days = turtle.EXIT_DAYS.get(st["entry"], 10)
+        if ex and price < ex:
+            return self._sell(now, t, f"{TURTLE_LABEL} {days}일 최저가 이탈 — 지금가 {price:,.0f}원 < {days}일 최저가 {ex:,.0f}원 ({st['entry']}일 진입, {st['units']}단위)")
+        n, last = st["n"], st["last"]
+        if n and last and st["units"] < turtle.MAX_UNITS and price >= turtle.add_line(last, n):
+            self._turtle_add(now, t, price, st)
+
+    def _turtle_add(self, now: datetime, t: Trade, price: float, st: dict) -> None:
+        """🐢 1단위 추가 (🪃 와 같은 _merge_add). 하루 손실 한도·업종 6단위·돈이 안 되면 이번엔 안 삼 (다음 확인 때 다시 봄)."""
+        units, n = st["units"] + 1, st["n"]
+        if self.halted:
+            why = f"하루 손실 한도 -{self._loss_limit():.1%} 도달"
+        else:
+            why = self._turtle_sector_skip(t.code, skip=t.id, more=units)
+        add = turtle.unit_qty(price, self._turtle_unit_budget(), n, self._turtle_balance())
+        if why is None:
+            why = self._merge_add(now, t, price, add, turtle.add_tag(units, now, add, price), f"🐢 {units}단위째",
+                                  lambda: f"[{TURTLE_LABEL} {st['entry']}일] 마지막 산 값 {st['last']:,.0f} + ½N {turtle.ADD_N * n:,.0f} 넘음 · "
+                                          f"손절선 {turtle.stop_line(price, n):,.0f}원(이 값 − 2N)으로 올림"
+                                          + (f" · 다음 추가 {turtle.add_line(price, n):,.0f}원" if units < turtle.MAX_UNITS else " · 최대 4단위 다 참"))
+        if why:
+            key = (t.id, now.replace(second=0, microsecond=0))
+            if getattr(self, "_turtle_add_logged", None) != key:   # 15초마다 같은 줄이 쌓이지 않게 1분에 한 번만
+                self._turtle_add_logged = key
+                logging.info("🐢 추가 매수 못 함 %s %s단위째: %s", t.name, units, why)
+            return
+        t.stop = turtle.stop_line(price, n)
+        self._save(t)
+        logging.info("🐢 추가 매수 [%s] %s %s단위째 %s주 × %s — 손절선 %s", "가상" if t.virtual else "모의", t.name, units, add, f"{price:,.0f}", f"{t.stop:,.0f}")
 
     def _crash_watch(self, now: datetime, t: Trade) -> None:
         if t.date < self.today:
@@ -1187,6 +1308,10 @@ class PaperTrader:
                         t.stop = t.buy_price * (1 - ALIGN_STOP)   # 🪜 손절 = 실제 체결가 −3%
                     from kiwoom_trading.execution.real import PLAYS as REAL_PLAYS
                     sl = REAL_PLAYS.get(t.kind, (None, None, None))[2]
+                    if t.kind == TURTLE_KIND:   # 🐢 손절선 = 실제 체결가 − 2N
+                        n = turtle.parse(t.note, t.buy_price)["n"]
+                        if n:
+                            t.stop = turtle.stop_line(t.buy_price, n)
                     if sl and t.mode != "추적":   # 실전처럼 손절선을 체결가 기준으로 (2026-11-10 사용자 '모두 다 해줘' — 신호가 기준이라 실전·모의 손절이 갈렸음)
                         t.stop = t.buy_price * (1 - sl)
                     t.status = "open"
@@ -1347,6 +1472,7 @@ class AccountTrader(PaperTrader):
     trend_exit = _parent_attr("trend_exit", dict)
     hold_time_exit = _parent_attr("hold_time_exit", dict)
     r2 = _parent_attr("r2", dict)
+    turtle_ctx = _parent_attr("turtle_ctx")   # 🐢 선·업종 (TurtleContext)
 
     def __init__(self, parent: PaperTrader) -> None:   # super().__init__ 은 모의 서버 계좌를 읽으므로 부르지 않음
         self.parent = parent
@@ -1389,7 +1515,26 @@ class AccountTrader(PaperTrader):
             return "이미 보유 중 (이 매매 계좌)"
         if len(mine) >= ACCOUNT_MAX_POS:
             return f"계좌 최대 {ACCOUNT_MAX_POS}종목 보유 중"
+        if t.kind == TURTLE_KIND:
+            return self._turtle_sector_skip(t.code)
         return None
+
+    def _turtle_balance(self) -> float:
+        return self.balance(TURTLE_KIND)
+
+    def _turtle_unit_budget(self) -> float:
+        """🐢 가상 계좌 1단위 = 5만 원 × 계좌 축소 (Nada 없음 — 계좌 안에서만 봄)."""
+        return turtle.UNIT_WON * self._turtle_shrink()[0]
+
+    def _turtle_add(self, now: datetime, t: Trade, price: float, st: dict) -> None:
+        add = turtle.unit_qty(price, self._turtle_unit_budget(), st["n"], self._turtle_balance())
+        if self.cash(t.kind) < add * price:
+            key = (t.id, now.replace(second=0, microsecond=0))
+            if getattr(self, "_turtle_add_logged", None) != key:
+                self._turtle_add_logged = key
+                logging.info("매매별 계좌 🐢 추가 못 함 %s: 계좌 돈 부족 (%s원 < %s원)", t.name, f"{self.cash(t.kind):,.0f}", f"{add * price:,.0f}")
+            return
+        super()._turtle_add(now, t, price, st)
 
     def _realized_today(self, before: Optional[time] = None) -> float:
         return sum(net_pnl(t) or 0 for t in self.trades if t.status == "closed" and t.sell_ts and t.sell_ts.date() == self.today
@@ -1420,7 +1565,8 @@ class AccountTrader(PaperTrader):
                 t.stop = float(price) * (1 - UP_STOP)
             if t.kind == ALIGN_KIND:
                 t.stop = float(price) * (1 - ALIGN_STOP)
-            t.qty = order_qty(price, int(ACCOUNT_PER_STOCK * _crash_budget(t)))
+            t.qty = (turtle.unit_qty(price, self._turtle_unit_budget(), (s.level - s.stop) / turtle.STOP_N, self._turtle_balance()) if t.kind == TURTLE_KIND   # 🐢 1단위 = min(5만 원 × 계좌 축소, 계좌 1% ÷ N)
+                     else order_qty(price, int(ACCOUNT_PER_STOCK * _crash_budget(t))))
             cash = self.cash(t.kind)
             if cash < t.qty * price:
                 reason = f"계좌 돈 부족 ({cash:,.0f}원 < {t.qty * price:,.0f}원)"
@@ -1433,6 +1579,8 @@ class AccountTrader(PaperTrader):
             notes.append(f"{CRASH_TP_TAG}{s.level:,.0f}")
         if t.kind == VB_KIND:
             notes.append(_vb_tag(s, price))
+        if t.kind == TURTLE_KIND:
+            notes.append(_turtle_open(t, s, price))
         t.note = " · ".join(notes)
         plan = self._plan(t, s, price)
         if not plan:
