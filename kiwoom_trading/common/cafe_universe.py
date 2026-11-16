@@ -593,7 +593,14 @@ def refresh(now: datetime, path: Optional[str] = None, names: Optional[dict[str,
         errs: list[str] = []
         expired = False
         if fetch_list_fn is fetch_list:   # 실제로 가져올 때만 (시험은 인터넷 안 씀)
-            try:
+            try:   # ① 전용 크롬 프로필이 있으면 거기서 쿠키를 새로 받음 (2026-11-16 사용자 '알아서 갱신') — common/naver_session.py
+                from kiwoom_trading.common import naver_session
+                if naver_session.has_profile():
+                    got = naver_session.refresh()
+                    cookie = {"NID_AUT": got["NID_AUT"], "NID_SES": got["NID_SES"]}
+            except Exception as exc:
+                logging.warning("네이버 쿠키(전용 크롬 프로필) 받기 실패 — .env.local 쿠키로 계속: %s", str(exc)[:150])
+            try:   # ② 받은(또는 .env.local) 쿠키로 내 정보 화면을 한 번 열어 세션 쿠키 갱신
                 cookie = renew_cookies(cookie)
             except CookieExpired as exc:
                 expired = True
