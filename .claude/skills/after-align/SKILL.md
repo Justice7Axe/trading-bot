@@ -10,6 +10,9 @@ description: Ellie trading 🪜 애프터 정배열 — 전날 애프터장(15:3
 ## 0. 지금 상태 (2026-11-04 시작, 11-05 부터 스캐너)
 - 계기: 한화솔루션 11-04 — 전날(11-03) 애프터장 +2.3%, 10:39 1분봉 60선이 120선을 다시 위로 → 종가 +15%.
 - 사용자 2026-11-04: '골든 크로스도 포함하고 더하여 120선 60선 정배열 우상향을 그리는 종목도 포함'. **모의 매매만** (실전 안 함).
+- (2026-11-17 코드 확인) **2026-11-14 사용자 승인으로 실전 대상에 들어감**: 11-16 부터 `execution/real.py` `PLAYS` 에 `ALIGN_KIND: ("🪜 애프터 정배열", None, ALIGN_STOP)` (모의와 같은 규칙: 익절 없음·−3%·다음 날 09:00), `REAL_ON = (UP_KIND, ALIGN_KIND)` = 실전은 1️⃣ 상승장 장 초 · 🪜 애프터 정배열 두 개뿐.
+  단 2026-11-15 사용자 "내일부터 실전 매매는 당분간 중지" → `.env.local` `KIWOOM_REAL_TRADING=off` 라 **실제 실전 주문은 나가지 않는다**. 모의·🧾 매매별 가상 계좌(`paper.py` `AccountTrader`, 2026-11-14~)는 그대로 돈다.
+- 2026-11-13 부터 ☕ 카페 종목 제한(`common/cafe_universe.py`, 카페 글 60일 안 종목만, 인버스 ETF·📕 상한가 풀림 예외)이 🪜 모의·실전 매수에도 걸린다.
 - ⚠️ 수백 조합 중 고른 조건이라 ★ 아님 — 모의로 20~30건 쌓은 뒤 판단, 그 전 튜닝 제안 금지.
 
 ## 1. 규칙
@@ -22,7 +25,7 @@ description: Ellie trading 🪜 애프터 정배열 — 전날 애프터장(15:3
 | 신호 | 09:30~10:40 봉에서 GC 또는 ALN 이 처음 맞으면 종목당 하루 한 번. 09:30 첫 확인 때 이미 정배열 우상향이면 바로 신호 |
 | 매수 | 모의 시장가 (신호가 +1% 넘게 오르면 추격 안 함 — paper 공통) |
 | 매도 | 익절 없음 · 손절 **매수가 −3%** (체결가로 다시 맞춤) · 못 닿으면 다음 날 09:00 |
-| 돈 | 🪜 전용 몫 300만·종목당 50만, 보유 한도 10칸 안 씀, Nada 금액 줄이기 안 함. 몫·현금·손실 한도로 못 사면 잔고 밖 가상(🟣) |
+| 돈 | 🪜 전용 몫 300만·종목당 50만, 보유 한도 10칸 안 씀, Nada 금액 줄이기 안 함. 몫·현금·손실 한도로 못 사면 잔고 밖 가상(🟣). 실전은 다른 실전 매매와 같은 종목당 3만 원(`real.py` `PER_STOCK`) |
 | 시장 분위기 | 강한 하락장·하락 흐름 보통 날·09:10 판정 전에도 막지 않음 (백테스트가 모든 날) |
 | 엄격 선정 | PLAN_A·B 에는 없음 → 신규 상장 20거래일 안·종목 목록에 없는 종목만 뺌 |
 
@@ -43,7 +46,7 @@ description: Ellie trading 🪜 애프터 정배열 — 전날 애프터장(15:3
 - `kiwoom_trading/strategies/after_align/live.py` — `load_picks`(후보, 전날 1분봉 minute_history 먼저·없으면 ka10080), `scan`(GC·ALN 판정, align_bt 와 같은 pandas 계산), `AfterAlignWatcher.check`(09:31~10:43 매분, 오늘 AL 1분봉 ka10080, 3분 넘게 늦은 봉은 안 삼). 신호 kind `애프터 정배열`, source·포착 이유 머리 `🪜 애프터 정배열`.
 - `screener/run_intraday.py` — 시작 때 `load_align_picks` → `AfterAlignWatcher`, run_once 판정 목록 `("애프터 정배열", align)`.
 - `execution/paper.py` — `NEXT_DAY_KINDS`·`NEXT_DAY_TP[ALIGN_KIND] = None`·`KIND_BUDGET`·`ALIGN_POOL`(`_align_used`, '🪜 몫' → `OVERFLOW_SKIPS`)·보유 한도 예외·시장 분위기 예외·손절 매수가 −3%(`_buy`·`_overflow_buy`·`_reconcile`).
-- 실전(`execution/real.py`)에는 없음 — `PLAYS` 에 없는 kind 라 무시됨.
+- ~~실전(`execution/real.py`)에는 없음 — `PLAYS` 에 없는 kind 라 무시됨.~~ → (2026-11-17 코드 확인) 2026-11-14 부터 `execution/real.py` `PLAYS[ALIGN_KIND]`(손절 `ALIGN_STOP`)·`REAL_ON` 에 들어감. 11-15 부터 실전 스위치(`KIWOOM_REAL_TRADING`)가 off 라 실제 주문은 없음.
 
 ## 4. 검증·재현
 - 1년: `python kiwoom_trading/research/ma120_cross/align_bt.py`
