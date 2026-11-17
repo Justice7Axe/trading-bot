@@ -14,9 +14,11 @@ if (-not (Test-Path $Python)) {
     throw "가상환경 python을 찾을 수 없습니다: $Python"
 }
 
+# 창 없이 실행 (2026-11-17 사용자 '그것도 창 없이'): python.exe 를 바로 띄우면 콘솔 창이 뜸 → conhost --headless 로 감싸고
+# 화면 출력은 data\logs\daily_update_task.log 로. PYTHONIOENCODING=utf-8 은 출력 파일에 한글·이모지 쓰기용(파일 읽기 기본 인코딩은 그대로).
 $action = New-ScheduledTaskAction `
-    -Execute $Python `
-    -Argument "-m kiwoom_trading.ingestion.run_daily_update" `
+    -Execute "$env:WINDIR\System32\conhost.exe" `
+    -Argument "--headless cmd.exe /c `"set PYTHONIOENCODING=utf-8&& .venv\Scripts\python.exe -m kiwoom_trading.ingestion.run_daily_update >> data\logs\daily_update_task.log 2>&1`"" `
     -WorkingDirectory $ProjectRoot
 
 $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday, Tuesday, Wednesday, Thursday, Friday -At $Time
