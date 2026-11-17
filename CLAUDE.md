@@ -18,6 +18,8 @@
 ## 4. 나머지 작업 규칙은 스킬과 메모리를 따른다
 - 종목 선정: `.claude/skills/stock-selection`, 매수 신호: `.claude/skills/buy-signals`, 운영·커밋 절차: `.claude/skills/trading-ops`
 
-## 5. 종목 매매 관점 분석은 항상 지식 위키에 저장한다
+## 5. 모든 매매전략과 종목 매매 관점 분석은 지식 위키(`docs/wiki/`)에 모은다
+- 지금 쓰는 트레이딩 전략 전체표는 `docs/wiki/playbook.md`, 매매법별 폴더는 `docs/wiki/<매매법>/README.md`(사례·복기는 같은 폴더 `cases/`), 접은 전략은 `docs/wiki/retired.md`.
+- 전략 규칙·상태(실전·모의·중단)를 바꾸면 스킬과 해당 위키 페이지를 같은 PR 에서 함께 고친다. 새 매매법을 만들면 위키 페이지도 만든다 (2026-11-17 사용자 '모아줘').
 - 트레이더 영상·강의에서 종목 매매 관점을 분석하면 `docs/wiki/<트레이더>/cases/YYYY-MM-DD_종목명.md`로 저장하고 그 트레이더 README의 사례 목록·공통 원칙을 고친다 (2026-11-17 사용자).
 - 불개미 트레이드는 `docs/wiki/bulgaemi/`, 스킬 `bulgaemi`. 매매 판단 때 이 위키를 꺼내 쓴다.

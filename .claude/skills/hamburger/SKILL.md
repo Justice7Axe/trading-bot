@@ -13,7 +13,7 @@ description: Ellie trading 🍔 햄버거 매매법 — 불개미 파이널 특�
 | `docs/hamburger_lecture_notes.md` | 구현용 강의 노트 (강의 시각 표시) |
 | `docs/hamburger_design.md` | 설계·백테스트·결정 기록 (9장) |
 | `data/lectures/*.txt` | 받아쓰기 원문 (git 제외, 로컬만) |
-| `docs/wiki/bulgaemi/` | 불개미 매매 영상의 종목별 매매 관점 사례집 (스킬 `bulgaemi`) |
+| `docs/wiki/bulgaemi/` | 불개미 위키 — 햄버거 기법 요약 `hamburger.md` + 매매 영상 종목 사례·공통 원칙 (스킬 `bulgaemi`). 햄버거 규칙·상태를 바꾸면 `hamburger.md` 도 같은 PR 에서 고침 |
 
 ## 1. 개념 (9강)
 - **햄버거 = 당일 1분봉 거래대금.** 시장가로 사 주는 세력 수급의 크기다. "재료가 좋아도 햄버거가 안 들어오면 손실만 난다."
