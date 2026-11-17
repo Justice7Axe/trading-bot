@@ -954,9 +954,9 @@ def main() -> int:
     cafe: Optional[CafeLeaderWatcher] = None
     if not args.once and cctx is not None:
         try:   # ☕ 카페(불개미 '수학은직관력') 테마 대장 체크리스트 + 1천만 가상 장부 (2026-10-27 사용자, 주문 없음)
-            def cafe_trade(t, code, name, price):   # ☕ 가상 장부가 산 순간(①③④⑥ + 눌림 체결) → 모의·실전 매수 (2026-10-27 사용자 '모의·실전 모두')
+            def cafe_trade(t, code, name, price):   # ☕ 가상 장부가 산 순간(①③⑥ + 눌림 체결, ④ 박스는 10-30 부터 매수 조건 아님) → 모의 매수 (2026-10-27 사용자 '모의·실전 모두' → 10-30 '☕는 실전에서 빼자', 실전은 REAL_OFF 라 real.on_signals 가 받지 않음)
                 sig = Signal(ts=t.replace(tzinfo=None, second=0, microsecond=0), kind=CAFE_KIND, price=price, level=price,
-                             stop=price * (1 - CAFE_STOP), reason="☕ 테마 대장 · 프리장 햄버거 · 일봉 박스 돌파 · 1분봉 고점 돌파 눌림 체결")
+                             stop=price * (1 - CAFE_STOP), reason="☕ 테마 대장 · 프리장 햄버거 · 1분봉 고점 돌파 눌림 체결")
                 items = [(code, name, "카페", sig)]
                 if trader is not None:
                     try:
@@ -983,7 +983,7 @@ def main() -> int:
         try:   # 📅 일정 시나리오 (DART 공시 → 무상 권리락·무상증자·자사주 신탁·고배당) 가상 장부 4개 (2026-10-29 사용자, 주문 없음)
             def trust_trade(t, code, name, price):   # 📅 자사주 신탁 장부가 산 순간 → 모의 매수 (2026-11-10 사용자 '모두 다 해줘', 실전은 아님)
                 sig = Signal(ts=t.replace(tzinfo=None, second=0, microsecond=0), kind=TRUST_KIND, price=price, level=price,
-                             stop=None, reason="📅 자사주 신탁 계약 체결 공시 다음 날 09:00 · 5거래일 뒤 09:00 매도 · 손절·익절 없음")
+                             stop=None, reason="📅 자사주 신탁 계약 체결 공시 다음 날 09:00 · 5거래일 뒤 09:00 매도 (모의는 보유 관리 R2·R3 도 걸림)")
                 if trader is not None:
                     trader.on_signals(t, [(code, name, "일정", sig)], {})
             events = EventScenarioBooks(store, market, now.date(), ectx, notify=None if args.no_telegram else send_telegram_message,
