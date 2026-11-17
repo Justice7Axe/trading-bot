@@ -13,9 +13,11 @@ if (-not (Test-Path $Python)) {
     throw "가상환경 python을 찾을 수 없습니다: $Python"
 }
 
+# 창 없이 실행 (2026-11-16 사용자 '창 없이'): python.exe 를 바로 띄우면 15분마다 콘솔 창이 깜빡임 →
+# 1분봉 받기·프로그램 체결 작업처럼 conhost --headless 로 감싸고 출력은 로그 파일로. -X utf8 은 로그 파일에 한글·이모지 쓰기용.
 $action = New-ScheduledTaskAction `
-    -Execute $Python `
-    -Argument "-m kiwoom_trading.strategies.crypto_align.live" `
+    -Execute "$env:WINDIR\System32\conhost.exe" `
+    -Argument "--headless cmd.exe /c `".venv\Scripts\python.exe -X utf8 -m kiwoom_trading.strategies.crypto_align.live >> data\logs\crypto_align_task.log 2>&1`"" `
     -WorkingDirectory $ProjectRoot
 
 $start = (Get-Date).Date.AddSeconds(40)
