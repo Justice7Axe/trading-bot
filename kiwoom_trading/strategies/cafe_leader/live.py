@@ -22,6 +22,10 @@
   네이버 테마 안 +4%↑ 2종목↑ 중 **등락률 1등**(+29.5%↑ 끼리는 대금 순, +5%↑, 신규 상장 20거래일 안 제외)을 '테마 1등'으로 기록한다
   (표 cafe_leader_hits, 로그, 15:42 ☕ 마감 요약). 매수 규칙(①③⑥)은 그대로 — 등락률 1등으로 ①을 바꾼 1년 시험(①+③ 눌림 655건 −0.01%)이
   지금 규칙(대금 1위 601건 +0.24%)보다 나빠 매수에는 쓰지 않음. 그래서 알림도 따로 없음(텔레그램 원칙: 매매 대상 아닌 포착은 알림 금지).
+  2026-11-18 사용자 '대장주를 등락률이 높은 것으로 하되, 어느 정도 거래대금이 전 거래일 또는 당일 거래대금 순위권에 있는 종목에 한해':
+  1등 후보 = 전 거래일 정규장 대금 TOP_RANK_N(100)위 안 또는 그 시각 당일 대금 100위 안 (테마 형성 +4%↑ 2종목↑ 은 전부로 셈).
+  N 50·100·200 1년 비교(rank_study.py, ①③⑥·추격 금지 +15%): 50 649건 +0.18% · 100 828건 +0.16%(앞 +0.14/뒤 +0.18, 최근 석 달 +0.11%,
+  100만 계좌 112.4만 최고) · 200 804건 +0.06% → 100. 셋 다 지금 ①(대금 1위 546건 +0.32% ★)보다 건당 낮고 ★ 아님 → ① 매수엔 안 씀.
 """
 import logging
 import os
@@ -64,6 +68,11 @@ TOP_START, TOP_END = time(9, 0), time(15, 20)
 RISER_VALUE = "100"           # ka10027 거래대금 조건 '100' = 10억↑ (인디에프 11-17 09:05 누적 12억)
 LIMIT_TIE = 0.295             # 이 위(상한가 근처)끼리는 등락률 같다고 보고 대금 순
 NEW_LISTING_DAYS = 20         # strict_select 와 같은 기준 (상장일 = 1거래일째)
+# 대장 후보 = 거래대금 순위권만 (2026-11-18 사용자 '대장주를 등락률이 높은 것으로 하되, 어느 정도 거래대금이 전 거래일 또는 당일
+# 거래대금 순위권에 있는 종목에 한해'): 전 거래일 정규장 대금 N위 안 또는 그 시각 당일 대금 N위 안. 50·100·200 비교(rank_study.py) → TOP_RANK_N.
+TOP_RANK_N = 100
+REGULAR_DB = os.path.join(PROJECT_ROOT, "data", "daily_regular.duckdb")
+NXT_SWITCH = date(2026, 9, 14)   # 이날부터 daily_ohlcv 대금 = 애프터 포함 통합 값 → 정규장 대금은 daily_regular
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS cafe_checks (     -- ☕ 테마 대장 돌파 체크리스트 (알림·검증용)
@@ -77,9 +86,12 @@ CREATE TABLE IF NOT EXISTS cafe_leader_hits (   -- 👑 테마 1등(등락률) �
 """
 
 
-def top_by_chg(rows, themes: dict, up_min: float = UP_MIN, lead_min: float = LEAD_MIN) -> dict[str, tuple[str, int, float]]:
+def top_by_chg(rows, themes: dict, up_min: float = UP_MIN, lead_min: float = LEAD_MIN,
+               eligible: Optional[set] = None) -> dict[str, tuple[str, int, float]]:
     """rows = [(code, 등락률, 누적 대금)] → 테마 등락률 1등 {code: (테마, +4%↑ 종목 수, 등락률)}.
-    카페 특징테마의 1등 = 그날 등락률 순 (research/cafe_leaders/parse.py) — 상한가 근처(+29.5%↑) 끼리는 대금 큰 쪽."""
+    카페 특징테마의 1등 = 그날 등락률 순 (research/cafe_leaders/parse.py) — 상한가 근처(+29.5%↑) 끼리는 대금 큰 쪽.
+    eligible = 대장 후보로 칠 종목(대금 순위권, 2026-11-18 사용자) — 테마 형성(+4%↑ 2종목↑)은 rows 전부로 세고,
+    1등은 eligible 안에서만 고른다. None 이면 전부 후보."""
     keyed = [(c, (min(ch, LIMIT_TIE) if ch >= LIMIT_TIE else ch), v, ch) for c, ch, v in rows if ch is not None and v]
     by_theme = defaultdict(list)
     for c, k, v, ch in keyed:
@@ -90,7 +102,10 @@ def top_by_chg(rows, themes: dict, up_min: float = UP_MIN, lead_min: float = LEA
     for th, mem in by_theme.items():
         if len(mem) < 2:
             continue
-        _, _, code, ch = max(mem)
+        cand = mem if eligible is None else [m for m in mem if m[2] in eligible]
+        if not cand:
+            continue
+        _, _, code, ch = max(cand)
         if ch >= lead_min and (code not in out or len(mem) > out[code][1]):
             out[code] = (th, len(mem), ch)
     return out
@@ -112,6 +127,7 @@ class CafeContext:
     top200: set = field(default_factory=set)        # 전날 대금 200위 안
     themes: dict = field(default_factory=dict)      # code → {테마 이름}
     new_listed: set = field(default_factory=set)    # 신규 상장 20거래일 안 (테마 1등·대장에서 뺌)
+    prev_rank: dict = field(default_factory=dict)   # code → 전 거래일 정규장 거래대금 순위 (주식만, 장 시작 전 한 번)
 
 
 def _new_listed(conn, today: date) -> set:
@@ -125,7 +141,32 @@ def _new_listed(conn, today: date) -> set:
         return set()
 
 
-def load_cafe_context(conn, today: date, naver_db: str = NAVER_DB) -> CafeContext:
+def prev_regular_rank(conn, day: date, codes, regular_db: str = REGULAR_DB) -> dict:
+    """전 거래일 정규장 거래대금 순위 {code: 순위} (codes = 주식만 — ETF 등 빠짐).
+    2026-09-14 뒤는 daily_ohlcv 대금이 애프터 포함 통합 값이라 daily_regular(1분봉 09:00~15:30 으로 만든 정규장 일봉)을 쓰고,
+    그게 없거나 그 날짜가 아직 없으면 daily_ohlcv 대금으로 (경고)."""
+    rows = None
+    if day >= NXT_SWITCH:
+        try:
+            copy = os.path.join(tempfile.gettempdir(), f"cafe_{os.getpid()}_daily_regular.duckdb")
+            shutil.copy(regular_db, copy)
+            rg = duckdb.connect(copy, read_only=True)
+            try:
+                rows = rg.execute("SELECT code, value FROM daily_regular WHERE date = ? AND value IS NOT NULL", [day]).fetchall() or None
+            finally:
+                rg.close()
+        except Exception:
+            logging.exception("카페: 정규장 일봉(daily_regular) 못 읽음")
+        if rows is None:
+            logging.warning("카페: %s 정규장 대금 없음 → 일봉(통합) 대금 순위로 대신", day)
+    if rows is None:
+        rows = conn.execute("SELECT code, value FROM daily_ohlcv WHERE date = ? AND value IS NOT NULL", [day]).fetchall()
+    codes = set(codes)
+    rows = sorted(((c, v) for c, v in rows if c in codes and v), key=lambda x: -x[1])
+    return {c: i + 1 for i, (c, _) in enumerate(rows)}
+
+
+def load_cafe_context(conn, today: date, naver_db: str = NAVER_DB, regular_db: str = REGULAR_DB) -> CafeContext:
     day = conn.execute("SELECT max(date) FROM daily_ohlcv WHERE code='005930' AND date < ?", [today]).fetchone()[0]
     if day is None:
         return CafeContext(None)
@@ -154,7 +195,7 @@ def load_cafe_context(conn, today: date, naver_db: str = NAVER_DB) -> CafeContex
             ng.close()
     except Exception:
         logging.exception("카페: 네이버 테마 목록을 못 읽음 (테마 대장 판단 불가)")
-    return CafeContext(day, stocks, top200, dict(themes), _new_listed(conn, today))
+    return CafeContext(day, stocks, top200, dict(themes), _new_listed(conn, today), prev_regular_rank(conn, day, stocks, regular_db))
 
 
 def _val(b: dict) -> float:
@@ -221,15 +262,28 @@ class CafeLeaderWatcher:
                 if r.code in self.ctx.stocks and r.code not in self.ctx.new_listed and r.change_rate is not None and r.trade_value]
         return theme_leaders(rows, self.ctx.themes, UP_MIN, LEAD_MIN)
 
-    def tops(self, value_top, risers=()) -> dict[str, tuple[str, int, float]]:
-        """👑 지금 테마 등락률 1등 (대상 = 대금 상위 200 + 등락률 상위, 신규 상장 20거래일 안 제외)."""
+    def today_rank(self, value_top) -> dict[str, int]:
+        """지금 당일 거래대금 순위 {code: 순위} — KRX 대금 상위 200(ka10032, 매분 이미 받는 것)을 주식만 다시 셈 (ETF 빠짐).
+        200위 밖은 순위 없음. 통합(NXT 포함) 순위를 따로 받지 않는 근사 — 정규장 중엔 KRX 대금이 대부분이라 거의 같음."""
+        items = sorted((r for r in value_top if r.code in self.ctx.stocks), key=lambda r: (r.rank or 10**6))
+        return {r.code: i + 1 for i, r in enumerate(items)}
+
+    def eligible(self, value_top, n: Optional[int] = None) -> set:
+        """대장 후보 = 전 거래일 정규장 대금 n위 안 ∪ 지금 당일 대금 n위 안 (2026-11-18 사용자)."""
+        n = n or TOP_RANK_N
+        today = self.today_rank(value_top)
+        return {c for c, k in self.ctx.prev_rank.items() if k <= n} | {c for c, k in today.items() if k <= n}
+
+    def tops(self, value_top, risers=(), n: Optional[int] = None) -> dict[str, tuple[str, int, float]]:
+        """👑 지금 테마 등락률 1등. 테마 형성(+4%↑ 2종목↑)은 대금 상위 200 + 등락률 상위 전부로 세고,
+        1등은 대금 순위권(eligible: 전 거래일 정규장 또는 당일 대금 TOP_RANK_N 위 안) 종목 중에서만. 신규 상장 20거래일 안 제외."""
         rows = {}
         for r in list(value_top) + list(risers):
             if r.code in rows or r.code not in self.ctx.stocks or r.code in self.ctx.new_listed:
                 continue
             if r.change_rate is not None and r.trade_value:
                 rows[r.code] = (r.code, r.change_rate, r.trade_value)
-        return top_by_chg(rows.values(), self.ctx.themes)
+        return top_by_chg(rows.values(), self.ctx.themes, eligible=self.eligible(value_top, n))
 
     def _capture_tops(self, now: datetime, value_top) -> None:
         try:
@@ -242,6 +296,7 @@ class CafeLeaderWatcher:
             return
         by_value = self.leaders(value_top)
         vals = {r.code: r.trade_value for r in list(risers) + list(value_top) if r.trade_value}
+        trank = self.today_rank(value_top)
         naive = now.replace(tzinfo=None)
         for code, (th, n_up, chg) in tops.items():
             if code in self.hits:
@@ -252,11 +307,13 @@ class CafeLeaderWatcher:
                     else "기록만 — 매수는 ①(테마 안 대금 1위)③⑥ 일 때")
             if chg >= LIMIT_TIE:
                 note += " · 상한가 근처"
+            pr, tr = self.ctx.prev_rank.get(code), trank.get(code)
+            note += f" · 대금 전날 정규장 {f'{pr}위' if pr else '순위 없음'} / 당일 {f'{tr}위' if tr else '200위 밖'}"
             self.hits[code] = (st.name, th, naive)
             self.conn.execute("INSERT INTO cafe_leader_hits VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                               [self.today, naive, code, st.name, th, n_up, chg, vals.get(code), code in self.ctx.top200, vl, note])
-            logging.info("👑 테마 1등 포착 %s(%s) '%s' %+.1f%% (+4%%↑ %s종목, 대금 %.0f억, 전날 200위 %s) — %s", st.name, code, th, chg * 100,
-                         n_up, (vals.get(code) or 0) / 1e8, "안" if code in self.ctx.top200 else "밖", note)
+            logging.info("👑 테마 1등 포착 %s(%s) '%s' %+.1f%% (+4%%↑ %s종목, 대금 %.0f억) — %s", st.name, code, th, chg * 100,
+                         n_up, (vals.get(code) or 0) / 1e8, note)
 
     def tops_line(self) -> str:
         rows = self.conn.execute("SELECT name, theme, ts, chg FROM cafe_leader_hits WHERE date = ? ORDER BY ts", [self.today]).fetchall()
