@@ -412,8 +412,10 @@ def run_once(screener: Screener, market: KiwoomMarket, store: ScreenerStore, tel
              weak_inv: Optional[WeakInverseWatcher] = None, rebreak: Optional[ClosingRebreakWatcher] = None,
              danswer: Optional[DanswerCloseWatcher] = None, small: Optional[SmallAccount] = None, real: Optional["real_inverse.RealTrader"] = None,
              reclaim=None, center=None, fractal=None, align=None, kell_d=None, kell_m=None, ha_d=None, ha_m=None, crash=None, vb=None, turtle=None, elog=None, dwatch: Optional[DanswerWatch] = None, strong: Optional[StrongListWatcher] = None,
-             books: tuple = (), leader_fn=None, hold_check=None) -> int:
+             books: tuple = (), leader_fn=None, hold_check=None, manual: tuple = ()) -> int:
     now = datetime.now(KST)
+    for mp in manual:                  # 🧪 사용자 직접 지시 일회성 실전 계획 (manual_plan.py, 자체 예외 처리) — 5초마다 on_tick 에서도 봄
+        mp.tick(now)
     try:
         cafe_universe.maybe_refresh(now)   # ☕ 08:40 에 카페 종목 한 번 더
     except Exception:
@@ -900,6 +902,17 @@ def main() -> int:
         except Exception:
             logging.exception("실전 매매 준비 실패")
             real_mode = ""
+    manual: tuple = ()
+    if not args.once:
+        try:   # 🧪 사용자 직접 지시 일회성 실전 계획 (data/manual_plans/*.json) — 전역 실전 스위치(KIWOOM_REAL_TRADING=off)와 따로 돎
+            from kiwoom_trading.execution import manual_plan
+            manual = tuple(manual_plan.load_runners(now.date(), market, store.conn,
+                                                    notify=None if args.no_telegram else send_telegram_message))
+            logging.info("수동 실전 계획 %s개", len(manual))
+        except Exception:
+            logging.exception("수동 실전 계획 준비 실패")
+            if not args.no_telegram:
+                send_telegram_message("⚠️ 🧪 수동 실전 계획 준비 실패 — 로그 확인 필요 (계획 매수·매도가 안 돎)")
     hold_check = None
     if not args.once and (trader is not None or real is not None):
         try:   # R2 다시 고르기 — 09:10 시장 판정 뒤 첫 확인 때 전날 이전 매수 보유 종목을 오늘 기준(대금 100위·전날 수급·프로그램·테마)으로 다시 봄
@@ -919,7 +932,8 @@ def main() -> int:
                     rline += ("\n⏸ 오늘 실전: 쉼" if paused else "\n▶️ 오늘 실전: 켜짐") + " — 바꾸려면 '실전 쉼' / '실전 재개' (새 매수만, 손절·매도 감시는 그대로)"
                 card = build_card(now.date(), regime.trend_text(), real_mode if real is not None else "",
                                   us_ov.text() if us_ov is not None else None, rline)
-                send_telegram_message(card + "\n" + _cafe_card_line(now))   # ☕ 카페 종목 제한 켜짐·꺼짐 한 줄
+                send_telegram_message(card + "\n" + _cafe_card_line(now)   # ☕ 카페 종목 제한 켜짐·꺼짐 한 줄
+                                      + "".join("\n" + mp.card_line() for mp in manual))   # 🧪 오늘 실전 수동 계획 한 줄
                 store.conn.execute("INSERT INTO playbook_sent VALUES (?)", [now.date()])
         except Exception:
             logging.exception("트레이딩 전략 전송 실패")
@@ -1034,8 +1048,14 @@ def main() -> int:
         send_telegram_message(("⏸ 실전 쉼 — 오늘 새 매수만 멈춤. 손절·익절·다음 날 매도는 그대로 감시함" if paused
                                else "▶️ 실전 재개 — 신호가 오면 다시 삼") + f" (보유 {held}종목)")
 
+    def wait_tick() -> None:   # 기다리는 동안 5초마다: 모의 보유 감시 + 🧪 수동 실전 계획 (09:00 첫 체결·손절을 1분 기다리지 않게)
+        for mp in manual:
+            mp.tick(datetime.now(KST))
+        if trader is not None:
+            trader.tick(datetime.now(KST))
+
     listener = StopListener(enabled=not args.no_telegram, on_summary=send_summary, on_pause=set_real_pause,
-                            on_tick=(lambda: trader.tick(datetime.now(KST))) if trader else None)
+                            on_tick=wait_tick if (trader or manual) else None)
     stop_command: Optional[str] = None
     try:
         if not args.force:
@@ -1054,7 +1074,7 @@ def main() -> int:
                         logging.info("오늘 데이터가 없음(휴장일로 판단, 기준일 %s) → 종료", probe[0].as_of)
                         break
                 run_once(screener, market, store, telegram=not args.no_telegram, watcher=watcher, early=early, investors=investors,
-                         themes=themes, board=board, trader=trader, leader=leader, pullback=pullback, nine=nine, bigcap=bigcap, regime=regime, inverse=inverse, contra=contra, retest=retest, up=up, block=block, newhigh=newhigh, trend=trend, surges=surges, burger=burger, weak_inv=weak_inv, rebreak=rebreak, danswer=danswer, small=small, real=real, reclaim=reclaim, center=center, align=align, fractal=fractal, kell_d=kell_d, kell_m=kell_m, ha_d=ha_d, ha_m=ha_m, crash=crash, vb=vb, turtle=turtle, elog=elog, dwatch=dwatch, strong=strong, books=books, leader_fn=cafe.leaders if cafe is not None else None, hold_check=hold_check)
+                         themes=themes, board=board, trader=trader, leader=leader, pullback=pullback, nine=nine, bigcap=bigcap, regime=regime, inverse=inverse, contra=contra, retest=retest, up=up, block=block, newhigh=newhigh, trend=trend, surges=surges, burger=burger, weak_inv=weak_inv, rebreak=rebreak, danswer=danswer, small=small, real=real, manual=manual, reclaim=reclaim, center=center, align=align, fractal=fractal, kell_d=kell_d, kell_m=kell_m, ha_d=ha_d, ha_m=ha_m, crash=crash, vb=vb, turtle=turtle, elog=elog, dwatch=dwatch, strong=strong, books=books, leader_fn=cafe.leaders if cafe is not None else None, hold_check=hold_check)
             except Exception:
                 logging.exception("스캔 실패 (다음 주기에 재시도)")
             if args.once:
@@ -1077,6 +1097,8 @@ def main() -> int:
             "(다음 평일 07:50에는 자동으로 다시 시작됩니다)"
             + (f"\n⚠️ 모의투자 보유 종목이 남아 있습니다: {', '.join(held)} — 손절·정리 감시도 멈춥니다 "
                "(다시 켜면 이어서 감시, 그대로 두면 다음 날 09:00 정리)" if held else "")
+            + "".join(f"\n⚠️ 🧪 수동 인버스 3분할 실전 보유가 남아 있음 — 스캐너가 꺼져 손절 감시도 멈춤 (다시 켜면 이어서 감시·매도)"
+                      for mp in manual if mp.has_position())
         )
     return 0
 

@@ -63,7 +63,8 @@ MAX_CHASE = 0.01
 PER_STOCK = 30_000            # 2026-10-30 사용자: 종목당 3만 원 안에서 여러 주, 1주가 3만 원 넘으면 1주만, 하루 종목 수 제한 없음 (옛 1️⃣ UP_SLOTS 4칸 규칙 없앰)
 LIMIT_UP = 0.01               # 2026-10-28 사용자 '증거금 문제 해소': 매수는 시장가(상한가 기준 증거금) 대신 현재가 +1% 지정가
 FILL_WAIT_SEC = 120           # 지정가가 2분 안에 다 안 채워지면 남은 수량 취소
-ETF_CODES = {INVERSE_CODE}
+MANUAL_KIND = "수동 인버스 3분할"   # 🧪 사용자 직접 지시 일회성 실전 (execution/manual_plan.py, 2026-11-22) — RealTrader 는 관리 안 함, 자동 멈춤 셈에서도 뺌
+ETF_CODES = {INVERSE_CODE, "114800"}   # 114800 = KODEX 인버스 (🧪 수동 인버스 3분할)
 # REAL_OFF = PLAYS 정의 뒤에서 REAL_ON 으로 계산 (2026-11-14). 옛 기록: (RECLAIM_KIND, CAFE_KIND, TREND_KIND, UP_KIND)   # 1️⃣: 2026-11-10 사용자 '모두 다 해줘' — 실전이 살 수 있는 5.5만 원 이하 종목은 모의에서도 9건 −0.82%(모의 수익은 5.5만↑ 29건에서 나옴), 실전 3건 −903원 → 모의에서만. # 4️⃣ 는 같은 날 계좌 시뮬로 다시 넣음(아래 2026-10-31 '조건 없이 복귀'). 7️⃣: 2026-10-31 사용자 '추천대로' — 4️⃣ 최고 5일 빼면 −·최근 3달 −0.61%, 7️⃣ 45건뿐·앞뒤 검증 못 함·모의 계좌 계산 −171만 → 모의에서만 쌓음 (6️⃣📕5️⃣ 핵심, 1️⃣2️⃣🌙 보조). # ☕: 2026-10-30 사용자 '☕는 실전에서 빼자' — 94% 가 1주 3만 원 넘어 1주씩만 사고 절반 익절이 안 됨, 1년 실전 새 규칙 −3~−9만 (research/strict_select). 🔁: 2026-10-29 사용자 '권장대로': 🔁 은 09:0x 에 먼저 와 하루 1칸을 차지 → 6️⃣·📕 를 못 삼 (1년 시드 10만 34만 → 562만, research/account_alloc)
 OPEN, LAST, CLOSE = time(9, 0), time(15, 19), time(15, 30)
 AFTER_BUY = (time(17, 0), time(18, 0))   # 🌙 종가 재돌파: NXT 애프터마켓 매수 시간 (2026-10-30 사용자 '키움 실계좌로 NXT 애프터장 거래가 된다, 종목별로 다름')
@@ -79,6 +80,7 @@ PLAYS = {   # 종류 → (이름, 익절, 손절)
     CONTRA_KIND: ("4️⃣ 역행 강세 종가", None, None),   # 2026-10-31 실전 복귀·고가 부근 조건 없이 (10만 1년: 4️⃣ 없음 153만 · 고가 부근만 161만 · 조건 없이 312만, research/early_rise/apply 계좌 시뮬)      # 2026-10-30 사용자 '제안대로' — 강한 하락장 15:15~15:19 매수, 다음 날 09:00 (1년 422건 +0.85%)
     REBREAK_KIND: ("🌙 종가 재돌파", None, None),
     ALIGN_KIND: ("🪜 애프터 정배열", None, ALIGN_STOP),   # 2026-11-14 사용자 승인 — 모의와 같은 규칙(익절 없음·−3%·다음 날 09:00)으로 실전에 추가
+    MANUAL_KIND: ("🧪 수동 인버스 3분할", None, 0.02),   # 2026-11-22 사용자 직접 지시 11-23 일회성 (manual_plan.py 만 삼, 신호로는 안 삼 → REAL_OFF)
     TREND_KIND: ("7️⃣ 주도주 추세", None, None),         # 2026-10-30 사용자 '7번 매매를 실전으로' — 09:00 매수, 종가 20일선 이탈 다음 날 09:00 매도 (며칠~몇 주 보유)        # 2026-10-30 — 17~18시 NXT 애프터장에서 정규장 종가 위 매수, 다음 날 09:00 (1년 554건 +0.79%)
 }
 # 실전 매수는 이 두 매매만 (2026-11-14 사용자 승인, 11-16 부터): 1️⃣ 상승장 장 초(기존 실전 조건 그대로 — 외인·기관 둘 다 매도 제외 등) · 🪜 애프터 정배열.
@@ -298,7 +300,7 @@ def auto_stop_reason(conn, today: date) -> Optional[str]:
     if last and last > base:
         base = last
     rows = conn.execute("""SELECT pnl, sell_ts FROM real_trades WHERE status = 'closed' AND pnl IS NOT NULL AND sell_ts >= ? AND date >= ?
-                           ORDER BY sell_ts""", [base, AUTO_START]).fetchall()   # 11-16 전에 산 것은 새 출발 셈에 안 넣음
+                           AND coalesce(kind, '') <> ? ORDER BY sell_ts""", [base, AUTO_START, MANUAL_KIND]).fetchall()   # 11-16 전에 산 것은 새 출발 셈에 안 넣음, 🧪 수동 계획(차수마다 한 줄)도 뺌
     n = 0
     for p, _ in reversed(rows):
         if p > 0:
@@ -400,8 +402,8 @@ class RealTrader:
 
     def actives(self) -> list[tuple]:
         return self.conn.execute("""SELECT id, date, code, coalesce(name, code), coalesce(kind, ?), qty, buy_order_no, buy_price, sell_order_no, status, buy_ts
-                                    FROM real_trades WHERE status IN ('ordered', 'open', 'selling') ORDER BY buy_ts""",
-                                 [WEAK_KIND]).fetchall()
+                                    FROM real_trades WHERE status IN ('ordered', 'open', 'selling') AND coalesce(kind, '') <> ? ORDER BY buy_ts""",
+                                 [WEAK_KIND, MANUAL_KIND]).fetchall()   # 🧪 수동 계획은 manual_plan.py 가 관리
 
     def active(self) -> Optional[tuple]:
         a = self.actives()
